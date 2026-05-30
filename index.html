@@ -829,6 +829,19 @@
             .map(data => ({ type: data.type, x: data.interactX, y: data.interactY }));
     }
 
+    function getNearbyMarkers(radius = 8) {
+        return gmMarkers
+            .filter(marker => marker.level === currentLevel)
+            .filter(marker => Math.max(Math.abs(marker.x - playerGridX), Math.abs(marker.y - playerGridY)) <= radius)
+            .map(marker => ({
+                id: marker.id,
+                name: marker.name,
+                x: marker.x,
+                y: marker.y,
+                note: marker.note
+            }));
+    }
+
     function buildGMPayload() {
         return {
             engine: 'OSRS-LLM',
@@ -841,11 +854,12 @@
             },
             nearby: {
                 npcs: getNearbyNPCs(),
-                items: getNearbyItems()
+                items: getNearbyItems(),
+                markers: getNearbyMarkers()
             },
             flags: worldFlags,
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve the player intent and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue.'
+            request: 'Act as GM. Resolve the player intent and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker.'
         };
     }
 
@@ -885,6 +899,88 @@
         renderInventory();
         addLogMessage(`You receive ${ITEM_DEFS[type].name}.`);
         return true;
+    }
+
+    const gmMarkers = [];
+
+    function parseMarkerColor(value) {
+        try {
+            if (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)) return new THREE.Color(value);
+            if (typeof value === 'number') return new THREE.Color(value);
+        } catch (err) {}
+        return new THREE.Color(0xffd34d);
+    }
+
+    function disposeObject3D(obj) {
+        obj.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+                if (Array.isArray(child.material)) child.material.forEach(mat => mat.dispose());
+                else child.material.dispose();
+            }
+        });
+    }
+
+    function createGMMarker(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `marker_${Date.now()}`;
+        if (gmMarkers.some(marker => marker.id === id)) { addLogMessage(`Marker already exists: ${id}`); return false; }
+
+        const level = (cmd.level ?? currentLevel).toString();
+        const x = Math.round(Number(cmd.x));
+        const y = Math.round(Number(cmd.y));
+        if (!isValidTile(x, y, level)) { addLogMessage('Invalid create_marker command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Marker';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const color = parseMarkerColor(cmd.color);
+        const pos = getGridWorldPos(x, y, level);
+
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
+        const base = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 0.65), mat);
+        base.position.y = 0.06;
+        group.add(base);
+
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.7, 6), mat);
+        pillar.position.y = 0.47;
+        group.add(pillar);
+
+        const cap = new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 0), mat);
+        cap.position.y = 0.95;
+        group.add(cap);
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.7;
+        hitBox.userData = { isGMMarker: true, sourceLevel: level, markerId: id, interactX: x, interactY: y };
+        group.add(hitBox);
+
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { markerId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+        gmMarkers.push({ id, name, note, x, y, level, group, hitBox });
+        addLogMessage(`Marker placed: ${name}.`);
+        return true;
+    }
+
+    function removeGMMarker(id) {
+        const index = gmMarkers.findIndex(marker => marker.id === id);
+        if (index === -1) { addLogMessage(`No marker found: ${id}`); return false; }
+        const marker = gmMarkers[index];
+        const interIndex = interactables.indexOf(marker.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[marker.level].remove(marker.group);
+        disposeObject3D(marker.group);
+        gmMarkers.splice(index, 1);
+        addLogMessage(`Marker removed: ${marker.name}.`);
+        return true;
+    }
+
+    function examineGMMarker(markerId) {
+        const marker = gmMarkers.find(m => m.id === markerId);
+        if (!marker) return;
+        addLogMessage(marker.name);
+        if (marker.note) addLogMessage(marker.note);
     }
 
     function applyLLMCommands() {
@@ -935,6 +1031,15 @@
                     executeLevelChange(level, x, y);
                     addLogMessage('The world shifts around you.');
                 } else addLogMessage('Invalid move_player command.');
+            }
+
+            else if (cmd.op === 'create_marker') {
+                createGMMarker(cmd);
+            }
+
+            else if (cmd.op === 'remove_marker') {
+                if (typeof cmd.id === 'string') removeGMMarker(cmd.id);
+                else addLogMessage('Invalid remove_marker command.');
             }
 
             else if (cmd.op === 'update_dialogue') {
@@ -1362,8 +1467,8 @@
                 else if ((playerGridX === t1.x && playerGridY === t1.y) || (playerGridX === t2.x && playerGridY === t2.y)) { pathQueue = []; } 
                 else { pendingAction = null; addLogMessage("You can't reach the door."); }
 
-            } else if (data && (data.isItem || data.isTransition || data.isNPC)) {
-                const stopAdjacent = !!data.isNPC || !!data.stopAdjacent;
+            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker)) {
+                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.stopAdjacent;
                 let newPath = findPath(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel, stopAdjacent);
 
                 pendingAction = () => {
@@ -1373,6 +1478,7 @@
                         else executeLevelChange(data.targetLevel, data.spawnX, data.spawnY);
                     }
                     else if (data.isNPC) startDialogue(data.npcId);
+                    else if (data.isGMMarker) examineGMMarker(data.markerId);
                 };
 
                 if (newPath.length > 0) pathQueue = newPath;
