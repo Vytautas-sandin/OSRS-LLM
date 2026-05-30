@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- OSRS LLM OBJECTS V0.4 BUILD - supports create_object/remove_object -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -94,7 +95,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel</div>
+        <div id="dev-panel-title">LLM / GM Panel · Objects v0.4</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
@@ -816,6 +817,7 @@
     // --- 5B. DEV / LLM PANEL ---
     const worldFlags = {};
     const gmMarkers = [];
+    const gmObjects = [];
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
 
     function getRecentLogLines() {
@@ -849,6 +851,21 @@
             }));
     }
 
+    function getNearbyGMObjects(radius = 8) {
+        return gmObjects
+            .filter(obj => obj.level === currentLevel)
+            .filter(obj => Math.max(Math.abs(obj.x - playerGridX), Math.abs(obj.y - playerGridY)) <= radius)
+            .map(obj => ({
+                id: obj.id,
+                name: obj.name,
+                x: obj.x,
+                y: obj.y,
+                shape: obj.shape,
+                note: obj.note,
+                used: !!obj.used
+            }));
+    }
+
     function hasSavedGMWorld() {
         try { return !!localStorage.getItem(GM_SAVE_KEY); }
         catch (err) { return false; }
@@ -867,15 +884,17 @@
             nearby: {
                 npcs: getNearbyNPCs(),
                 items: getNearbyItems(),
-                markers: getNearbyMarkers()
+                markers: getNearbyMarkers(),
+                objects: getNearbyGMObjects()
             },
             flags: worldFlags,
             gmSave: {
                 hasSavedWorld: hasSavedGMWorld(),
-                markerCount: gmMarkers.length
+                markerCount: gmMarkers.length,
+                objectCount: gmObjects.length
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve the player intent and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker. Persisted between refreshes: flags and markers.'
+            request: 'Act as GM. Resolve the player intent and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, and custom objects.'
         };
     }
 
@@ -1005,6 +1024,144 @@
         if (marker.note) addLogMessage(marker.note);
     }
 
+    function buildGMObjectVisual(shape, color) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
+        const darkMat = new THREE.MeshLambertMaterial({ color: 0x2a231b, flatShading: true });
+        const safeShape = ['crate', 'stone', 'orb', 'scroll', 'sign', 'chest'].includes(shape) ? shape : 'crate';
+
+        if (safeShape === 'stone') {
+            const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.38, 0), mat);
+            stone.position.y = 0.38;
+            group.add(stone);
+        } else if (safeShape === 'orb') {
+            const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, 0.35, 6), darkMat);
+            stand.position.y = 0.18;
+            const orb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), mat);
+            orb.position.y = 0.58;
+            group.add(stand); group.add(orb);
+        } else if (safeShape === 'scroll') {
+            const scroll = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.35), mat);
+            scroll.position.y = 0.16;
+            const rollA = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.58, 6), darkMat);
+            rollA.rotation.z = Math.PI / 2; rollA.position.set(0, 0.17, -0.2);
+            const rollB = rollA.clone(); rollB.position.z = 0.2;
+            group.add(scroll); group.add(rollA); group.add(rollB);
+        } else if (safeShape === 'sign') {
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.75, 0.08), darkMat);
+            post.position.y = 0.38;
+            const board = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.32, 0.08), mat);
+            board.position.y = 0.78;
+            group.add(post); group.add(board);
+        } else if (safeShape === 'chest') {
+            const base = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.35, 0.45), mat);
+            base.position.y = 0.2;
+            const lid = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.14, 0.48), darkMat);
+            lid.position.y = 0.47;
+            group.add(base); group.add(lid);
+        } else {
+            const crate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), mat);
+            crate.position.y = 0.28;
+            group.add(crate);
+        }
+
+        return { group, shape: safeShape };
+    }
+
+    function createGMObject(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `object_${Date.now()}`;
+        if (gmObjects.some(obj => obj.id === id)) { if (!cmd.silent) addLogMessage(`Object already exists: ${id}`); return false; }
+
+        const level = (cmd.level ?? currentLevel).toString();
+        const x = Math.round(Number(cmd.x));
+        const y = Math.round(Number(cmd.y));
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_object command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Object';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const colorHex = normalizeMarkerColor(cmd.color);
+        const color = parseMarkerColor(colorHex);
+        const visual = buildGMObjectVisual(cmd.shape, color);
+        const group = visual.group;
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.2, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.6;
+        hitBox.userData = { isGMObject: true, sourceLevel: level, objectId: id, interactX: x, interactY: y };
+        group.add(hitBox);
+
+        const pos = getGridWorldPos(x, y, level);
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { objectId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+
+        const setFlag = cmd.setFlag && typeof cmd.setFlag === 'object' && typeof cmd.setFlag.key === 'string'
+            ? { key: cmd.setFlag.key, value: cmd.setFlag.value }
+            : (typeof cmd.setFlag === 'string' ? { key: cmd.setFlag, value: true } : null);
+        const giveItem = typeof cmd.giveItem === 'string' && ITEM_DEFS[cmd.giveItem] ? cmd.giveItem : null;
+
+        gmObjects.push({
+            id, name, note, x, y, level,
+            color: colorHex,
+            shape: visual.shape,
+            giveItem,
+            setFlag,
+            removeOnInteract: !!cmd.removeOnInteract,
+            used: !!cmd.used,
+            group,
+            hitBox
+        });
+
+        if (!cmd.silent) addLogMessage(`Object created: ${name}.`);
+        return true;
+    }
+
+    function removeGMObject(id, silent = false) {
+        const index = gmObjects.findIndex(obj => obj.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No object found: ${id}`); return false; }
+        const obj = gmObjects[index];
+        const interIndex = interactables.indexOf(obj.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[obj.level].remove(obj.group);
+        disposeObject3D(obj.group);
+        gmObjects.splice(index, 1);
+        if (!silent) addLogMessage(`Object removed: ${obj.name}.`);
+        return true;
+    }
+
+    function clearGMObjects() {
+        while (gmObjects.length > 0) removeGMObject(gmObjects[0].id, true);
+    }
+
+    function examineGMObject(objectId) {
+        const obj = gmObjects.find(o => o.id === objectId);
+        if (!obj) return;
+
+        addLogMessage(obj.name);
+        if (obj.note) addLogMessage(obj.note);
+
+        let changed = false;
+        if (!obj.used) {
+            if (obj.setFlag && obj.setFlag.key) {
+                worldFlags[obj.setFlag.key] = obj.setFlag.value;
+                addLogMessage(`Flag set: ${obj.setFlag.key}`);
+                changed = true;
+            }
+            if (obj.giveItem) {
+                changed = giveInventoryItem(obj.giveItem) || changed;
+            }
+            if (obj.setFlag || obj.giveItem) obj.used = true;
+            if (obj.removeOnInteract) {
+                removeGMObject(objectId, true);
+                changed = true;
+            }
+        } else if (obj.setFlag || obj.giveItem) {
+            addLogMessage('Nothing else happens.');
+        }
+
+        if (changed) saveGMWorld(true);
+    }
+
     function buildGMWorldSave() {
         return {
             version: 1,
@@ -1018,6 +1175,20 @@
                 y: marker.y,
                 level: marker.level,
                 color: marker.color || '#ffd34d'
+            })),
+            objects: gmObjects.map(obj => ({
+                id: obj.id,
+                name: obj.name,
+                note: obj.note,
+                x: obj.x,
+                y: obj.y,
+                level: obj.level,
+                color: obj.color || '#ffd34d',
+                shape: obj.shape || 'crate',
+                giveItem: obj.giveItem || null,
+                setFlag: obj.setFlag || null,
+                removeOnInteract: !!obj.removeOnInteract,
+                used: !!obj.used
             }))
         };
     }
@@ -1025,7 +1196,7 @@
     function saveGMWorld(silent = false) {
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
-            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers).`);
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
             return true;
         } catch (err) {
             if (!silent) addLogMessage('Could not save GM world in this browser.');
@@ -1045,19 +1216,30 @@
         catch (err) { if (!silent) addLogMessage('GM save is corrupted.'); return false; }
 
         clearGMMarkers();
+        clearGMObjects();
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
         if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
+        if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
 
-        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers).`);
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
         return true;
     }
 
     function resetGMWorldSave() {
         try { localStorage.removeItem(GM_SAVE_KEY); } catch (err) {}
         clearGMMarkers();
+        clearGMObjects();
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         addLogMessage('GM save reset.');
+    }
+
+    function normalizeGMOp(op) {
+        return String(op)
+            .trim()
+            .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+            .replace(/[\s-]+/g, '_')
+            .toLowerCase();
     }
 
     function applyLLMCommands() {
@@ -1075,6 +1257,7 @@
         let shouldSave = false;
         commands.forEach(cmd => {
             if (!cmd || typeof cmd.op !== 'string') return;
+            cmd = { ...cmd, op: normalizeGMOp(cmd.op) };
 
             if (cmd.op === 'add_log') {
                 if (typeof cmd.text === 'string') addLogMessage(cmd.text);
@@ -1121,6 +1304,17 @@
                     if (removeGMMarker(cmd.id)) shouldSave = true;
                 }
                 else addLogMessage('Invalid remove_marker command.');
+            }
+
+            else if (cmd.op === 'create_object') {
+                if (createGMObject(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_object') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMObject(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_object command.');
             }
 
             else if (cmd.op === 'update_dialogue') {
@@ -1554,8 +1748,8 @@
                 else if ((playerGridX === t1.x && playerGridY === t1.y) || (playerGridX === t2.x && playerGridY === t2.y)) { pathQueue = []; } 
                 else { pendingAction = null; addLogMessage("You can't reach the door."); }
 
-            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker)) {
-                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.stopAdjacent;
+            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker || data.isGMObject)) {
+                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.stopAdjacent;
                 let newPath = findPath(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel, stopAdjacent);
 
                 pendingAction = () => {
@@ -1566,6 +1760,7 @@
                     }
                     else if (data.isNPC) startDialogue(data.npcId);
                     else if (data.isGMMarker) examineGMMarker(data.markerId);
+                    else if (data.isGMObject) examineGMObject(data.objectId);
                 };
 
                 if (newPath.length > 0) pathQueue = newPath;
