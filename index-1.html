@@ -1,0 +1,1927 @@
+<!DOCTYPE html>
+<!-- OSRS LLM ACTION PAYLOAD V0.5 BUILD - adds player_action to copied GM payload -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Retro Coastal Town 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
+        canvas { display: block; image-rendering: pixelated; }
+        
+        /* General UI Layer */
+        #ui-layer { position: absolute; top: 10px; left: 10px; color: #ffff00; text-shadow: 1px 1px 0 #000; pointer-events: none; z-index: 10; }
+        .instruction { color: #fff; font-size: 12px; margin-top: 5px; }
+        
+        /* Game Log / Chat Box */
+        #chat-box { position: absolute; bottom: 10px; left: 10px; width: 300px; height: 100px; background: rgba(62, 53, 41, 0.85); border: 2px solid #5c4e3c; color: #fff; font-size: 12px; overflow-y: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 5px; pointer-events: none; text-shadow: 1px 1px 0 #000; z-index: 10;}
+        .log-msg { margin: 2px 0; }
+        
+        /* Tool Toggle Icon */
+        #tool-toggle { position: absolute; right: 10px; bottom: 60px; width: 140px; height: 40px; background: #3e3529; border: 2px solid #5c4e3c; color: #fff; display: none; align-items: center; justify-content: center; cursor: pointer; z-index: 20; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
+        #tool-toggle:hover { background: #4e4539; }
+        #tool-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
+
+        /* Inventory Toggle Icon */
+        #inv-toggle { position: absolute; right: 10px; top: 10px; width: 44px; height: 44px; background: #3e3529; border: 2px solid #5c4e3c; color: white; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 20; font-size: 24px; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
+        #inv-toggle:hover { background: #4e4539; }
+        #inv-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
+
+
+
+        /* Dev / LLM Panel */
+        #dev-toggle { position: absolute; right: 10px; bottom: 110px; width: 140px; height: 40px; background: #1f2d24; border: 2px solid #5c4e3c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 25; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
+        #dev-toggle:hover { background: #2c3d32; }
+        #dev-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
+        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(360px, calc(100vw - 20px)); background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
+        #dev-panel-title { color: #ffff00; font-weight: bold; text-shadow: 1px 1px 0 #000; }
+        #player-action { width: 100%; height: 52px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
+        .dev-label { color: #d0c8b0; font-size: 11px; }
+        #llm-io { width: 100%; height: 160px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+        .dev-row { display: flex; gap: 6px; }
+        .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 6px; font-weight: bold; cursor: pointer; }
+        .dev-btn:active { transform: translate(1px, 1px); }
+
+        /* Inventory System */
+        #inventory { position: absolute; right: 10px; top: 60px; width: 196px; background: #3e3529; border: 2px solid #5c4e3c; padding: 4px; display: none; grid-template-columns: repeat(4, 1fr); gap: 2px; z-index: 15; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); }
+        .inv-slot { width: 46px; height: 36px; background: #2a231b; border: 1px inset #5c4e3c; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; }
+        .inv-slot:hover { background: #3a332b; }
+        
+        /* Items CSS icons */
+        .item-icon { pointer-events: none; }
+        .item-berries { width: 20px; height: 20px; border-radius: 50%; background: #ff2a2a; box-shadow: inset -2px -2px 4px rgba(0,0,0,0.5); } 
+        .item-shell { width: 22px; height: 18px; border-radius: 40% 60% 50% 50%; background: radial-gradient(circle, #ffccbb, #eebbaa); box-shadow: inset -2px -2px 3px rgba(0,0,0,0.4); }
+        .item-rod { width: 4px; height: 26px; border-radius: 2px; background: #8b4513; transform: rotate(45deg); box-shadow: 1px 1px 1px rgba(0,0,0,0.5); }
+        .item-fish { width: 24px; height: 14px; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%; background: linear-gradient(to bottom, #4682b4, #87cefa); box-shadow: inset -1px -2px 2px rgba(0,0,0,0.3); }
+        .item-shovel { width: 6px; height: 22px; border-radius: 2px; background: #8b4513; position: relative; box-shadow: 1px 1px 1px rgba(0,0,0,0.5); transform: rotate(15deg); }
+        .item-shovel::before { content: ''; position: absolute; bottom: 100%; left: -4px; width: 14px; height: 12px; background: #a0a0a0; border-radius: 4px 4px 10px 10px; box-shadow: inset -1px -1px 2px rgba(0,0,0,0.3); }
+
+        /* Context Menu */
+        #context-menu { position: absolute; background: #d0c8b0; border: 1px solid #000; display: none; flex-direction: column; min-width: 120px; font-family: sans-serif; font-size: 14px; z-index: 100; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); }
+        .ctx-item { padding: 8px 10px; cursor: pointer; color: black; border-bottom: 1px solid #aaa; font-weight: bold; }
+        .ctx-item:last-child { border-bottom: none; }
+        .ctx-item:hover { background: #e8e2d0; }
+        .ctx-cancel { color: #880000; }
+
+        /* Dialogue Box */
+        #dialogue-box { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 450px; height: 130px; background: #e6d8b3; border: 4px solid #5c4e3c; display: none; flex-direction: column; align-items: center; justify-content: center; font-family: 'Georgia', serif; color: #000; z-index: 100; cursor: pointer; box-shadow: inset 0 0 15px rgba(0,0,0,0.4), 4px 4px 8px rgba(0,0,0,0.6); border-radius: 4px; }
+        #d-speaker { font-weight: bold; font-size: 18px; margin-top: 10px; color: #3e1b04;}
+        #d-text { font-size: 16px; text-align: center; padding: 0 20px; flex-grow: 1; display: flex; align-items: center; }
+        #d-continue { font-size: 14px; color: #000080; animation: blink 1.5s infinite; margin-bottom: 10px; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        /* Fade Transition Overlay */
+        #fade-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.8s ease-in-out; z-index: 1000; }
+
+        @media (max-width: 600px) {
+            #dialogue-box { width: 90%; bottom: 120px; } 
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="fade-overlay"></div>
+
+    <div id="ui-layer">
+        <div id="level-display">Level: 0 (Ground)</div>
+        <div class="instruction">Tap Ground/Pavement: Walk</div>
+        <div class="instruction">Tap Doors: Open/Close</div>
+        <div class="instruction">Tap NPCs/Items: Interact</div>
+    </div>
+
+    <div id="inv-toggle" title="Toggle Inventory">🎒</div>
+    <div id="inventory"></div>
+    <div id="tool-toggle">👟 Mode: Walk</div>
+    <div id="context-menu"></div>
+
+    <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
+    <div id="dev-panel">
+        <div id="dev-panel-title">LLM / GM Panel · Action Payload v0.5</div>
+        <div class="dev-row">
+            <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
+            <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
+        </div>
+        <div class="dev-row">
+            <button id="save-world-state" class="dev-btn">Save</button>
+            <button id="load-world-state" class="dev-btn">Load</button>
+            <button id="reset-world-state" class="dev-btn">Reset</button>
+        </div>
+        <div class="dev-label">Player action / question for the GM</div>
+        <textarea id="player-action" spellcheck="false" placeholder="Example: I pry open the salt-worn chest with the shovel."></textarea>
+        <div class="dev-label">LLM JSON / copied payload</div>
+        <textarea id="llm-io" spellcheck="false" placeholder="Paste LLM JSON here, or tap Copy Payload to export the current game state."></textarea>
+    </div>
+
+    <div id="dialogue-box" onclick="continueDialogue()">
+        <div id="d-speaker">Speaker Name</div>
+        <div id="d-text">Dialogue text goes here...</div>
+        <div id="d-continue">Click here to continue</div>
+    </div>
+
+    <div id="chat-box">
+        <div class="log-msg">Welcome to the Coastal Town.</div>
+        <div class="log-msg">There is a Shovel nearby...</div>
+    </div>
+
+<script>
+    // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
+    const TILE_SIZE = 1;
+    const GRID_SIZE = 40; 
+    const TICK_RATE = 0.5;
+    
+    const LEVELS = {
+        '-1': { h: -10, bg: 0x000000, name: "Cellar" },
+        '0':  { h: 0,   bg: 0x87CEEB, name: "Ground" },
+        '2':  { h: 0,   bg: 0x4fc3f7, name: "Island" }
+    };
+
+    let currentLevel = '0'; 
+
+    // --- 2. THREE.JS SETUP ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(LEVELS['0'].bg); 
+
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setPixelRatio(0.5);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    dirLight.position.set(10, 20, 10);
+    scene.add(dirLight);
+
+    // --- 3. ENVIRONMENT DATA & TERRAIN GENERATION ---
+    const levelGroups = { '-1': new THREE.Group(), '0': new THREE.Group(), '2': new THREE.Group() };
+    scene.add(levelGroups['-1']); scene.add(levelGroups['0']); scene.add(levelGroups['2']);
+    
+    const walkables = { '-1': [], '0': [], '2': [] };
+    const interactables = []; 
+    const roofZones = [];
+    const doors = [];
+
+    const unwalkables = { '-1': [], '0': [], '2': [] };
+    const pathTiles = [];
+    
+    // Define Paths (Pavements)
+    function addPath(x1, y1, x2, y2) {
+        for(let x=x1; x<=x2; x++) {
+            for(let y=y1; y<=y2; y++) {
+                if(!pathTiles.some(t => t.x===x && t.y===y)) pathTiles.push({x,y});
+            }
+        }
+    }
+    
+    addPath(7, 12, 30, 14); // Main Avenue
+    addPath(11, 10, 11, 11); // To Bob's
+    addPath(27, 10, 27, 11); // To Alice's
+    addPath(27, 15, 27, 16); // To Charlie's
+    addPath(14, 15, 16, 17); // To Temple Plaza
+    addPath(5, 12, 6, 14);   // Towards Beach
+    
+    // Add deep water tiles to unwalkables for level 0
+    for(let x=0; x<4; x++) {
+        for(let y=0; y<=GRID_SIZE; y++) unwalkables['0'].push({x: x, y: y});
+    }
+
+    const vHeights = {
+        '0': Array.from({length: GRID_SIZE + 1}, () => new Float32Array(GRID_SIZE + 1).fill(0)),
+        '2': Array.from({length: GRID_SIZE + 1}, () => new Float32Array(GRID_SIZE + 1).fill(-0.5))
+    };
+    
+    // Level 0 Height Map
+    for(let x=0; x<=GRID_SIZE; x++){
+        for(let y=0; y<=GRID_SIZE; y++){
+            if (x < 4) {
+                vHeights['0'][x][y] = -0.5; // Deep water dip
+            } else if (x < 6) {
+                vHeights['0'][x][y] = -0.1; // Beach slope
+            } else if (x > 32) {
+                vHeights['0'][x][y] = (x - 32) * 0.4; // Eastern Hills
+            } else {
+                vHeights['0'][x][y] = 0.1; // Flat town area
+            }
+        }
+    }
+    
+    // Level 2 (Island) Height Map & Unwalkables
+    for(let x=0; x<=GRID_SIZE; x++){
+        for(let y=0; y<=GRID_SIZE; y++){
+            const dist = Math.sqrt(Math.pow(x-20, 2) + Math.pow(y-20, 2));
+            if (dist < 4) {
+                vHeights['2'][x][y] = 0.2 + (Math.sin(x)*Math.cos(y))*0.1; // Island center
+            } else if (dist < 7) {
+                vHeights['2'][x][y] = -0.1; // Island Beach
+            }
+        }
+    }
+    for(let x=0; x<GRID_SIZE; x++){
+        for(let y=0; y<GRID_SIZE; y++){
+            const dist = Math.sqrt(Math.pow(x-20, 2) + Math.pow(y-20, 2));
+            if (dist >= 6) unwalkables['2'].push({x, y});
+        }
+    }
+
+    const floorHeights = {};
+    function setFloorHeight(x, y, h, level = '0') { floorHeights[`${level},${x},${y}`] = h; }
+    
+    function getTileCenterHeight(x, y, level) {
+        if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return 0;
+        if (!vHeights[level]) return 0;
+        return (vHeights[level][x][y] + vHeights[level][x+1][y] + vHeights[level][x][y+1] + vHeights[level][x+1][y+1]) / 4;
+    }
+
+    function getWalkableHeight(x, y, level) {
+        if (level === '-1') return LEVELS[level].h;
+        if (floorHeights[`${level},${x},${y}`] !== undefined) return floorHeights[`${level},${x},${y}`];
+        return getTileCenterHeight(x, y, level);
+    }
+
+    function getGridWorldPos(gridX, gridY, level = '0') {
+        const h = getWalkableHeight(gridX, gridY, level);
+        return { x: gridX * TILE_SIZE, y: h, z: gridY * TILE_SIZE };
+    }
+
+    function buildTerrain(level) {
+        const terrainGeo = new THREE.BufferGeometry();
+        const verts = [];
+        const colors = [];
+        
+        const cGrass = new THREE.Color(0x4a6b3f);
+        const cSand = new THREE.Color(0xeaddb2);
+        const cSteep = new THREE.Color(0x3a5b2f); 
+        const cPave = new THREE.Color(0x909497); 
+        
+        for(let x=0; x<GRID_SIZE; x++) {
+            for(let y=0; y<GRID_SIZE; y++) {
+                let hBL = vHeights[level][x][y];
+                let hBR = vHeights[level][x+1][y];
+                let hTL = vHeights[level][x][y+1];
+                let hTR = vHeights[level][x+1][y+1];
+                
+                let slopeDiff = Math.max(Math.abs(hBL-hBR), Math.abs(hTL-hTR), Math.abs(hBL-hTL));
+                let isPath = pathTiles.some(p => p.x === x && p.y === y);
+                
+                let color;
+                if (level === '0') {
+                    if (x < 5 || getTileCenterHeight(x, y, level) < 0) color = cSand; 
+                    else if (isPath) color = cPave;
+                    else color = (slopeDiff > 0.8 ? cSteep : cGrass);
+                } else if (level === '2') {
+                    const dist = Math.sqrt(Math.pow(x-20, 2) + Math.pow(y-20, 2));
+                    if (dist > 4.5 || getTileCenterHeight(x, y, level) < 0) color = cSand;
+                    else color = cGrass;
+                }
+
+                let vx = x - 0.5; 
+                let vy = y - 0.5;
+
+                verts.push(vx, hBL, vy,  vx, hTL, vy+1,  vx+1, hBR, vy);
+                colors.push(color.r, color.g, color.b, color.r, color.g, color.b, color.r, color.g, color.b);
+                
+                verts.push(vx+1, hBR, vy,  vx, hTL, vy+1,  vx+1, hTR, vy+1);
+                colors.push(color.r, color.g, color.b, color.r, color.g, color.b, color.r, color.g, color.b);
+            }
+        }
+        
+        terrainGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+        terrainGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        terrainGeo.computeVertexNormals();
+        
+        const terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide });
+        const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+        terrainMesh.name = `terrain_${level}`; // Identified for targeted removal later
+        
+        levelGroups[level].add(terrainMesh);
+        walkables[level].push(terrainMesh);
+    }
+    
+    buildTerrain('0');
+    buildTerrain('2');
+
+    // --- TERRAFORMING LOGIC ---
+    function rebuildTerrainMesh(level) {
+        const group = levelGroups[level];
+        const oldMesh = group.children.find(c => c.name === `terrain_${level}`);
+        if (oldMesh) {
+            group.remove(oldMesh);
+            walkables[level] = walkables[level].filter(m => m !== oldMesh);
+            oldMesh.geometry.dispose();
+            if (oldMesh.material) oldMesh.material.dispose();
+        }
+        buildTerrain(level);
+    }
+
+    function isTileProtected(x, y, level) {
+        if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return true; // Bounds
+        if (floorHeights[`${level},${x},${y}`] !== undefined) return true; // Buildings
+        if (level === '0' && x < 4) return true; // Original Deep water bounds
+        if (pathTiles.some(p => p.x === x && p.y === y)) return true; // Pavements
+        if (unwalkables[level].some(t => t.x === x && t.y === y)) return true; // Trees/Objects
+        return false;
+    }
+
+    function canModifyVertex(vx, vy, level) {
+        if (vx <= 0 || vx >= GRID_SIZE || vy <= 0 || vy >= GRID_SIZE) return false;
+        // Vertex is safe only if ALL 4 connected tiles are unprotected
+        if (isTileProtected(vx, vy, level)) return false;
+        if (isTileProtected(vx - 1, vy, level)) return false;
+        if (isTileProtected(vx, vy - 1, level)) return false;
+        if (isTileProtected(vx - 1, vy - 1, level)) return false;
+        return true;
+    }
+
+    function terraformTile(gridX, gridY, level, amount) {
+        if (level === '-1') { addLogMessage("You can't dig in the cellar."); return; }
+        
+        const corners = [
+            { vx: gridX, vy: gridY }, { vx: gridX + 1, vy: gridY },
+            { vx: gridX, vy: gridY + 1 }, { vx: gridX + 1, vy: gridY + 1 }
+        ];
+
+        const MIN_HEIGHT = level === '0' ? -0.8 : -0.5;
+        const MAX_HEIGHT = level === '0' ? 1.5 : 1.0;
+        
+        let canModifyAll = true;
+        corners.forEach(c => {
+            if (!canModifyVertex(c.vx, c.vy, level)) canModifyAll = false;
+            else {
+                const currentH = vHeights[level][c.vx][c.vy];
+                if (currentH + amount < MIN_HEIGHT || currentH + amount > MAX_HEIGHT) canModifyAll = false;
+            }
+        });
+
+        if (!canModifyAll) {
+            addLogMessage("The ground here cannot be safely modified.");
+            return;
+        }
+
+        corners.forEach(c => { vHeights[level][c.vx][c.vy] += amount; });
+
+        rebuildTerrainMesh(level);
+        addLogMessage(amount > 0 ? "You raised the earth." : "You dug a hole.");
+        
+        // Ensure player snaps to new height if they modify the tile they stand on
+        if (playerGridX === gridX && playerGridY === gridY) {
+            player.position.y = getWalkableHeight(playerGridX, playerGridY, level);
+        }
+    }
+
+
+    // --- WATER MESHES ---
+    let waterMeshes = [];
+    function buildWater() {
+        const waterMat = new THREE.MeshLambertMaterial({ color: 0x1e90ff, transparent: true, opacity: 0.75, flatShading: true });
+        
+        // Level 0 Water: Now covers the entire map beneath the terrain so dug holes fill with water!
+        const waterGeo0 = new THREE.PlaneGeometry(GRID_SIZE * TILE_SIZE, GRID_SIZE * TILE_SIZE, 16, 16);
+        const water0 = new THREE.Mesh(waterGeo0, waterMat);
+        water0.rotation.x = -Math.PI / 2;
+        water0.position.set((GRID_SIZE / 2) * TILE_SIZE - 0.5, -0.2, (GRID_SIZE / 2) * TILE_SIZE - 0.5);
+        water0.userData = { isWater: true, sourceLevel: '0' };
+        
+        levelGroups['0'].add(water0);
+        interactables.push(water0);
+        waterMeshes.push(water0);
+
+        // Level 2 Water
+        const waterGeo2 = new THREE.PlaneGeometry(GRID_SIZE * TILE_SIZE, GRID_SIZE * TILE_SIZE, 16, 16);
+        const water2 = new THREE.Mesh(waterGeo2, waterMat);
+        water2.rotation.x = -Math.PI / 2;
+        water2.position.set((GRID_SIZE / 2) * TILE_SIZE - 0.5, -0.2, (GRID_SIZE / 2) * TILE_SIZE - 0.5);
+        water2.userData = { isWater: true, sourceLevel: '2' };
+
+        levelGroups['2'].add(water2);
+        interactables.push(water2);
+        waterMeshes.push(water2);
+    }
+    buildWater();
+
+    // --- ARCHITECTURE & TOWN ---
+    const allWalls = { '-1': [], '0': [], '2': [] };
+
+    function buildFloorArea(x1, y1, x2, y2, level, color, group, explicitHeight = null) {
+        for(let x=x1; x<=x2; x++) {
+            for(let y=y1; y<=y2; y++) {
+                if (level !== '-1' && explicitHeight !== null) setFloorHeight(x, y, explicitHeight, level);
+                const actualH = explicitHeight !== null ? explicitHeight : LEVELS[level].h;
+
+                const geo = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
+                const mat = new THREE.MeshLambertMaterial({ color: color });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.position.set(x * TILE_SIZE, actualH + 0.015, y * TILE_SIZE); 
+                group.add(mesh);
+                walkables[level].push(mesh);
+            }
+        }
+    }
+
+    function buildWall(w, level, height = 1.6) {
+        let wallColor = 0x808080;
+        if (w.type === 'white') wallColor = 0xeae6df;
+        if (w.type === 'stone') wallColor = 0xcac7bd;
+        
+        let actualHeight = height;
+        let centerY = LEVELS[level].h + height/2;
+        
+        if (level === '0' || level === '2') {
+            const baseH = getWalkableHeight(w.x, w.y, level);
+            const foundationDepth = 4.0; 
+            actualHeight = height + foundationDepth;
+            centerY = baseH + height/2 - foundationDepth/2;
+        }
+
+        const thickness = 0.12;
+        const length = TILE_SIZE + thickness; 
+        const geo = new THREE.BoxGeometry(
+            (w.dir === 'N' || w.dir === 'S') ? length : thickness, actualHeight,
+            (w.dir === 'E' || w.dir === 'W') ? length : thickness
+        );
+        const mat = new THREE.MeshLambertMaterial({ color: wallColor, flatShading: true });
+        const mesh = new THREE.Mesh(geo, mat);
+
+        let posX = w.x * TILE_SIZE;
+        let posZ = w.y * TILE_SIZE;
+        if (w.dir === 'N') posZ -= TILE_SIZE/2;
+        if (w.dir === 'S') posZ += TILE_SIZE/2;
+        if (w.dir === 'E') posX += TILE_SIZE/2;
+        if (w.dir === 'W') posX -= TILE_SIZE/2;
+
+        mesh.position.set(posX, centerY, posZ);
+        levelGroups[level].add(mesh);
+    }
+
+    function createDoor(x, y, dir, level) {
+        const doorGroup = new THREE.Group();
+        
+        const height = 1.4;
+        const thickness = 0.08;
+        const length = TILE_SIZE;
+        const mat = new THREE.MeshLambertMaterial({ color: 0x6b4c3a }); 
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(length, height, thickness), mat);
+        
+        mesh.position.set(length/2, height/2, 0); 
+        doorGroup.add(mesh);
+
+        let posX = x * TILE_SIZE;
+        let posZ = y * TILE_SIZE;
+        let baseY = getWalkableHeight(x, y, level); 
+        
+        if (dir === 'N') { posX -= TILE_SIZE/2; posZ -= TILE_SIZE/2; }
+        if (dir === 'S') { posX -= TILE_SIZE/2; posZ += TILE_SIZE/2; }
+        if (dir === 'E') { posX += TILE_SIZE/2; posZ -= TILE_SIZE/2; doorGroup.rotation.y = -Math.PI/2; }
+        if (dir === 'W') { posX -= TILE_SIZE/2; posZ -= TILE_SIZE/2; doorGroup.rotation.y = -Math.PI/2; }
+
+        doorGroup.position.set(posX, baseY, posZ);
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(TILE_SIZE, height, TILE_SIZE*0.5), new THREE.MeshBasicMaterial({visible:false}));
+        hitBox.position.set(length/2, height/2, 0);
+        doorGroup.add(hitBox);
+
+        levelGroups[level].add(doorGroup);
+
+        const doorObj = { x, y, dir, isOpen: false, group: doorGroup, level, baseRot: doorGroup.rotation.y };
+        doors.push(doorObj);
+
+        hitBox.userData = { isDoor: true, doorObj: doorObj, sourceLevel: level, interactX: x, interactY: y };
+        interactables.push(hitBox);
+    }
+
+    function createRoof(x1, y1, x2, y2, level, houseName, colorHex = 0xb53c3c, yOffset = 1.25, height = 2.5) {
+        const width = (x2 - x1 + 1) * TILE_SIZE;
+        const depth = (y2 - y1 + 1) * TILE_SIZE;
+        
+        const geo = new THREE.ConeGeometry(Math.max(width, depth) * 0.75, height, 4);
+        const mat = new THREE.MeshLambertMaterial({ color: colorHex, flatShading: true }); 
+        const mesh = new THREE.Mesh(geo, mat);
+
+        const centerX = ((x1 + x2) / 2) * TILE_SIZE;
+        const centerZ = ((y1 + y2) / 2) * TILE_SIZE;
+        const baseY = getWalkableHeight(x1, y1, level) + 1.6; 
+
+        mesh.position.set(centerX, baseY + yOffset, centerZ);
+        mesh.rotation.y = Math.PI / 4; 
+        
+        levelGroups[level].add(mesh);
+
+        roofZones.push({
+            minX: x1, maxX: x2, minY: y1, maxY: y2,
+            mesh: mesh, level: level
+        });
+    }
+
+    function buildHouse(name, x1, y1, x2, y2, doorsDef, innerWalls, level='0') {
+        buildFloorArea(x1, y1, x2, y2, level, 0x887766, levelGroups[level], 0.15); 
+        
+        for(let x = x1; x <= x2; x++) {
+            if (!doorsDef.some(d => d.x === x && d.y === y1 && d.dir === 'N')) allWalls[level].push({x: x, y: y1, dir: 'N', type:'white'});
+            if (!doorsDef.some(d => d.x === x && d.y === y2 && d.dir === 'S')) allWalls[level].push({x: x, y: y2, dir: 'S', type:'white'});
+        }
+        for(let y = y1; y <= y2; y++) {
+            if (!doorsDef.some(d => d.x === x1 && d.y === y && d.dir === 'W')) allWalls[level].push({x: x1, y: y, dir: 'W', type:'white'});
+            if (!doorsDef.some(d => d.x === x2 && d.y === y && d.dir === 'E')) allWalls[level].push({x: x2, y: y, dir: 'E', type:'white'});
+        }
+
+        innerWalls.forEach(w => allWalls[level].push({...w, type:'white'}));
+        doorsDef.forEach(d => createDoor(d.x, d.y, d.dir, level));
+        createRoof(x1, y1, x2, y2, level, name);
+    }
+
+    function buildTemple(name, x1, y1, x2, y2, level) {
+        for(let x=x1; x<=x2; x++){
+            for(let y=y1; y<=y2; y++){
+                let isDark = (x+y)%2 === 0;
+                buildFloorArea(x, y, x, y, level, isDark ? 0xdddddd : 0x555566, levelGroups[level], 0.15);
+            }
+        }
+        for(let x = x1; x <= x2; x++) {
+            if (!(x >= 14 && x <= 16 && y1 === 18)) allWalls[level].push({x: x, y: y1, dir: 'N', type:'stone'});
+            allWalls[level].push({x: x, y: y2, dir: 'S', type:'stone'});
+        }
+        for(let y = y1; y <= y2; y++) {
+            allWalls[level].push({x: x1, y: y, dir: 'W', type:'stone'});
+            allWalls[level].push({x: x2, y: y, dir: 'E', type:'stone'});
+        }
+
+        const colMat = new THREE.MeshLambertMaterial({color: 0xffffff});
+        const colGeo = new THREE.CylinderGeometry(0.3, 0.3, 3.2, 8);
+        for(let cy=20; cy<=24; cy+=2) {
+            for(let cx of [12, 18]) {
+                const col = new THREE.Mesh(colGeo, colMat);
+                let pos = getGridWorldPos(cx, cy, level);
+                col.position.set(pos.x, pos.y + 1.6, pos.z);
+                levelGroups[level].add(col);
+                unwalkables[level].push({x: cx, y: cy});
+            }
+        }
+
+        const archMat = new THREE.MeshLambertMaterial({color: 0xcac7bd});
+        const baseY = getWalkableHeight(15, 18, level);
+        
+        const archL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 2.5, 0.4), archMat);
+        archL.position.set(13.5 * TILE_SIZE, baseY + 1.25, 17.5 * TILE_SIZE);
+        const archR = new THREE.Mesh(new THREE.BoxGeometry(0.4, 2.5, 0.4), archMat);
+        archR.position.set(16.5 * TILE_SIZE, baseY + 1.25, 17.5 * TILE_SIZE);
+        const archTop = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.6, 0.4), archMat);
+        archTop.position.set(15 * TILE_SIZE, baseY + 2.8, 17.5 * TILE_SIZE);
+        
+        levelGroups[level].add(archL); levelGroups[level].add(archR); levelGroups[level].add(archTop);
+        createRoof(x1, y1, x2, y2, level, name, 0x008080, 2.0, 4.0); 
+    }
+
+    // --- Build Town Houses ---
+    buildHouse('Bob', 8, 6, 13, 10, 
+        [{x: 11, y: 10, dir: 'S'}, {x: 9, y: 7, dir: 'E'}], 
+        [{x: 9, y: 6, dir: 'E'}, {x: 8, y: 7, dir: 'S'}, {x: 9, y: 7, dir: 'S'}]
+    );
+    buildHouse('Alice', 24, 6, 29, 10, 
+        [{x: 27, y: 10, dir: 'S'}, {x: 27, y: 7, dir: 'E'}], 
+        [{x: 27, y: 6, dir: 'E'}, {x: 28, y: 7, dir: 'S'}, {x: 29, y: 7, dir: 'S'}]
+    );
+    buildHouse('Charlie', 24, 16, 29, 20, 
+        [{x: 27, y: 16, dir: 'N'}, {x: 27, y: 19, dir: 'E'}], 
+        [{x: 27, y: 20, dir: 'E'}, {x: 28, y: 18, dir: 'S'}, {x: 29, y: 18, dir: 'S'}]
+    );
+    buildTemple('Temple', 10, 18, 20, 26, '0');
+
+    buildFloorArea(9, 7, 11, 9, '-1', 0x4a4a4a, levelGroups['-1']);
+    for(let x=9; x<=11; x++) { allWalls['-1'].push({x: x, y: 7, dir: 'N'}); allWalls['-1'].push({x: x, y: 9, dir: 'S'}); }
+    for(let y=7; y<=9; y++) { allWalls['-1'].push({x: 9, y: y, dir: 'W'}); allWalls['-1'].push({x: 11, y: y, dir: 'E'}); }
+
+    Object.keys(allWalls).forEach(lvl => { allWalls[lvl].forEach(w => buildWall(w, lvl)); });
+
+    function buildTrapdoorAndLadder() {
+        const groundHoleGeo = new THREE.BoxGeometry(TILE_SIZE*0.8, 0.05, TILE_SIZE*0.8);
+        const groundHoleMat = new THREE.MeshBasicMaterial({ color: 0x000000 }); 
+        const hole = new THREE.Mesh(groundHoleGeo, groundHoleMat);
+        const holePos = getGridWorldPos(10, 8, '0');
+        hole.position.set(holePos.x, holePos.y + 0.03, holePos.z); 
+        hole.userData = { isTransition: true, sourceLevel: '0', targetLevel: '-1', interactX: 10, interactY: 8 };
+        interactables.push(hole);
+        levelGroups['0'].add(hole);
+
+        const ladderGroup = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: 0x6e5c47 });
+        const pole1 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2), mat);
+        pole1.position.set(-0.3, 1, -0.4);
+        const pole2 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2), mat);
+        pole2.position.set(0.3, 1, -0.4);
+        ladderGroup.add(pole1); ladderGroup.add(pole2);
+        
+        for(let i=0; i<4; i++) {
+            const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.6), mat);
+            rung.rotation.z = Math.PI/2;
+            rung.position.set(0, 0.4 + (i*0.4), -0.4);
+            ladderGroup.add(rung);
+        }
+
+        const lHitBox = new THREE.Mesh(new THREE.BoxGeometry(TILE_SIZE, 2, TILE_SIZE), new THREE.MeshBasicMaterial({visible: false}));
+        lHitBox.position.y = 1;
+        lHitBox.userData = { isTransition: true, sourceLevel: '-1', targetLevel: '0', interactX: 10, interactY: 8 };
+        ladderGroup.add(lHitBox);
+        interactables.push(lHitBox);
+
+        const lPos = getGridWorldPos(10, 8, '-1');
+        ladderGroup.position.set(lPos.x, lPos.y, lPos.z);
+        levelGroups['-1'].add(ladderGroup);
+    }
+    buildTrapdoorAndLadder();
+
+    // Trees
+    function createTree(x, z, level) {
+        const treeGroup = new THREE.Group();
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.8, 5), new THREE.MeshLambertMaterial({ color: 0x5c4033, flatShading: true }));
+        trunk.position.y = 0.4;
+        treeGroup.add(trunk);
+        const leaves = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.4, 5), new THREE.MeshLambertMaterial({ color: 0x228b22, flatShading: true }));
+        leaves.position.y = 1.3;
+        treeGroup.add(leaves);
+        
+        const pos = getGridWorldPos(x, z, level);
+        treeGroup.position.set(pos.x, pos.y, pos.z);
+        treeGroup.rotation.y = Math.random() * Math.PI; 
+        levelGroups[level].add(treeGroup);
+    }
+    
+    function createPalmTree(x, z, level) {
+        const treeGroup = new THREE.Group();
+        const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8b5a2b, flatShading: true });
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 1.4, 5), trunkMat);
+        trunk.position.y = 0.7;
+        trunk.rotation.z = 0.15; 
+        treeGroup.add(trunk);
+        
+        const leafMat = new THREE.MeshLambertMaterial({ color: 0x32cd32, flatShading: true, side: THREE.DoubleSide });
+        for(let i=0; i<5; i++) {
+            const leaf = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 1.5), leafMat);
+            leaf.position.y = 1.4;
+            leaf.position.x = 0.1; 
+            leaf.rotation.x = -Math.PI / 3; 
+            leaf.rotation.y = (i / 5) * Math.PI * 2;
+            leaf.translateZ(0.4);
+            treeGroup.add(leaf);
+        }
+        
+        const pos = getGridWorldPos(x, z, level);
+        treeGroup.position.set(pos.x, pos.y, pos.z);
+        treeGroup.rotation.y = Math.random() * Math.PI; 
+        levelGroups[level].add(treeGroup);
+        unwalkables[level].push({x, y: z});
+    }
+
+    const treeCoords = [
+        {x: 6, y: 6}, {x: 15, y: 6}, {x: 20, y: 6}, {x: 32, y: 8}, {x: 32, y: 12}, 
+        {x: 32, y: 18}, {x: 32, y: 22}, {x: 24, y: 24}, {x: 16, y: 30}, {x: 10, y: 30}, {x: 6, y: 26}
+    ];
+    treeCoords.forEach(t => { unwalkables['0'].push(t); createTree(t.x, t.y, '0'); });
+
+    createPalmTree(20, 20, '2'); createPalmTree(18, 21, '2'); createPalmTree(21, 18, '2');
+
+    function createRowboat(x, y, level, targetLevel, spawnX, spawnY) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: 0x5c4033 });
+        const hull = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 0.6), mat);
+        hull.position.y = 0.15;
+        group.add(hull);
+        const inner = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.31, 0.4), new THREE.MeshBasicMaterial({ color: 0x3e2723 }));
+        inner.position.y = 0.16;
+        group.add(inner);
+        
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 1.4), new THREE.MeshBasicMaterial({visible: false}));
+        hitBox.position.y = 0.5;
+        hitBox.userData = { isTransition: true, sourceLevel: level, useFade: true, targetLevel: targetLevel, spawnX: spawnX, spawnY: spawnY, interactX: x, interactY: y, stopAdjacent: true };
+        group.add(hitBox);
+        interactables.push(hitBox);
+        
+        const pos = getGridWorldPos(x, y, level);
+        group.position.set(pos.x, pos.y - 0.1, pos.z);
+        if (level === '0') group.rotation.y = Math.PI / 2;
+        levelGroups[level].add(group);
+        unwalkables[level].push({x, y});
+    }
+
+    createRowboat(5, 20, '0', '2', 14, 20); 
+    createRowboat(15, 20, '2', '0', 6, 20); 
+
+    // --- 4. NPC & DIALOGUE SYSTEM ---
+    const DIALOGUES = {
+        'bob': [
+            { speaker: 'Bob', text: 'Good day to you! Do you like my house?' },
+            { speaker: 'Player', text: 'It looks very cozy.' },
+            { speaker: 'Bob', text: 'I have a cellar hidden beneath it... quite spooky.'}
+        ],
+        'alice': [
+            { speaker: 'Alice', text: 'Welcome to our white-clay town! I just love the red roofs.' },
+            { speaker: 'Player', text: 'It looks very peaceful.' },
+            { speaker: 'Alice', text: 'Walk along the pavements to keep your shoes clean.'}
+        ],
+        'charlie': [
+            { speaker: 'Charlie', text: 'I heard there is a crab infested island out west.' },
+            { speaker: 'Player', text: 'I will have to check it out!' }
+        ],
+        'sage': [
+            { speaker: 'Sage', text: 'Blessings of the sea upon you, traveler.' },
+            { speaker: 'Player', text: 'What is this place?' },
+            { speaker: 'Sage', text: 'This sanctuary has stood since the first tides. We honor the ocean here.' }
+        ],
+        'crab': [
+            { speaker: 'Crab', text: '*Snip snap!*' }
+        ]
+    };
+    
+    let activeDialogue = null;
+    let dialogueStep = 0;
+    const npcs = [];
+
+    function spawnNPC(id, name, x, y, level, type) {
+        const npcGroup = new THREE.Group();
+        
+        if (type === 'human') {
+            const colors = { 'bob': 0x44aa44, 'alice': 0xaa44aa, 'charlie': 0x4444aa, 'sage': 0xeeeeee };
+            const matBody = new THREE.MeshLambertMaterial({ color: colors[id], flatShading: true }); 
+            const matHead = new THREE.MeshLambertMaterial({ color: 0xffccaa, flatShading: true }); 
+            npcGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 0.1, 8), matBody).translateY(0.05));
+            npcGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.25, 0.5, 8), matBody).translateY(0.35));
+            npcGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), matHead).translateY(0.75));
+        } else if (type === 'crab') {
+            const matShell = new THREE.MeshLambertMaterial({ color: 0xcc3333, flatShading: true });
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.3), matShell);
+            body.position.y = 0.1;
+            npcGroup.add(body);
+        }
+        
+        const pos = getGridWorldPos(x, y, level);
+        npcGroup.position.set(pos.x, pos.y, pos.z);
+        
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.5, 0.8), new THREE.MeshBasicMaterial({visible: false}));
+        hitBox.position.y = type === 'crab' ? 0.2 : 0.75;
+        hitBox.userData = { isNPC: true, sourceLevel: level, npcId: id, interactX: x, interactY: y };
+        npcGroup.add(hitBox);
+        
+        levelGroups[level].add(npcGroup);
+        interactables.push(hitBox);
+        
+        npcs.push({
+            id: id, type: type, mesh: npcGroup, hitbox: hitBox,
+            gridX: x, gridY: y, homeX: x, homeY: y, level: level,
+            pathQueue: [], isMoving: false,
+            startPos: new THREE.Vector3(), targetPos: new THREE.Vector3(),
+            tickCounter: Math.floor(Math.random() * 5)
+        });
+    }
+
+    spawnNPC('bob', 'Bob', 11, 8, '0', 'human'); 
+    spawnNPC('alice', 'Alice', 27, 8, '0', 'human'); 
+    spawnNPC('charlie', 'Charlie', 27, 18, '0', 'human'); 
+    spawnNPC('sage', 'Sage', 15, 22, '0', 'human'); 
+    spawnNPC('crab1', 'Crab', 4, 15, '0', 'crab');
+    spawnNPC('crab2', 'Crab', 18, 20, '2', 'crab');
+
+    function startDialogue(npcId) {
+        let genericId = npcId.replace(/[0-9]/g, ''); 
+        activeDialogue = DIALOGUES[genericId];
+        dialogueStep = 0;
+        document.getElementById('dialogue-box').style.display = 'flex';
+        renderDialogue();
+    }
+
+    function renderDialogue() {
+        if (!activeDialogue || dialogueStep >= activeDialogue.length) {
+            document.getElementById('dialogue-box').style.display = 'none';
+            activeDialogue = null;
+            return;
+        }
+        const line = activeDialogue[dialogueStep];
+        document.getElementById('d-speaker').innerText = line.speaker;
+        document.getElementById('d-text').innerText = line.text;
+    }
+
+    window.continueDialogue = function() {
+        if (activeDialogue) { dialogueStep++; renderDialogue(); }
+    };
+    window.addEventListener('keydown', (e) => { if (e.code === 'Space' && activeDialogue) continueDialogue(); });
+
+    // --- 5. ITEM & INVENTORY SYSTEM ---
+    function addLogMessage(msg) {
+        const chatBox = document.getElementById('chat-box');
+        const div = document.createElement('div');
+        div.className = 'log-msg';
+        div.innerText = msg;
+        chatBox.appendChild(div);
+        chatBox.scrollTop = chatBox.scrollHeight;
+        if (chatBox.children.length > 8) chatBox.removeChild(chatBox.firstChild);
+    }
+
+
+
+    // --- 5B. DEV / LLM PANEL ---
+    const worldFlags = {};
+    const gmMarkers = [];
+    const gmObjects = [];
+    const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
+
+    function getRecentLogLines() {
+        return Array.from(document.querySelectorAll('#chat-box .log-msg')).map(el => el.innerText).slice(-8);
+    }
+
+    function getNearbyNPCs(radius = 6) {
+        return npcs
+            .filter(npc => npc.level === currentLevel && Math.max(Math.abs(npc.gridX - playerGridX), Math.abs(npc.gridY - playerGridY)) <= radius)
+            .map(npc => ({ id: npc.id, type: npc.type, x: npc.gridX, y: npc.gridY }));
+    }
+
+    function getNearbyItems(radius = 6) {
+        return groundItems
+            .filter(item => item.hitBox.userData.sourceLevel === currentLevel)
+            .map(item => item.hitBox.userData)
+            .filter(data => Math.max(Math.abs(data.interactX - playerGridX), Math.abs(data.interactY - playerGridY)) <= radius)
+            .map(data => ({ type: data.type, x: data.interactX, y: data.interactY }));
+    }
+
+    function getNearbyMarkers(radius = 8) {
+        return gmMarkers
+            .filter(marker => marker.level === currentLevel)
+            .filter(marker => Math.max(Math.abs(marker.x - playerGridX), Math.abs(marker.y - playerGridY)) <= radius)
+            .map(marker => ({
+                id: marker.id,
+                name: marker.name,
+                x: marker.x,
+                y: marker.y,
+                note: marker.note
+            }));
+    }
+
+    function getNearbyGMObjects(radius = 8) {
+        return gmObjects
+            .filter(obj => obj.level === currentLevel)
+            .filter(obj => Math.max(Math.abs(obj.x - playerGridX), Math.abs(obj.y - playerGridY)) <= radius)
+            .map(obj => ({
+                id: obj.id,
+                name: obj.name,
+                x: obj.x,
+                y: obj.y,
+                shape: obj.shape,
+                note: obj.note,
+                used: !!obj.used
+            }));
+    }
+
+    function hasSavedGMWorld() {
+        try { return !!localStorage.getItem(GM_SAVE_KEY); }
+        catch (err) { return false; }
+    }
+
+    function buildGMPayload() {
+        return {
+            engine: 'OSRS-LLM',
+            protocol: 'gm_payload_v0',
+            player: {
+                level: currentLevel,
+                tile: { x: playerGridX, y: playerGridY },
+                inventory: inventory.filter(Boolean),
+                activeTool: activeTool
+            },
+            playerAction: {
+                raw: (document.getElementById('player-action')?.value || '').trim(),
+                note: 'This is the player's improvised action or question. Resolve it as GM, using nearby context and flags.'
+            },
+            nearby: {
+                npcs: getNearbyNPCs(),
+                items: getNearbyItems(),
+                markers: getNearbyMarkers(),
+                objects: getNearbyGMObjects()
+            },
+            flags: worldFlags,
+            gmSave: {
+                hasSavedWorld: hasSavedGMWorld(),
+                markerCount: gmMarkers.length,
+                objectCount: gmObjects.length
+            },
+            recentLog: getRecentLogLines(),
+            request: 'Act as GM. Resolve playerAction.raw and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, and custom objects.'
+        };
+    }
+
+    function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        const temp = document.createElement('textarea');
+        temp.value = text;
+        temp.style.position = 'fixed';
+        temp.style.opacity = '0';
+        document.body.appendChild(temp);
+        temp.focus();
+        temp.select();
+        document.execCommand('copy');
+        temp.remove();
+        return Promise.resolve();
+    }
+
+    function copyGMPayload() {
+        const text = JSON.stringify(buildGMPayload(), null, 2);
+        document.getElementById('llm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('GM payload copied.'))
+            .catch(() => addLogMessage('Payload created in the panel. Copy it manually.'));
+    }
+
+    function isValidTile(x, y, level) {
+        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && LEVELS[level];
+    }
+
+    function giveInventoryItem(type) {
+        if (!ITEM_DEFS[type]) { addLogMessage(`Unknown item: ${type}`); return false; }
+        const emptySlot = inventory.findIndex(i => i === null);
+        if (emptySlot === -1) { addLogMessage('Your inventory is full!'); return false; }
+        inventory[emptySlot] = type;
+        renderInventory();
+        addLogMessage(`You receive ${ITEM_DEFS[type].name}.`);
+        return true;
+    }
+
+    function normalizeMarkerColor(value) {
+        if (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)) return value;
+        if (typeof value === 'number' && Number.isFinite(value)) return `#${value.toString(16).padStart(6, '0').slice(-6)}`;
+        return '#ffd34d';
+    }
+
+    function parseMarkerColor(value) {
+        try { return new THREE.Color(normalizeMarkerColor(value)); }
+        catch (err) { return new THREE.Color(0xffd34d); }
+    }
+
+    function disposeObject3D(obj) {
+        obj.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+                if (Array.isArray(child.material)) child.material.forEach(mat => mat.dispose());
+                else child.material.dispose();
+            }
+        });
+    }
+
+    function createGMMarker(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `marker_${Date.now()}`;
+        if (gmMarkers.some(marker => marker.id === id)) { if (!cmd.silent) addLogMessage(`Marker already exists: ${id}`); return false; }
+
+        const level = (cmd.level ?? currentLevel).toString();
+        const x = Math.round(Number(cmd.x));
+        const y = Math.round(Number(cmd.y));
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_marker command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Marker';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const colorHex = normalizeMarkerColor(cmd.color);
+        const color = parseMarkerColor(colorHex);
+        const pos = getGridWorldPos(x, y, level);
+
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
+        const base = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 0.65), mat);
+        base.position.y = 0.06;
+        group.add(base);
+
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.7, 6), mat);
+        pillar.position.y = 0.47;
+        group.add(pillar);
+
+        const cap = new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 0), mat);
+        cap.position.y = 0.95;
+        group.add(cap);
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.7;
+        hitBox.userData = { isGMMarker: true, sourceLevel: level, markerId: id, interactX: x, interactY: y };
+        group.add(hitBox);
+
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { markerId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+        gmMarkers.push({ id, name, note, x, y, level, color: colorHex, group, hitBox });
+        if (!cmd.silent) addLogMessage(`Marker placed: ${name}.`);
+        return true;
+    }
+
+    function removeGMMarker(id, silent = false) {
+        const index = gmMarkers.findIndex(marker => marker.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No marker found: ${id}`); return false; }
+        const marker = gmMarkers[index];
+        const interIndex = interactables.indexOf(marker.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[marker.level].remove(marker.group);
+        disposeObject3D(marker.group);
+        gmMarkers.splice(index, 1);
+        if (!silent) addLogMessage(`Marker removed: ${marker.name}.`);
+        return true;
+    }
+
+    function clearGMMarkers() {
+        while (gmMarkers.length > 0) removeGMMarker(gmMarkers[0].id, true);
+    }
+
+    function examineGMMarker(markerId) {
+        const marker = gmMarkers.find(m => m.id === markerId);
+        if (!marker) return;
+        addLogMessage(marker.name);
+        if (marker.note) addLogMessage(marker.note);
+    }
+
+    function buildGMObjectVisual(shape, color) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
+        const darkMat = new THREE.MeshLambertMaterial({ color: 0x2a231b, flatShading: true });
+        const safeShape = ['crate', 'stone', 'orb', 'scroll', 'sign', 'chest'].includes(shape) ? shape : 'crate';
+
+        if (safeShape === 'stone') {
+            const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.38, 0), mat);
+            stone.position.y = 0.38;
+            group.add(stone);
+        } else if (safeShape === 'orb') {
+            const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, 0.35, 6), darkMat);
+            stand.position.y = 0.18;
+            const orb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), mat);
+            orb.position.y = 0.58;
+            group.add(stand); group.add(orb);
+        } else if (safeShape === 'scroll') {
+            const scroll = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.35), mat);
+            scroll.position.y = 0.16;
+            const rollA = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.58, 6), darkMat);
+            rollA.rotation.z = Math.PI / 2; rollA.position.set(0, 0.17, -0.2);
+            const rollB = rollA.clone(); rollB.position.z = 0.2;
+            group.add(scroll); group.add(rollA); group.add(rollB);
+        } else if (safeShape === 'sign') {
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.75, 0.08), darkMat);
+            post.position.y = 0.38;
+            const board = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.32, 0.08), mat);
+            board.position.y = 0.78;
+            group.add(post); group.add(board);
+        } else if (safeShape === 'chest') {
+            const base = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.35, 0.45), mat);
+            base.position.y = 0.2;
+            const lid = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.14, 0.48), darkMat);
+            lid.position.y = 0.47;
+            group.add(base); group.add(lid);
+        } else {
+            const crate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), mat);
+            crate.position.y = 0.28;
+            group.add(crate);
+        }
+
+        return { group, shape: safeShape };
+    }
+
+    function createGMObject(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `object_${Date.now()}`;
+        if (gmObjects.some(obj => obj.id === id)) { if (!cmd.silent) addLogMessage(`Object already exists: ${id}`); return false; }
+
+        const level = (cmd.level ?? currentLevel).toString();
+        const x = Math.round(Number(cmd.x));
+        const y = Math.round(Number(cmd.y));
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_object command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Object';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const colorHex = normalizeMarkerColor(cmd.color);
+        const color = parseMarkerColor(colorHex);
+        const visual = buildGMObjectVisual(cmd.shape, color);
+        const group = visual.group;
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.2, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.6;
+        hitBox.userData = { isGMObject: true, sourceLevel: level, objectId: id, interactX: x, interactY: y };
+        group.add(hitBox);
+
+        const pos = getGridWorldPos(x, y, level);
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { objectId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+
+        const setFlag = cmd.setFlag && typeof cmd.setFlag === 'object' && typeof cmd.setFlag.key === 'string'
+            ? { key: cmd.setFlag.key, value: cmd.setFlag.value }
+            : (typeof cmd.setFlag === 'string' ? { key: cmd.setFlag, value: true } : null);
+        const giveItem = typeof cmd.giveItem === 'string' && ITEM_DEFS[cmd.giveItem] ? cmd.giveItem : null;
+
+        gmObjects.push({
+            id, name, note, x, y, level,
+            color: colorHex,
+            shape: visual.shape,
+            giveItem,
+            setFlag,
+            removeOnInteract: !!cmd.removeOnInteract,
+            used: !!cmd.used,
+            group,
+            hitBox
+        });
+
+        if (!cmd.silent) addLogMessage(`Object created: ${name}.`);
+        return true;
+    }
+
+    function removeGMObject(id, silent = false) {
+        const index = gmObjects.findIndex(obj => obj.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No object found: ${id}`); return false; }
+        const obj = gmObjects[index];
+        const interIndex = interactables.indexOf(obj.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[obj.level].remove(obj.group);
+        disposeObject3D(obj.group);
+        gmObjects.splice(index, 1);
+        if (!silent) addLogMessage(`Object removed: ${obj.name}.`);
+        return true;
+    }
+
+    function clearGMObjects() {
+        while (gmObjects.length > 0) removeGMObject(gmObjects[0].id, true);
+    }
+
+    function examineGMObject(objectId) {
+        const obj = gmObjects.find(o => o.id === objectId);
+        if (!obj) return;
+
+        addLogMessage(obj.name);
+        if (obj.note) addLogMessage(obj.note);
+
+        let changed = false;
+        if (!obj.used) {
+            if (obj.setFlag && obj.setFlag.key) {
+                worldFlags[obj.setFlag.key] = obj.setFlag.value;
+                addLogMessage(`Flag set: ${obj.setFlag.key}`);
+                changed = true;
+            }
+            if (obj.giveItem) {
+                changed = giveInventoryItem(obj.giveItem) || changed;
+            }
+            if (obj.setFlag || obj.giveItem) obj.used = true;
+            if (obj.removeOnInteract) {
+                removeGMObject(objectId, true);
+                changed = true;
+            }
+        } else if (obj.setFlag || obj.giveItem) {
+            addLogMessage('Nothing else happens.');
+        }
+
+        if (changed) saveGMWorld(true);
+    }
+
+    function buildGMWorldSave() {
+        return {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            flags: { ...worldFlags },
+            markers: gmMarkers.map(marker => ({
+                id: marker.id,
+                name: marker.name,
+                note: marker.note,
+                x: marker.x,
+                y: marker.y,
+                level: marker.level,
+                color: marker.color || '#ffd34d'
+            })),
+            objects: gmObjects.map(obj => ({
+                id: obj.id,
+                name: obj.name,
+                note: obj.note,
+                x: obj.x,
+                y: obj.y,
+                level: obj.level,
+                color: obj.color || '#ffd34d',
+                shape: obj.shape || 'crate',
+                giveItem: obj.giveItem || null,
+                setFlag: obj.setFlag || null,
+                removeOnInteract: !!obj.removeOnInteract,
+                used: !!obj.used
+            }))
+        };
+    }
+
+    function saveGMWorld(silent = false) {
+        try {
+            localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
+            return true;
+        } catch (err) {
+            if (!silent) addLogMessage('Could not save GM world in this browser.');
+            return false;
+        }
+    }
+
+    function loadGMWorld(silent = false) {
+        let raw;
+        try { raw = localStorage.getItem(GM_SAVE_KEY); }
+        catch (err) { if (!silent) addLogMessage('Could not read GM save.'); return false; }
+
+        if (!raw) { if (!silent) addLogMessage('No GM save found.'); return false; }
+
+        let save;
+        try { save = JSON.parse(raw); }
+        catch (err) { if (!silent) addLogMessage('GM save is corrupted.'); return false; }
+
+        clearGMMarkers();
+        clearGMObjects();
+        Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+        if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
+        if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
+        if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
+
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
+        return true;
+    }
+
+    function resetGMWorldSave() {
+        try { localStorage.removeItem(GM_SAVE_KEY); } catch (err) {}
+        clearGMMarkers();
+        clearGMObjects();
+        Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+        addLogMessage('GM save reset.');
+    }
+
+    function normalizeGMOp(op) {
+        return String(op)
+            .trim()
+            .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+            .replace(/[\s-]+/g, '_')
+            .toLowerCase();
+    }
+
+    function applyLLMCommands() {
+        const raw = document.getElementById('llm-io').value.trim();
+        if (!raw) { addLogMessage('Paste JSON commands first.'); return; }
+
+        let payload;
+        try { payload = JSON.parse(raw); }
+        catch (err) { addLogMessage('Invalid JSON.'); return; }
+
+        if (payload.narration) addLogMessage(payload.narration);
+        const commands = Array.isArray(payload) ? payload : payload.commands;
+        if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
+
+        let shouldSave = false;
+        commands.forEach(cmd => {
+            if (!cmd || typeof cmd.op !== 'string') return;
+            cmd = { ...cmd, op: normalizeGMOp(cmd.op) };
+
+            if (cmd.op === 'add_log') {
+                if (typeof cmd.text === 'string') addLogMessage(cmd.text);
+            }
+
+            else if (cmd.op === 'set_flag') {
+                if (typeof cmd.key === 'string') {
+                    worldFlags[cmd.key] = cmd.value;
+                    shouldSave = true;
+                    addLogMessage(`Flag set: ${cmd.key}`);
+                }
+            }
+
+            else if (cmd.op === 'give_item') {
+                giveInventoryItem(cmd.type);
+            }
+
+            else if (cmd.op === 'spawn_item') {
+                const level = (cmd.level ?? currentLevel).toString();
+                const x = Math.round(Number(cmd.x));
+                const y = Math.round(Number(cmd.y));
+                if (ITEM_DEFS[cmd.type] && isValidTile(x, y, level)) {
+                    spawnGroundItem(cmd.type, x, y, level);
+                    addLogMessage(`Something appears nearby: ${ITEM_DEFS[cmd.type].name}.`);
+                } else addLogMessage('Invalid spawn_item command.');
+            }
+
+            else if (cmd.op === 'move_player') {
+                const level = (cmd.level ?? currentLevel).toString();
+                const x = Math.round(Number(cmd.x));
+                const y = Math.round(Number(cmd.y));
+                if (isValidTile(x, y, level)) {
+                    executeLevelChange(level, x, y);
+                    addLogMessage('The world shifts around you.');
+                } else addLogMessage('Invalid move_player command.');
+            }
+
+            else if (cmd.op === 'create_marker') {
+                if (createGMMarker(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_marker') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMMarker(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_marker command.');
+            }
+
+            else if (cmd.op === 'create_object') {
+                if (createGMObject(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_object') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMObject(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_object command.');
+            }
+
+            else if (cmd.op === 'update_dialogue') {
+                if (typeof cmd.id === 'string' && Array.isArray(cmd.lines)) {
+                    DIALOGUES[cmd.id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
+                    addLogMessage(`Dialogue updated: ${cmd.id}`);
+                }
+            }
+
+            else addLogMessage(`Unsupported op: ${cmd.op}`);
+        });
+
+        if (shouldSave) saveGMWorld(true);
+    }
+
+    const devToggle = document.getElementById('dev-toggle');
+    const devPanel = document.getElementById('dev-panel');
+    devToggle.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        devPanel.style.display = (devPanel.style.display === 'none' || devPanel.style.display === '') ? 'flex' : 'none';
+        ctxMenu.style.display = 'none';
+    });
+    document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
+    document.getElementById('save-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); saveGMWorld(false); });
+    document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
+    document.getElementById('reset-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resetGMWorldSave(); });
+    window.setTimeout(() => loadGMWorld(true), 0);
+
+    const ITEM_DEFS = { 
+        'berries': { name: 'Berries', color: 0xff2a2a, cssClass: 'item-berries', type: 'food' },
+        'shell': { name: 'Mysterious Shell', color: 0xffccbb, cssClass: 'item-shell', type: 'misc' },
+        'rod': { name: 'Fishing Rod', color: 0x8b4513, cssClass: 'item-rod', type: 'tool' },
+        'fish': { name: 'Raw Fish', color: 0x87cefa, cssClass: 'item-fish', type: 'food' },
+        'shovel': { name: 'Shovel', color: 0xa0a0a0, cssClass: 'item-shovel', type: 'tool' }
+    };
+    
+    const MAX_INV = 28;
+    const inventory = new Array(MAX_INV).fill(null); 
+    let groundItems = []; 
+
+    const invToggle = document.getElementById('inv-toggle');
+    const invContainer = document.getElementById('inventory');
+    const ctxMenu = document.getElementById('context-menu');
+    const toolToggleBtn = document.getElementById('tool-toggle');
+    let activeTool = 'walk'; // walk | dig | raise
+
+    toolToggleBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        if (activeTool === 'walk') { activeTool = 'dig'; e.target.innerText = '⛏️ Mode: Dig'; }
+        else if (activeTool === 'dig') { activeTool = 'raise'; e.target.innerText = '⛰️ Mode: Raise'; }
+        else { activeTool = 'walk'; e.target.innerText = '👟 Mode: Walk'; }
+        ctxMenu.style.display = 'none';
+    });
+
+    invToggle.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        invContainer.style.display = (invContainer.style.display === 'none' || invContainer.style.display === '') ? 'grid' : 'none';
+        ctxMenu.style.display = 'none';
+    });
+
+    for(let i=0; i<MAX_INV; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'inv-slot';
+        slot.dataset.index = i;
+        slot.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); handleInventoryClick(e, i); });
+        slot.oncontextmenu = (e) => { e.preventDefault(); }; 
+        invContainer.appendChild(slot);
+    }
+
+    function renderInventory() {
+        const slots = document.querySelectorAll('.inv-slot');
+        slots.forEach((slot, i) => {
+            slot.innerHTML = ''; 
+            if(inventory[i]) {
+                const def = ITEM_DEFS[inventory[i]];
+                const icon = document.createElement('div');
+                icon.className = `item-icon ${def.cssClass}`;
+                slot.appendChild(icon);
+            }
+        });
+
+        // Toggle Tool UI visibility if player owns shovel
+        if (inventory.includes('shovel')) { toolToggleBtn.style.display = 'flex'; } 
+        else { toolToggleBtn.style.display = 'none'; activeTool = 'walk'; toolToggleBtn.innerText = '👟 Mode: Walk'; }
+    }
+
+    function spawnGroundItem(type, x, y, level) {
+        const def = ITEM_DEFS[type];
+        let mesh;
+        if (type === 'rod') {
+            mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8), new THREE.MeshLambertMaterial({color: def.color}));
+            mesh.rotation.z = Math.PI / 4; mesh.position.y = 0.4;
+        } else if (type === 'shovel') {
+            mesh = new THREE.Group();
+            const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8), new THREE.MeshLambertMaterial({color: 0x8b4513}));
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.02), new THREE.MeshLambertMaterial({color: def.color}));
+            head.position.y = -0.4;
+            mesh.add(handle); mesh.add(head);
+            mesh.rotation.z = Math.PI / 4; mesh.position.y = 0.4;
+        } else if (type === 'shell') {
+            mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15), new THREE.MeshLambertMaterial({color: def.color}));
+            mesh.position.y = 0.1;
+        } else {
+            mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshLambertMaterial({ color: def.color }));
+            mesh.position.y = 0.2;
+        }
+        
+        const pos = getGridWorldPos(x, y, level);
+        mesh.position.x = pos.x; mesh.position.z = pos.z; mesh.position.y += pos.y;
+        
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshBasicMaterial({visible: false}));
+        hitBox.position.copy(mesh.position);
+        hitBox.userData = { isItem: true, sourceLevel: level, type: type, interactX: x, interactY: y, linkedMesh: mesh };
+        
+        levelGroups[level].add(mesh); levelGroups[level].add(hitBox);
+        groundItems.push({ mesh: mesh, hitBox: hitBox });
+        interactables.push(hitBox);
+    }
+
+    function handleInventoryClick(event, index) {
+        if(!inventory[index]) return;
+        const itemType = inventory[index];
+        const def = ITEM_DEFS[itemType];
+
+        let menuX = event.clientX - 10;
+        let menuY = event.clientY - 10;
+        if (menuX + 130 > window.innerWidth) menuX = window.innerWidth - 130;
+
+        ctxMenu.innerHTML = ''; ctxMenu.style.display = 'flex';
+        ctxMenu.style.left = menuX + 'px'; ctxMenu.style.top = menuY + 'px';
+
+        const createBtn = (text, className, onClickLogic) => {
+            const btn = document.createElement('div');
+            btn.className = `ctx-item ${className}`;
+            btn.innerText = text;
+            btn.addEventListener('pointerdown', (e) => { e.stopPropagation(); onClickLogic(); ctxMenu.style.display = 'none'; });
+            return btn;
+        };
+
+        if (def.type === 'food') {
+            ctxMenu.appendChild(createBtn(`Eat ${def.name}`, '', () => { inventory[index] = null; addLogMessage(`You eat the ${def.name}.`); renderInventory(); }));
+        } else if (def.type === 'misc' && itemType === 'shell') {
+            ctxMenu.appendChild(createBtn(`Listen to Shell`, '', () => { addLogMessage(`"You hear the gentle roar of the ocean..."`); }));
+        } else if (def.type === 'tool') {
+            if (itemType === 'rod') ctxMenu.appendChild(createBtn(`Examine ${def.name}`, '', () => { addLogMessage(`A sturdy fishing rod. Used on water.`); }));
+            if (itemType === 'shovel') ctxMenu.appendChild(createBtn(`Examine ${def.name}`, '', () => { addLogMessage(`Use this to dig holes and raise the earth.`); }));
+        }
+        
+        ctxMenu.appendChild(createBtn(`Drop ${def.name}`, '', () => {
+            inventory[index] = null; spawnGroundItem(itemType, playerGridX, playerGridY, currentLevel);
+            addLogMessage(`You drop the ${def.name}.`); renderInventory();
+        }));
+        ctxMenu.appendChild(createBtn(`Cancel`, 'ctx-cancel', () => {}));
+    }
+
+    function executePickupItem(hitBox) {
+        const emptySlot = inventory.findIndex(i => i === null);
+        if (emptySlot === -1) { addLogMessage("Your inventory is full!"); return; }
+        const type = hitBox.userData.type;
+        const linkedMesh = hitBox.userData.linkedMesh;
+        inventory[emptySlot] = type;
+        addLogMessage(`You pick up ${ITEM_DEFS[type].name}.`);
+        renderInventory();
+
+        levelGroups[hitBox.userData.sourceLevel].remove(hitBox);
+        levelGroups[hitBox.userData.sourceLevel].remove(linkedMesh);
+        
+        const interIndex = interactables.indexOf(hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        const gIdx = groundItems.findIndex(g => g.hitBox === hitBox);
+        if (gIdx > -1) groundItems.splice(gIdx, 1);
+    }
+
+    spawnGroundItem('shovel', 13, 13, '0'); // Shovel near center
+    spawnGroundItem('shell', 4, 20, '0');
+    spawnGroundItem('rod', 7, 13, '0'); 
+    spawnGroundItem('berries', 15, 29, '0'); 
+
+    // --- 6. PLAYER, CAMERA, & TICK LOGIC ---
+    const playerGeo = new THREE.Group();
+    const pMat = new THREE.MeshLambertMaterial({ color: 0x9bdff2, flatShading: true });
+    playerGeo.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 0.1, 8), pMat).translateY(0.05));
+    playerGeo.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.25, 0.5, 8), pMat).translateY(0.35));
+    playerGeo.add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), pMat).translateY(0.75));
+    const player = playerGeo;
+    scene.add(player);
+
+    let playerGridX = 14;
+    let playerGridY = 14; 
+    let pathQueue = []; 
+    let pendingAction = null; 
+    
+    let currentTickTimer = 0;
+    let isMoving = false;
+    let startMovePos = new THREE.Vector3();
+    let targetMovePos = new THREE.Vector3();
+
+    const startPosWorld = getGridWorldPos(playerGridX, playerGridY, '0');
+    player.position.set(startPosWorld.x, startPosWorld.y, startPosWorld.z);
+
+    function updateLevelVisibility(lvl) {
+        document.getElementById('level-display').innerText = `Level: ${lvl} (${LEVELS[lvl].name})`;
+        scene.background = new THREE.Color(LEVELS[lvl].bg);
+        Object.keys(levelGroups).forEach(key => { levelGroups[key].visible = (key === lvl); });
+    }
+    updateLevelVisibility(currentLevel);
+
+    function triggerFadeTransition(callback) {
+        const overlay = document.getElementById('fade-overlay');
+        overlay.style.opacity = 1;
+        pathQueue = []; isMoving = false;
+        setTimeout(() => { callback(); overlay.style.opacity = 0; }, 800);
+    }
+
+    function executeLevelChange(newLevel, spawnX = null, spawnY = null) {
+        currentLevel = newLevel.toString();
+        if (spawnX !== null) playerGridX = spawnX;
+        if (spawnY !== null) playerGridY = spawnY;
+
+        updateLevelVisibility(currentLevel);
+        const startPos = getGridWorldPos(playerGridX, playerGridY, currentLevel);
+        player.position.set(startPos.x, startPos.y, startPos.z);
+        targetMovePos.copy(player.position); 
+        pathQueue = []; 
+        addLogMessage(newLevel === '2' ? "You arrive at the Island." : "You arrive at a new area.");
+    }
+
+    function executeFishing() {
+        addLogMessage("You cast your line into the water...");
+        player.rotation.y = Math.PI / 2; // Face water
+        setTimeout(() => {
+            if (Math.random() > 0.4) {
+                const emptySlot = inventory.findIndex(i => i === null);
+                if (emptySlot !== -1) { inventory[emptySlot] = 'fish'; renderInventory(); addLogMessage("You caught a Raw Fish!"); } 
+                else { addLogMessage("You caught a fish, but your inventory is full!"); }
+            } else { addLogMessage("The fish got away."); }
+        }, 2000);
+    }
+
+    let cameraYaw = Math.PI / 4; 
+    let cameraPitch = Math.PI / 3.5; 
+    let cameraDistance = 14;
+    const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+    window.addEventListener('keydown', (e) => { if(keys.hasOwnProperty(e.code)) keys[e.code] = true; });
+    window.addEventListener('keyup', (e) => { if(keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+
+    function updateCamera() {
+        if (keys.ArrowLeft) cameraYaw += 0.05;
+        if (keys.ArrowRight) cameraYaw -= 0.05;
+        if (keys.ArrowUp) cameraPitch = Math.max(0.1, cameraPitch - 0.05);
+        if (keys.ArrowDown) cameraPitch = Math.min(Math.PI / 2 - 0.1, cameraPitch + 0.05);
+
+        camera.position.set(
+            player.position.x + cameraDistance * Math.sin(cameraYaw) * Math.cos(cameraPitch),
+            player.position.y + cameraDistance * Math.sin(cameraPitch),
+            player.position.z + cameraDistance * Math.cos(cameraYaw) * Math.cos(cameraPitch)
+        );
+        camera.lookAt(player.position.x, player.position.y + 0.5, player.position.z);
+    }
+
+    // --- 7. PATHFINDING & LINE OF SIGHT ---
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const clickMarker = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.1, 0.8), new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: true }));
+    clickMarker.visible = false;
+    scene.add(clickMarker);
+
+    function hasWallBlocking(fromX, fromY, toX, toY, level) {
+        const activeWalls = allWalls[level] || [];
+        const closedDoors = doors.filter(d => d.level === level && !d.isOpen);
+        const combined = [...activeWalls, ...closedDoors];
+
+        if (toY < fromY) return combined.some(w => (w.x === fromX && w.y === fromY && w.dir === 'N') || (w.x === toX && w.y === toY && w.dir === 'S'));
+        if (toY > fromY) return combined.some(w => (w.x === fromX && w.y === fromY && w.dir === 'S') || (w.x === toX && w.y === toY && w.dir === 'N'));
+        if (toX < fromX) return combined.some(w => (w.x === fromX && w.y === fromY && w.dir === 'W') || (w.x === toX && w.y === toY && w.dir === 'E'));
+        if (toX > fromX) return combined.some(w => (w.x === fromX && w.y === fromY && w.dir === 'E') || (w.x === toX && w.y === toY && w.dir === 'W'));
+        return false;
+    }
+
+    function checkLineOfSight(cx, cy, nx, ny, level) {
+        if (cx === nx && cy === ny) return true;
+        let dx = nx - cx; let dy = ny - cy;
+        
+        if (Math.abs(dx) === 1 && Math.abs(dy) === 0) return !hasWallBlocking(cx, cy, nx, ny, level);
+        else if (Math.abs(dx) === 0 && Math.abs(dy) === 1) return !hasWallBlocking(cx, cy, nx, ny, level);
+        else if (Math.abs(dx) === 1 && Math.abs(dy) === 1) {
+            if (hasWallBlocking(cx, cy, cx + dx, cy, level) || hasWallBlocking(cx, cy, cx, cy + dy, level)) return false;
+            if (hasWallBlocking(nx, ny, cx + dx, cy, level) || hasWallBlocking(nx, ny, cx, cy + dy, level)) return false;
+            return true;
+        }
+        return false;
+    }
+
+    function canMove(cx, cy, nx, ny, level) {
+        if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
+        if (level === '-1' && (nx < 9 || nx > 11 || ny < 7 || ny > 9)) return false;
+        if (unwalkables[level].some(t => t.x === nx && t.y === ny)) return false;
+
+        if (level !== '-1') {
+            const h1 = getWalkableHeight(cx, cy, level);
+            const h2 = getWalkableHeight(nx, ny, level);
+            if (Math.abs(h1 - h2) > 0.9) return false; 
+        }
+
+        let dx = nx - cx; let dy = ny - cy;
+        if (Math.abs(dx) === 1 && Math.abs(dy) === 1) return checkLineOfSight(cx, cy, nx, ny, level);
+        else return !hasWallBlocking(cx, cy, nx, ny, level);
+    }
+
+    function findPath(startX, startY, endX, endY, level, stopAdjacent = false) {
+        if (endX < 0 || endX >= GRID_SIZE || endY < 0 || endY >= GRID_SIZE) return [];
+        if (level === '-1' && (endX < 9 || endX > 11 || endY < 7 || endY > 9)) return [];
+        if (!stopAdjacent && unwalkables[level].some(t => t.x === endX && t.y === endY)) return [];
+
+        const startDist = Math.max(Math.abs(startX - endX), Math.abs(startY - endY));
+        if (stopAdjacent && startDist <= 1 && checkLineOfSight(startX, startY, endX, endY, level)) return [];
+        if (!stopAdjacent && startDist === 0) return [];
+
+        const openSet = [{ x: startX, y: startY, g: 0, h: 0, f: 0, parent: null }];
+        const closedSet = [];
+
+        while (openSet.length > 0) {
+            openSet.sort((a, b) => a.f - b.f);
+            const current = openSet.shift();
+
+            const dist = Math.max(Math.abs(current.x - endX), Math.abs(current.y - endY));
+            let isWin = false;
+            
+            if (stopAdjacent) { if (dist <= 1 && checkLineOfSight(current.x, current.y, endX, endY, level)) isWin = true; } 
+            else { if (dist === 0) isWin = true; }
+
+            if (isWin) {
+                const path = []; let curr = current;
+                while (curr.parent) { path.push({ x: curr.x, y: curr.y }); curr = curr.parent; }
+                return path.reverse();
+            }
+
+            closedSet.push(current);
+            
+            const neighbors = [
+                { x: current.x, y: current.y - 1 }, { x: current.x, y: current.y + 1 },
+                { x: current.x - 1, y: current.y }, { x: current.x + 1, y: current.y },
+                { x: current.x - 1, y: current.y - 1 }, { x: current.x + 1, y: current.y - 1 },
+                { x: current.x - 1, y: current.y + 1 }, { x: current.x + 1, y: current.y + 1 }
+            ];
+
+            for (let n of neighbors) {
+                if (closedSet.some(c => c.x === n.x && c.y === n.y)) continue;
+                if (!canMove(current.x, current.y, n.x, n.y, level)) continue;
+
+                const gScore = current.g + 1; 
+                const hScore = Math.max(Math.abs(n.x - endX), Math.abs(n.y - endY)); 
+
+                const existingNode = openSet.find(o => o.x === n.x && o.y === n.y);
+                if (!existingNode) {
+                    openSet.push({ x: n.x, y: n.y, g: gScore, h: 0, f: gScore + hScore, parent: current });
+                } else if (gScore < existingNode.g) {
+                    existingNode.g = gScore; existingNode.f = gScore + hScore; existingNode.parent = current;
+                }
+            }
+        }
+        return []; 
+    }
+
+    window.addEventListener('pointerdown', (event) => {
+        ctxMenu.style.display = 'none';
+
+        if (activeDialogue && !event.target.closest('#dialogue-box')) {
+            document.getElementById('dialogue-box').style.display = 'none';
+            activeDialogue = null;
+        }
+
+        if (event.target.closest('#ui-layer') || event.target.closest('#inventory') || event.target.closest('#context-menu') || event.target.closest('#inv-toggle') || event.target.closest('#tool-toggle') || event.target.closest('#dev-toggle') || event.target.closest('#dev-panel') || event.target.closest('#chat-box') || event.target.closest('#dialogue-box')) return;
+
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+
+        const activeInteractables = interactables.filter(i => i.userData.sourceLevel === currentLevel);
+        const hits = raycaster.intersectObjects([...activeInteractables, ...walkables[currentLevel]]);
+        
+        if (hits.length > 0) {
+            const hit = hits[0]; 
+            const data = hit.object.userData;
+
+            if (data && data.isWater) {
+                if (!inventory.includes('rod')) { addLogMessage("You need a Fishing Rod to fish."); return; }
+                
+                // Target the specific walkable tile the user clicked the water from
+                const clickX = Math.round(hit.point.x / TILE_SIZE);
+                const clickY = Math.round(hit.point.z / TILE_SIZE);
+                
+                let newPath = findPath(playerGridX, playerGridY, clickX, clickY, currentLevel, true);
+                pendingAction = () => executeFishing();
+                
+                if (newPath.length > 0) pathQueue = newPath;
+                else if (Math.max(Math.abs(playerGridX - clickX), Math.abs(playerGridY - clickY)) <= 1) pathQueue = []; 
+                else pendingAction = null;
+                
+                clickMarker.position.set(clickX * TILE_SIZE, -0.1, clickY * TILE_SIZE);
+                clickMarker.visible = true; setTimeout(() => clickMarker.visible = false, 300);
+
+            } else if (data && data.isDoor) {
+                const t1 = {x: data.doorObj.x, y: data.doorObj.y};
+                let t2 = {x: t1.x, y: t1.y};
+                if (data.doorObj.dir === 'N') t2.y -= 1;
+                if (data.doorObj.dir === 'S') t2.y += 1;
+                if (data.doorObj.dir === 'E') t2.x += 1;
+                if (data.doorObj.dir === 'W') t2.x -= 1;
+
+                let path1 = findPath(playerGridX, playerGridY, t1.x, t1.y, currentLevel, false);
+                let path2 = findPath(playerGridX, playerGridY, t2.x, t2.y, currentLevel, false);
+                
+                let chosenPath = [];
+                if (path1.length === 0 && playerGridX === t1.x && playerGridY === t1.y) chosenPath = [];
+                else if (path2.length === 0 && playerGridX === t2.x && playerGridY === t2.y) chosenPath = [];
+                else if (path1.length > 0 && path2.length === 0) chosenPath = path1;
+                else if (path2.length > 0 && path1.length === 0) chosenPath = path2;
+                else if (path1.length > 0 && path2.length > 0) chosenPath = path1.length < path2.length ? path1 : path2;
+                else chosenPath = []; 
+
+                pendingAction = () => {
+                    const door = data.doorObj;
+                    door.isOpen = !door.isOpen;
+                    door.group.rotation.y = door.baseRot + (door.isOpen ? Math.PI/2 : 0);
+                    addLogMessage(door.isOpen ? "You opened the door." : "You closed the door.");
+                };
+
+                if (chosenPath.length > 0) { pathQueue = chosenPath; } 
+                else if ((playerGridX === t1.x && playerGridY === t1.y) || (playerGridX === t2.x && playerGridY === t2.y)) { pathQueue = []; } 
+                else { pendingAction = null; addLogMessage("You can't reach the door."); }
+
+            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker || data.isGMObject)) {
+                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.stopAdjacent;
+                let newPath = findPath(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel, stopAdjacent);
+
+                pendingAction = () => {
+                    if (data.isItem) executePickupItem(hit.object);
+                    else if (data.isTransition) {
+                        if (data.useFade) triggerFadeTransition(() => executeLevelChange(data.targetLevel, data.spawnX, data.spawnY));
+                        else executeLevelChange(data.targetLevel, data.spawnX, data.spawnY);
+                    }
+                    else if (data.isNPC) startDialogue(data.npcId);
+                    else if (data.isGMMarker) examineGMMarker(data.markerId);
+                    else if (data.isGMObject) examineGMObject(data.objectId);
+                };
+
+                if (newPath.length > 0) pathQueue = newPath;
+                else {
+                    const dist = Math.max(Math.abs(playerGridX - data.interactX), Math.abs(playerGridY - data.interactY));
+                    const inRange = stopAdjacent ? (dist <= 1 && checkLineOfSight(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel)) : (dist === 0);
+                    if (inRange) pathQueue = []; else pendingAction = null;
+                }
+            } else {
+                // Ground hit & Terraforming Trigger
+                const targetGridX = Math.round(hit.point.x / TILE_SIZE);
+                const targetGridY = Math.round(hit.point.z / TILE_SIZE);
+
+                clickMarker.position.set(targetGridX * TILE_SIZE, getWalkableHeight(targetGridX, targetGridY, currentLevel) + 0.1, targetGridY * TILE_SIZE);
+                clickMarker.visible = true; setTimeout(() => clickMarker.visible = false, 300);
+
+                if (activeTool === 'dig' || activeTool === 'raise') {
+                    const amount = activeTool === 'dig' ? -0.2 : 0.2;
+                    const newPath = findPath(playerGridX, playerGridY, targetGridX, targetGridY, currentLevel, true);
+                    
+                    pendingAction = () => {
+                        player.lookAt(hit.point.x, player.position.y, hit.point.z);
+                        terraformTile(targetGridX, targetGridY, currentLevel, amount);
+                    };
+
+                    if (newPath.length > 0) { pathQueue = newPath; }
+                    else {
+                        const dist = Math.max(Math.abs(playerGridX - targetGridX), Math.abs(playerGridY - targetGridY));
+                        if (dist <= 1 && checkLineOfSight(playerGridX, playerGridY, targetGridX, targetGridY, currentLevel)) {
+                            pathQueue = []; // In range to terraform
+                        } else {
+                            pendingAction = null; addLogMessage("Can't reach there.");
+                        }
+                    }
+                } else {
+                    // Standard walking
+                    const newPath = findPath(playerGridX, playerGridY, targetGridX, targetGridY, currentLevel);
+                    if (newPath.length > 0) { pathQueue = newPath; pendingAction = null; } 
+                    else if (targetGridX === playerGridX && targetGridY === playerGridY) { pathQueue = []; pendingAction = null; }
+                }
+            }
+        }
+    });
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- 8. TICK LOOP & ANIMATION ---
+    const clock = new THREE.Clock();
+    let time = 0;
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const delta = clock.getDelta();
+        time += delta;
+
+        // Roof Visibility check (inside vs outside)
+        roofZones.forEach(zone => {
+            if (currentLevel === zone.level && playerGridX >= zone.minX && playerGridX <= zone.maxX && playerGridY >= zone.minY && playerGridY <= zone.maxY) {
+                zone.mesh.visible = false;
+            } else {
+                zone.mesh.visible = true;
+            }
+        });
+
+        waterMeshes.forEach(wm => {
+            if (wm.parent.visible) {
+                const positions = wm.geometry.attributes.position;
+                for (let i = 0; i < positions.count; i++) {
+                    const vx = positions.getX(i); const vy = positions.getY(i);
+                    const wave = Math.sin(time * 2 + vx * 2 + vy * 1.5) * 0.1;
+                    positions.setZ(i, wave);
+                }
+                positions.needsUpdate = true;
+            }
+        });
+
+        currentTickTimer += delta;
+
+        if (currentTickTimer >= TICK_RATE) {
+            currentTickTimer = 0; 
+            
+            if (isMoving) { player.position.copy(targetMovePos); isMoving = false; }
+
+            if (pathQueue.length === 0 && !isMoving && pendingAction) {
+                pendingAction(); pendingAction = null; 
+            }
+
+            if (pathQueue.length > 0) {
+                const nextTile = pathQueue.shift();
+                playerGridX = nextTile.x; playerGridY = nextTile.y;
+
+                const nextWorldPos = getGridWorldPos(playerGridX, playerGridY, currentLevel);
+                startMovePos.copy(player.position); targetMovePos.copy(nextWorldPos);
+                player.lookAt(nextWorldPos.x, player.position.y, nextWorldPos.z);
+                isMoving = true;
+            }
+
+            npcs.forEach(npc => {
+                if (npc.level !== currentLevel) return;
+
+                if (npc.isMoving) { npc.mesh.position.copy(npc.targetPos); npc.isMoving = false; }
+
+                if (npc.pathQueue.length > 0) {
+                    const nextTile = npc.pathQueue.shift();
+                    npc.gridX = nextTile.x; npc.gridY = nextTile.y;
+                    
+                    npc.startPos.copy(npc.mesh.position);
+                    npc.targetPos.copy(getGridWorldPos(npc.gridX, npc.gridY, npc.level));
+                    npc.mesh.lookAt(npc.targetPos.x, npc.mesh.position.y, npc.targetPos.z);
+                    npc.isMoving = true;
+                    
+                    npc.hitbox.userData.interactX = npc.gridX; npc.hitbox.userData.interactY = npc.gridY;
+                } else {
+                    npc.tickCounter++;
+                    if (npc.tickCounter > 6 && Math.random() < 0.4) {
+                        npc.tickCounter = 0;
+                        let rx = npc.homeX + Math.floor(Math.random()*7)-3;
+                        let ry = npc.homeY + Math.floor(Math.random()*7)-3;
+                        
+                        if (npc.type === 'crab') {
+                            rx = Math.random() > 0.5 ? npc.homeX : npc.homeX + 1; 
+                            ry = npc.gridY + Math.floor(Math.random()*7)-3;
+                        }
+
+                        if (npc.id === 'sage') {
+                            rx = Math.max(11, Math.min(19, rx));
+                            ry = Math.max(19, Math.min(25, ry));
+                        }
+
+                        npc.pathQueue = findPath(npc.gridX, npc.gridY, rx, ry, npc.level, false);
+                    }
+                }
+            });
+        }
+
+        const progress = currentTickTimer / TICK_RATE;
+        if (isMoving) player.position.lerpVectors(startMovePos, targetMovePos, progress);
+
+        npcs.forEach(npc => {
+            if (npc.level === currentLevel && npc.isMoving) npc.mesh.position.lerpVectors(npc.startPos, npc.targetPos, progress);
+        });
+
+        updateCamera();
+        renderer.render(scene, camera);
+    }
+    
+    animate();
+
+</script>
+</body>
+</html>
