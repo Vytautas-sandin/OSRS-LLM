@@ -26,6 +26,19 @@
         #inv-toggle:hover { background: #4e4539; }
         #inv-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
 
+
+
+        /* Dev / LLM Panel */
+        #dev-toggle { position: absolute; right: 10px; bottom: 110px; width: 140px; height: 40px; background: #1f2d24; border: 2px solid #5c4e3c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 25; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
+        #dev-toggle:hover { background: #2c3d32; }
+        #dev-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
+        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(360px, calc(100vw - 20px)); background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
+        #dev-panel-title { color: #ffff00; font-weight: bold; text-shadow: 1px 1px 0 #000; }
+        #llm-io { width: 100%; height: 160px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+        .dev-row { display: flex; gap: 6px; }
+        .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 6px; font-weight: bold; cursor: pointer; }
+        .dev-btn:active { transform: translate(1px, 1px); }
+
         /* Inventory System */
         #inventory { position: absolute; right: 10px; top: 60px; width: 196px; background: #3e3529; border: 2px solid #5c4e3c; padding: 4px; display: none; grid-template-columns: repeat(4, 1fr); gap: 2px; z-index: 15; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); }
         .inv-slot { width: 46px; height: 36px; background: #2a231b; border: 1px inset #5c4e3c; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; }
@@ -78,6 +91,16 @@
     <div id="inventory"></div>
     <div id="tool-toggle">👟 Mode: Walk</div>
     <div id="context-menu"></div>
+
+    <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
+    <div id="dev-panel">
+        <div id="dev-panel-title">LLM / GM Panel</div>
+        <div class="dev-row">
+            <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
+            <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
+        </div>
+        <textarea id="llm-io" spellcheck="false" placeholder="Paste LLM JSON here, or tap Copy Payload to export the current game state."></textarea>
+    </div>
 
     <div id="dialogue-box" onclick="continueDialogue()">
         <div id="d-speaker">Speaker Name</div>
@@ -783,6 +806,158 @@
         if (chatBox.children.length > 8) chatBox.removeChild(chatBox.firstChild);
     }
 
+
+
+    // --- 5B. DEV / LLM PANEL ---
+    const worldFlags = {};
+
+    function getRecentLogLines() {
+        return Array.from(document.querySelectorAll('#chat-box .log-msg')).map(el => el.innerText).slice(-8);
+    }
+
+    function getNearbyNPCs(radius = 6) {
+        return npcs
+            .filter(npc => npc.level === currentLevel && Math.max(Math.abs(npc.gridX - playerGridX), Math.abs(npc.gridY - playerGridY)) <= radius)
+            .map(npc => ({ id: npc.id, type: npc.type, x: npc.gridX, y: npc.gridY }));
+    }
+
+    function getNearbyItems(radius = 6) {
+        return groundItems
+            .filter(item => item.hitBox.userData.sourceLevel === currentLevel)
+            .map(item => item.hitBox.userData)
+            .filter(data => Math.max(Math.abs(data.interactX - playerGridX), Math.abs(data.interactY - playerGridY)) <= radius)
+            .map(data => ({ type: data.type, x: data.interactX, y: data.interactY }));
+    }
+
+    function buildGMPayload() {
+        return {
+            engine: 'OSRS-LLM',
+            protocol: 'gm_payload_v0',
+            player: {
+                level: currentLevel,
+                tile: { x: playerGridX, y: playerGridY },
+                inventory: inventory.filter(Boolean),
+                activeTool: activeTool
+            },
+            nearby: {
+                npcs: getNearbyNPCs(),
+                items: getNearbyItems()
+            },
+            flags: worldFlags,
+            recentLog: getRecentLogLines(),
+            request: 'Act as GM. Resolve the player intent and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue.'
+        };
+    }
+
+    function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        const temp = document.createElement('textarea');
+        temp.value = text;
+        temp.style.position = 'fixed';
+        temp.style.opacity = '0';
+        document.body.appendChild(temp);
+        temp.focus();
+        temp.select();
+        document.execCommand('copy');
+        temp.remove();
+        return Promise.resolve();
+    }
+
+    function copyGMPayload() {
+        const text = JSON.stringify(buildGMPayload(), null, 2);
+        document.getElementById('llm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('GM payload copied.'))
+            .catch(() => addLogMessage('Payload created in the panel. Copy it manually.'));
+    }
+
+    function isValidTile(x, y, level) {
+        return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && LEVELS[level];
+    }
+
+    function giveInventoryItem(type) {
+        if (!ITEM_DEFS[type]) { addLogMessage(`Unknown item: ${type}`); return false; }
+        const emptySlot = inventory.findIndex(i => i === null);
+        if (emptySlot === -1) { addLogMessage('Your inventory is full!'); return false; }
+        inventory[emptySlot] = type;
+        renderInventory();
+        addLogMessage(`You receive ${ITEM_DEFS[type].name}.`);
+        return true;
+    }
+
+    function applyLLMCommands() {
+        const raw = document.getElementById('llm-io').value.trim();
+        if (!raw) { addLogMessage('Paste JSON commands first.'); return; }
+
+        let payload;
+        try { payload = JSON.parse(raw); }
+        catch (err) { addLogMessage('Invalid JSON.'); return; }
+
+        if (payload.narration) addLogMessage(payload.narration);
+        const commands = Array.isArray(payload) ? payload : payload.commands;
+        if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
+
+        commands.forEach(cmd => {
+            if (!cmd || typeof cmd.op !== 'string') return;
+
+            if (cmd.op === 'add_log') {
+                if (typeof cmd.text === 'string') addLogMessage(cmd.text);
+            }
+
+            else if (cmd.op === 'set_flag') {
+                if (typeof cmd.key === 'string') {
+                    worldFlags[cmd.key] = cmd.value;
+                    addLogMessage(`Flag set: ${cmd.key}`);
+                }
+            }
+
+            else if (cmd.op === 'give_item') {
+                giveInventoryItem(cmd.type);
+            }
+
+            else if (cmd.op === 'spawn_item') {
+                const level = (cmd.level ?? currentLevel).toString();
+                const x = Math.round(Number(cmd.x));
+                const y = Math.round(Number(cmd.y));
+                if (ITEM_DEFS[cmd.type] && isValidTile(x, y, level)) {
+                    spawnGroundItem(cmd.type, x, y, level);
+                    addLogMessage(`Something appears nearby: ${ITEM_DEFS[cmd.type].name}.`);
+                } else addLogMessage('Invalid spawn_item command.');
+            }
+
+            else if (cmd.op === 'move_player') {
+                const level = (cmd.level ?? currentLevel).toString();
+                const x = Math.round(Number(cmd.x));
+                const y = Math.round(Number(cmd.y));
+                if (isValidTile(x, y, level)) {
+                    executeLevelChange(level, x, y);
+                    addLogMessage('The world shifts around you.');
+                } else addLogMessage('Invalid move_player command.');
+            }
+
+            else if (cmd.op === 'update_dialogue') {
+                if (typeof cmd.id === 'string' && Array.isArray(cmd.lines)) {
+                    DIALOGUES[cmd.id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
+                    addLogMessage(`Dialogue updated: ${cmd.id}`);
+                }
+            }
+
+            else addLogMessage(`Unsupported op: ${cmd.op}`);
+        });
+    }
+
+    const devToggle = document.getElementById('dev-toggle');
+    const devPanel = document.getElementById('dev-panel');
+    devToggle.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        devPanel.style.display = (devPanel.style.display === 'none' || devPanel.style.display === '') ? 'flex' : 'none';
+        ctxMenu.style.display = 'none';
+    });
+    document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
+
     const ITEM_DEFS = { 
         'berries': { name: 'Berries', color: 0xff2a2a, cssClass: 'item-berries', type: 'food' },
         'shell': { name: 'Mysterious Shell', color: 0xffccbb, cssClass: 'item-shell', type: 'misc' },
@@ -1127,7 +1302,7 @@
             activeDialogue = null;
         }
 
-        if (event.target.closest('#ui-layer') || event.target.closest('#inventory') || event.target.closest('#context-menu') || event.target.closest('#inv-toggle') || event.target.closest('#tool-toggle') || event.target.closest('#chat-box') || event.target.closest('#dialogue-box')) return;
+        if (event.target.closest('#ui-layer') || event.target.closest('#inventory') || event.target.closest('#context-menu') || event.target.closest('#inv-toggle') || event.target.closest('#tool-toggle') || event.target.closest('#dev-toggle') || event.target.closest('#dev-panel') || event.target.closest('#chat-box') || event.target.closest('#dialogue-box')) return;
 
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
         mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
