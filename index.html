@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · World Memory v0.8</title>
+    <title>Retro Coastal Town 3D · GM Prompt v0.9</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -100,9 +100,10 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · World Memory v0.8</div>
+        <div id="dev-panel-title">LLM / GM Panel · GM Prompt v0.9</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
+            <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
         </div>
         <div class="dev-row">
@@ -132,6 +133,7 @@
     </div>
 
 <script>
+    // OSRS LLM GM PROMPT V0.9 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -1036,13 +1038,56 @@
         catch (err) { return false; }
     }
 
+    function buildGMInstructions() {
+        return {
+            role: 'You are the game master for a small OSRS-inspired 3D adventure engine.',
+            outputContract: {
+                format: 'Return valid JSON only. No markdown fences. No explanation outside JSON.',
+                shape: { narration: 'short atmospheric narration string', commands: 'array of command objects' }
+            },
+            priorities: [
+                'Preserve continuity with worldMemory, flags, nearby context, inventory, and eventDelta.',
+                'Resolve the playerAction.raw fairly. Do not grant impossible outcomes without cost, clue, or consequence.',
+                'Use a few meaningful commands rather than many tiny ones.',
+                'Prefer creating interactable objects or markers over changing source code.',
+                'Keep names and ids stable. Use lowercase snake_case ids.'
+            ],
+            commandSchema: {
+                add_log: { text: 'string' },
+                set_flag: { key: 'string', value: 'boolean | string | number' },
+                give_item: { type: 'berries | shell | rod | fish | shovel' },
+                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
+                move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
+                update_dialogue: { id: 'npc dialogue id', lines: [{ speaker: 'string', text: 'string' }] },
+                create_marker: { id: 'string', name: 'string', note: 'string', x: 'integer', y: 'integer', level: '-1 | 0 | 2', color: '#rrggbb' },
+                remove_marker: { id: 'string' },
+                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'integer', y: 'integer', level: '-1 | 0 | 2', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
+                remove_object: { id: 'string' },
+                set_world_summary: { summary: 'short string' },
+                add_memory: { text: 'important persistent fact string' },
+                clear_memory: { scope: 'facts | quests | summary' },
+                set_quest: { id: 'string', title: 'string', status: 'active | completed | failed | hidden', note: 'string' },
+                remove_quest: { id: 'string' }
+            },
+            exampleResponse: {
+                narration: 'You find a salt-worn seam in the stone. It clicks, but something deeper still holds shut.',
+                commands: [
+                    { op: 'add_log', text: 'You discovered a hidden seam in the temple stone.' },
+                    { op: 'set_flag', key: 'found_temple_seam', value: true },
+                    { op: 'create_object', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', shape: 'stone', x: 15, y: 18, level: '0', color: '#9a9a8a' },
+                    { op: 'add_memory', text: 'The player found a hidden stone seam near the temple entrance.' }
+                ]
+            }
+        };
+    }
+
     function buildGMPayload() {
         syncWorldMemoryFromUI();
         const memorySnapshot = serializeWorldMemory();
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'world_memory_v0_8',
+            build: 'gm_prompt_v0_9',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1061,6 +1106,7 @@
             },
             flags: worldFlags,
             worldMemory: memorySnapshot,
+            gmInstructions: buildGMInstructions(),
             gmSave: {
                 hasSavedWorld: hasSavedGMWorld(),
                 markerCount: gmMarkers.length,
@@ -1074,7 +1120,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, worldMemory, and eventDelta. Return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object, set_world_summary, add_memory, clear_memory, set_quest, remove_quest. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, custom objects, and worldMemory.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema and update worldMemory when story facts or quest state change.'
         };
     }
 
@@ -1100,6 +1146,28 @@
         copyTextToClipboard(text)
             .then(() => addLogMessage('GM payload copied.'))
             .catch(() => addLogMessage('Payload created in the panel. Copy it manually.'));
+    }
+
+    function buildGMTextPrompt() {
+        const payload = buildGMPayload();
+        return [
+            'You are the GM for OSRS-LLM, a small OSRS-inspired 3D adventure engine.',
+            '',
+            'Resolve the player action using the payload below. Return valid JSON only: {"narration":"...","commands":[...]}.',
+            'Do not use markdown fences. Do not explain. Use only supported command ops from gmInstructions.commandSchema.',
+            'When important story context changes, update worldMemory using set_world_summary, add_memory, or set_quest.',
+            '',
+            'PAYLOAD:',
+            JSON.stringify(payload, null, 2)
+        ].join('\n');
+    }
+
+    function copyGMPrompt() {
+        const text = buildGMTextPrompt();
+        document.getElementById('llm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('GM prompt copied.'))
+            .catch(() => addLogMessage('GM prompt created in the panel. Copy it manually.'));
     }
 
     function isValidTile(x, y, level) {
@@ -1613,6 +1681,7 @@
         ctxMenu.style.display = 'none';
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
     document.getElementById('save-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); saveGMWorld(false); });
     document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
