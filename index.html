@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM INTERACTION CORE V1.1 BUILD - adds diegetic dialogue feedback, hotspots, last target, and safer in-world interactions -->
+<!-- OSRS LLM TARGETED ACTIONS V1.2 BUILD - adds inventory item use on GM objects/hotspots and target-aware GM payloads -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Interaction Core v1.1</title>
+    <title>Retro Coastal Town 3D · Targeted Actions v1.2</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -49,6 +49,7 @@
         .dev-row { display: flex; gap: 6px; }
         .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 6px; font-weight: bold; cursor: pointer; }
         .dev-btn:active { transform: translate(1px, 1px); }
+        #use-indicator { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); max-width: calc(100vw - 30px); background: rgba(31, 45, 36, 0.95); border: 2px solid #d0c8b0; color: #fff; display: none; align-items: center; justify-content: center; padding: 8px 12px; z-index: 28; font-size: 13px; font-weight: bold; text-shadow: 1px 1px 0 #000; box-shadow: 2px 2px 6px rgba(0,0,0,0.5); pointer-events: none; }
 
         /* Inventory System */
         #inventory { position: absolute; right: 10px; top: 60px; width: 196px; background: #3e3529; border: 2px solid #5c4e3c; padding: 4px; display: none; grid-template-columns: repeat(4, 1fr); gap: 2px; z-index: 15; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); }
@@ -103,10 +104,11 @@
     <div id="tool-toggle">👟 Mode: Walk</div>
     <div id="look-btn" title="Inspect Nearby">🔎 Inspect</div>
     <div id="context-menu"></div>
+    <div id="use-indicator">Using item: tap an object or hotspot</div>
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Interaction Core v1.1</div>
+        <div id="dev-panel-title">LLM / GM Panel · Targeted Actions v1.2</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -140,7 +142,7 @@
     </div>
 
 <script>
-    // OSRS LLM GM PROMPT V0.9 BUILD
+    // OSRS LLM TARGETED ACTIONS V1.2 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -801,10 +803,11 @@
 
     function startDialogue(npcId) {
         let genericId = npcId.replace(/[0-9]/g, ''); 
+        const npc = npcs.find(n => n.id === npcId);
+        if (npc && handlePendingItemUseOnTarget({ kind: 'npc', id: npcId, name: npcId, x: npc.gridX, y: npc.gridY, level: npc.level })) return;
         activeDialogue = DIALOGUES[genericId];
         dialogueStep = 0;
         document.getElementById('dialogue-box').style.display = 'flex';
-        const npc = npcs.find(n => n.id === npcId);
         if (npc) setLastInteractionTarget({ kind: 'npc', id: npcId, name: npcId, x: npc.gridX, y: npc.gridY, level: npc.level });
         recordGMEvent('npc_dialogue_started', { npcId, dialogueId: genericId });
         renderDialogue();
@@ -856,6 +859,7 @@
     const gmHotspots = [];
     const gmEvents = [];
     let lastInteractionTarget = null;
+    let selectedUseItem = null;
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
     const GM_EVENT_LIMIT = 80;
     const GM_MEMORY_LIMIT = 40;
@@ -909,12 +913,121 @@
             y: Number.isFinite(Number(target.y)) ? Number(target.y) : null,
             level: target.level ? String(target.level) : currentLevel,
             note: target.note ? String(target.note).slice(0, 500) : '',
+            usedItem: target.usedItem ? String(target.usedItem) : null,
+            usedItemName: target.usedItemName ? String(target.usedItemName) : null,
+            proposedAction: target.proposedAction ? String(target.proposedAction).slice(0, 500) : null,
             selectedAt: new Date().toISOString()
         };
     }
 
     function getLastInteractionTarget() {
         return lastInteractionTarget ? { ...lastInteractionTarget } : null;
+    }
+
+    function getSelectedUseItemSnapshot() {
+        if (!selectedUseItem) return null;
+        const def = ITEM_DEFS[selectedUseItem];
+        return { type: selectedUseItem, name: def ? def.name : selectedUseItem };
+    }
+
+    function updateUseIndicator() {
+        const indicator = document.getElementById('use-indicator');
+        if (!indicator) return;
+        const item = getSelectedUseItemSnapshot();
+        if (item) {
+            indicator.innerText = `Using ${item.name}: tap an object or hotspot`;
+            indicator.style.display = 'flex';
+        } else {
+            indicator.style.display = 'none';
+        }
+    }
+
+    function setPlayerActionText(text) {
+        const input = document.getElementById('player-action');
+        if (input) input.value = String(text || '').slice(0, 900);
+    }
+
+    function beginUseItem(itemType) {
+        if (!ITEM_DEFS[itemType]) return false;
+        selectedUseItem = itemType;
+        updateUseIndicator();
+        const name = ITEM_DEFS[itemType].name;
+        showDialogueMessage('Inventory', `Using ${name}. Tap an object or hotspot in the world.`);
+        addLogMessage(`Using ${name}. Tap a target.`);
+        recordGMEvent('item_use_started', { itemType, itemName: name });
+        return true;
+    }
+
+    function clearUseItem() {
+        const item = getSelectedUseItemSnapshot();
+        selectedUseItem = null;
+        updateUseIndicator();
+        if (item) recordGMEvent('item_use_cleared', { itemType: item.type, itemName: item.name });
+    }
+
+    function handlePendingItemUseOnTarget(target) {
+        const item = getSelectedUseItemSnapshot();
+        if (!item || !target) return false;
+        const targetName = target.name || target.id || 'target';
+        const actionText = `I use ${item.name} on ${targetName}.`;
+        setPlayerActionText(actionText);
+        setLastInteractionTarget({
+            ...target,
+            usedItem: item.type,
+            usedItemName: item.name,
+            proposedAction: actionText
+        });
+        showDialogueMessage(targetName, `You try using ${item.name} on ${targetName}. Copy the GM prompt to resolve what happens.`);
+        addLogMessage(`Prepared action: ${actionText}`);
+        recordGMEvent('item_use_targeted', {
+            itemType: item.type,
+            itemName: item.name,
+            targetKind: target.kind,
+            targetId: target.id,
+            targetName,
+            x: target.x,
+            y: target.y,
+            level: target.level,
+            proposedAction: actionText
+        });
+        selectedUseItem = null;
+        updateUseIndicator();
+        return true;
+    }
+
+    function handlePendingItemUseOnTile(x, y, level = currentLevel) {
+        const item = getSelectedUseItemSnapshot();
+        if (!item) return false;
+        const targetName = level === '0' ? 'ground' : `level ${level} ground`;
+        const actionText = `I use ${item.name} on the ${targetName} at tile ${x}, ${y}.`;
+        setPlayerActionText(actionText);
+        setLastInteractionTarget({
+            kind: 'tile',
+            id: `tile_${level}_${x}_${y}`,
+            name: targetName,
+            x,
+            y,
+            level,
+            usedItem: item.type,
+            usedItemName: item.name,
+            proposedAction: actionText
+        });
+        showDialogueMessage('Inventory', `You try using ${item.name} on the ${targetName}. Copy the GM prompt to resolve what happens.`);
+        addLogMessage(`Prepared action: ${actionText}`);
+        recordGMEvent('item_use_targeted', {
+            itemType: item.type,
+            itemName: item.name,
+            targetKind: 'tile',
+            targetId: `tile_${level}_${x}_${y}`,
+            targetName,
+            x,
+            y,
+            level,
+            proposedAction: actionText
+        });
+        selectedUseItem = null;
+        updateUseIndicator();
+        return true;
     }
 
     function safeMemoryText(value, max = 2400) {
@@ -1191,7 +1304,7 @@
             },
             priorities: [
                 'Preserve continuity with worldMemory, flags, nearby context, inventory, and eventDelta.',
-                'Resolve the playerAction.raw fairly. Do not grant impossible outcomes without cost, clue, or consequence.',
+                'Resolve the playerAction.raw fairly. If it includes a target or usedItem, treat it as a concrete in-world action.',
                 'Use a few meaningful commands rather than many tiny ones.',
                 'Prefer changing the world through diegetic objects, hotspots, dialogue, items, flags, and memory.',
                 'Keep names and ids stable. Use lowercase snake_case ids.'
@@ -1234,16 +1347,19 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'interaction_core_v1_1',
+            build: 'targeted_actions_v1_2',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
                 inventory: inventory.filter(Boolean),
-                activeTool: activeTool
+                activeTool: activeTool,
+                selectedUseItem: getSelectedUseItemSnapshot()
             },
             playerAction: {
                 raw: (document.getElementById('player-action')?.value || '').trim(),
-                note: "This is the player's improvised action or question. Resolve it as GM, using nearby context and flags."
+                target: getLastInteractionTarget(),
+                selectedUseItem: getSelectedUseItemSnapshot(),
+                note: "This is the player's improvised action or question. If target or usedItem are present, resolve the targeted in-world action as GM."
             },
             nearby: {
                 npcs: getNearbyNPCs(),
@@ -1270,7 +1386,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. Update worldMemory when story facts or quest state change.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. Update worldMemory when story facts or quest state change.'
         };
     }
 
@@ -1425,6 +1541,7 @@
     function examineGMMarker(markerId) {
         const marker = gmMarkers.find(m => m.id === markerId);
         if (!marker) return;
+        if (handlePendingItemUseOnTarget({ kind: 'marker', id: marker.id, name: marker.name, x: marker.x, y: marker.y, level: marker.level, note: marker.note })) return;
         setLastInteractionTarget({ kind: 'marker', id: marker.id, name: marker.name, x: marker.x, y: marker.y, level: marker.level, note: marker.note });
         addLogMessage(marker.name);
         if (marker.note) addLogMessage(marker.note);
@@ -1541,6 +1658,7 @@
         const hotspot = gmHotspots.find(h => h.id === hotspotId);
         if (!hotspot) return;
 
+        if (handlePendingItemUseOnTarget({ kind: 'hotspot', id: hotspot.id, name: hotspot.name, x: hotspot.x, y: hotspot.y, level: hotspot.level, note: hotspot.note, surface: hotspot.surface })) return;
         setLastInteractionTarget({ kind: 'hotspot', id: hotspot.id, name: hotspot.name, x: hotspot.x, y: hotspot.y, level: hotspot.level, note: hotspot.note });
         addLogMessage(hotspot.name);
         if (hotspot.note) addLogMessage(hotspot.note);
@@ -1706,6 +1824,7 @@
         const obj = gmObjects.find(o => o.id === objectId);
         if (!obj) return;
 
+        if (handlePendingItemUseOnTarget({ kind: 'object', id: obj.id, name: obj.name, x: obj.x, y: obj.y, level: obj.level, note: obj.note, shape: obj.shape })) return;
         setLastInteractionTarget({ kind: 'object', id: obj.id, name: obj.name, x: obj.x, y: obj.y, level: obj.level, note: obj.note });
         addLogMessage(obj.name);
         if (obj.note) addLogMessage(obj.note);
@@ -2159,6 +2278,8 @@
             return btn;
         };
 
+        ctxMenu.appendChild(createBtn(`Use ${def.name}`, '', () => { beginUseItem(itemType); }));
+
         if (def.type === 'food') {
             ctxMenu.appendChild(createBtn(`Eat ${def.name}`, '', () => { inventory[index] = null; addLogMessage(`You eat the ${def.name}.`); renderInventory(); recordGMEvent('item_eaten', { type: itemType, name: def.name }); }));
         } else if (def.type === 'misc' && itemType === 'shell') {
@@ -2482,6 +2603,11 @@
                 // Ground hit & Terraforming Trigger
                 const targetGridX = Math.round(hit.point.x / TILE_SIZE);
                 const targetGridY = Math.round(hit.point.z / TILE_SIZE);
+
+                if (selectedUseItem) {
+                    handlePendingItemUseOnTile(targetGridX, targetGridY, currentLevel);
+                    return;
+                }
 
                 clickMarker.position.set(targetGridX * TILE_SIZE, getWalkableHeight(targetGridX, targetGridY, currentLevel) + 0.1, targetGridY * TILE_SIZE);
                 clickMarker.visible = true; setTimeout(() => clickMarker.visible = false, 300);
