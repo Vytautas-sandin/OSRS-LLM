@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM MOBILE ORBIT CONTROLS V1.6 BUILD - adds drag-to-orbit camera controls and safer canvas-only tap handling -->
+<!-- OSRS LLM CANVAS PASSAGES V1.7 BUILD - adds GM-created transitions/passages and expanded canvas props -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Mobile Orbit Controls v1.6</title>
+    <title>Retro Coastal Town 3D · Canvas Passages v1.7</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; touch-action: none; }
@@ -108,7 +108,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Mobile Orbit v1.6</div>
+        <div id="dev-panel-title">LLM / GM Panel · Canvas Passages v1.7</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -890,6 +890,7 @@
     const gmHotspots = [];
     const gmWalls = [];
     const gmFloors = [];
+    const gmTransitions = [];
     const gmRemovedWalls = [];
     const gmEvents = [];
     let lastInteractionTarget = null;
@@ -1268,6 +1269,24 @@
             }));
     }
 
+    function getNearbyGMTransitions(radius = 8) {
+        return gmTransitions
+            .filter(transition => transition.level === currentLevel)
+            .filter(transition => Math.max(Math.abs(transition.x - playerGridX), Math.abs(transition.y - playerGridY)) <= radius)
+            .map(transition => ({
+                id: transition.id,
+                name: transition.name || 'Passage',
+                x: transition.x,
+                y: transition.y,
+                shape: transition.shape || 'passage',
+                note: transition.note || '',
+                targetLevel: transition.targetLevel,
+                spawnX: transition.spawnX,
+                spawnY: transition.spawnY,
+                anchor: transition.anchor || null
+            }));
+    }
+
     function distanceToPlayerTile(x, y, level = currentLevel) {
         if (level !== currentLevel) return Infinity;
         return Math.max(Math.abs(x - playerGridX), Math.abs(y - playerGridY));
@@ -1309,6 +1328,10 @@
         gmMarkers.forEach(marker => discoverables.push({
             kind: 'marker', name: marker.name, x: marker.x, y: marker.y, level: marker.level,
             note: marker.note, extra: 'marker'
+        }));
+        gmTransitions.forEach(transition => discoverables.push({
+            kind: 'transition', name: transition.name, x: transition.x, y: transition.y, level: transition.level,
+            note: transition.note, extra: transition.shape || 'passage'
         }));
         if (typeof groundItems !== 'undefined') groundItems.forEach(item => {
             const data = item.hitBox.userData;
@@ -1361,7 +1384,7 @@
                 'If an action fails, you may return only narration plus a set_flag/add_memory/event-style command if the failed attempt matters.',
                 'Prefer named anchors from payload.worldAnchors over raw x/y coordinates. Use player_nearby for immediate consequences.',
                 'For environmental features such as cracks, seams, inscriptions, suspicious sand, or pressure stones, use create_hotspot only if the 3D canvas needs an interactable target.',
-                'For physical props, use create_prop/create_object. For blocked or opened movement, use create_wall/remove_wall/create_floor/remove_floor.',
+                'For physical props, use create_prop/create_object. For blocked or opened movement, use create_wall/remove_wall/create_floor/remove_floor. For new entrances, stairs, holes, portals, boats, ladders, or passages the player can enter, use create_transition.',
                 'Keep ids stable, lowercase, and snake_case.'
             ],
             commandSchema: {
@@ -1370,7 +1393,7 @@
                 give_item: { type: 'berries | shell | rod | fish | shovel' },
                 spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', radius: 'optional search radius around near' },
                 move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
-                create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb' },
+                create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest | hole | debris | rubble | stairs | ladder | pillar | plank', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb' },
                 move_prop: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near' },
                 remove_prop: { id: 'string' },
                 create_object: { alias: 'create_prop' },
@@ -1382,6 +1405,8 @@
                 remove_wall: { id: 'optional string; or provide x,y,level,dir to remove a wall segment' },
                 create_floor: { id: 'string', name: 'optional string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', color: '#rrggbb', height: 'optional number', walkable: 'optional boolean, default true' },
                 remove_floor: { id: 'string' },
+                create_transition: { id: 'string', name: 'string', note: 'optional metadata', shape: 'hole | stairs | ladder | portal | boat | passage', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', targetLevel: '-1 | 0 | 2', spawnX: 'integer', spawnY: 'integer', useFade: 'optional boolean', requiresFlag: 'optional flag key string', color: '#rrggbb' },
+                remove_transition: { id: 'string' },
                 set_tile_height: { alias: 'create_floor with height; safest way to create bridges, platforms, filled holes, or raised walkable tiles' },
                 set_door_state: { x: 'integer', y: 'integer', level: '-1 | 0 | 2', dir: 'N | S | E | W', open: 'boolean' },
                 create_marker: { id: 'string', name: 'string', note: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', color: '#rrggbb' },
@@ -1412,7 +1437,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'mobile_orbit_v1_6',
+            build: 'canvas_passages_v1_7',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1433,7 +1458,8 @@
                 objects: getNearbyGMObjects(),
                 hotspots: getNearbyHotspots(),
                 walls: getNearbyGMWalls(),
-                floors: getNearbyGMFloors()
+                floors: getNearbyGMFloors(),
+                transitions: getNearbyGMTransitions()
             },
             lastTarget: getLastInteractionTarget(),
             flags: worldFlags,
@@ -1447,6 +1473,7 @@
                 hotspotCount: gmHotspots.length,
                 wallCount: gmWalls.length,
                 floorCount: gmFloors.length,
+                transitionCount: gmTransitions.length,
                 removedBaseWallCount: gmRemovedWalls.length,
                 memoryFactCount: memorySnapshot.facts.length,
                 questCount: memorySnapshot.quests.length
@@ -1457,7 +1484,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM in chat. Resolve playerAction.raw using nearby context, lastTarget, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only with narration for chat plus commands for the 3D canvas. Use commands for stateful/visible changes only. Prefer create_prop/create_hotspot/create_wall/remove_wall/create_floor/remove_floor/spawn_item/set_flag/add_memory as needed.'
+            request: 'Act as GM in chat. Resolve playerAction.raw using nearby context, lastTarget, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only with narration for chat plus commands for the 3D canvas. Use commands for stateful/visible changes only. Prefer create_prop/create_hotspot/create_wall/remove_wall/create_floor/remove_floor/create_transition/spawn_item/set_flag/add_memory as needed.'
         };
     }
 
@@ -1498,7 +1525,7 @@
             '- If nothing physical/stateful changes, commands may be empty or may only set a flag/memory fact.',
             '- Use create_prop/create_object for visible physical props.',
             '- Use create_hotspot for interactable target points such as seams, cracks, inscriptions, pressure stones, soft sand, or suspicious water.',
-            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for physical map changes such as blocked passages, broken walls, bridges, platforms, filled holes, or opened paths.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for physical map changes such as blocked passages, broken walls, bridges, platforms, filled holes, or opened paths. Use create_transition for passages the player should enter.',
             '- Use spawn_item/give_item/remove_prop/set_flag/add_memory when inventory or story state changes.',
             '- Prefer named anchors from payload.worldAnchors instead of raw coordinates.',
             '',
@@ -1534,7 +1561,7 @@
             '- Use named anchors from payload.worldAnchors instead of raw coordinates whenever possible.',
             '- Use create_prop/create_object for physical visible props.',
             '- Use create_hotspot for targetable environmental details.',
-            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for structural changes like opened gaps, barricades, platforms, bridges, or blocked paths.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for structural changes like opened gaps, barricades, platforms, bridges, or blocked paths. Use create_transition for stairs, ladders, holes, boats, portals, or passages.',
             '- Use set_flag and add_memory for state that matters later.',
             '- The narration is for the chat, not the game UI. The game canvas should only receive physical/state updates.',
             '',
@@ -1581,7 +1608,8 @@
     function isTileOccupiedByGM(x, y, level) {
         return gmObjects.some(obj => obj.level === level && obj.x === x && obj.y === y)
             || gmMarkers.some(marker => marker.level === level && marker.x === x && marker.y === y)
-            || gmHotspots.some(hotspot => hotspot.level === level && hotspot.x === x && hotspot.y === y);
+            || gmHotspots.some(hotspot => hotspot.level === level && hotspot.x === x && hotspot.y === y)
+            || gmTransitions.some(transition => transition.level === level && transition.x === x && transition.y === y);
     }
 
     function isTilePlaceableForGM(x, y, level, allowOccupied = false) {
@@ -1892,7 +1920,7 @@
         const group = new THREE.Group();
         const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
         const darkMat = new THREE.MeshLambertMaterial({ color: 0x2a231b, flatShading: true });
-        const safeShape = ['crate', 'stone', 'orb', 'scroll', 'sign', 'chest'].includes(shape) ? shape : 'crate';
+        const safeShape = ['crate', 'stone', 'orb', 'scroll', 'sign', 'chest', 'hole', 'debris', 'rubble', 'stairs', 'ladder', 'pillar', 'plank'].includes(shape) ? shape : 'crate';
 
         if (safeShape === 'stone') {
             const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.38, 0), mat);
@@ -1923,6 +1951,41 @@
             const lid = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.14, 0.48), darkMat);
             lid.position.y = 0.47;
             group.add(base); group.add(lid);
+        } else if (safeShape === 'hole') {
+            const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.05, 18), darkMat);
+            hole.position.y = 0.03;
+            group.add(hole);
+        } else if (safeShape === 'debris' || safeShape === 'rubble') {
+            for (let i = 0; i < 5; i++) {
+                const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.12 + i * 0.015, 0), mat);
+                rock.position.set((i - 2) * 0.16, 0.08 + i * 0.025, (i % 2 ? 0.14 : -0.12));
+                rock.rotation.set(i * 0.4, i * 0.7, i * 0.3);
+                group.add(rock);
+            }
+        } else if (safeShape === 'stairs') {
+            for (let i = 0; i < 4; i++) {
+                const step = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.09, 0.18), mat);
+                step.position.set(0, 0.05 + i * 0.08, -0.27 + i * 0.18);
+                group.add(step);
+            }
+        } else if (safeShape === 'ladder') {
+            const poleA = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.9, 6), mat);
+            const poleB = poleA.clone();
+            poleA.position.set(-0.18, 0.45, 0); poleB.position.set(0.18, 0.45, 0);
+            group.add(poleA); group.add(poleB);
+            for (let i = 0; i < 4; i++) {
+                const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.38, 6), darkMat);
+                rung.rotation.z = Math.PI / 2; rung.position.set(0, 0.18 + i * 0.18, 0);
+                group.add(rung);
+            }
+        } else if (safeShape === 'pillar') {
+            const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 1.2, 8), mat);
+            pillar.position.y = 0.6;
+            group.add(pillar);
+        } else if (safeShape === 'plank') {
+            const plank = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.08, 0.28), mat);
+            plank.position.y = 0.08;
+            group.add(plank);
         } else {
             const crate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), mat);
             crate.position.y = 0.28;
@@ -2231,6 +2294,155 @@
         while (gmFloors.length > 0) removeGMFloor(gmFloors[0].id, true);
     }
 
+
+    function buildGMTransitionVisual(shape, color) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
+        const darkMat = new THREE.MeshLambertMaterial({ color: 0x111111, flatShading: true });
+        const glowMat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+        const safeShape = ['hole', 'stairs', 'ladder', 'portal', 'boat', 'passage'].includes(shape) ? shape : 'passage';
+
+        if (safeShape === 'hole' || safeShape === 'passage') {
+            const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.06, 20), darkMat);
+            disc.position.y = 0.03;
+            group.add(disc);
+            if (safeShape === 'passage') {
+                const rim = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.035, 6, 24), mat);
+                rim.rotation.x = Math.PI / 2;
+                rim.position.y = 0.08;
+                group.add(rim);
+            }
+        } else if (safeShape === 'stairs') {
+            for (let i = 0; i < 5; i++) {
+                const step = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.08, 0.16), mat);
+                step.position.set(0, 0.04 + i * 0.07, -0.32 + i * 0.16);
+                group.add(step);
+            }
+            const shadow = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.04, 0.35), darkMat);
+            shadow.position.set(0, 0.03, -0.5);
+            group.add(shadow);
+        } else if (safeShape === 'ladder') {
+            const poleA = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.1, 6), mat);
+            const poleB = poleA.clone();
+            poleA.position.set(-0.22, 0.55, 0); poleB.position.set(0.22, 0.55, 0);
+            group.add(poleA); group.add(poleB);
+            for (let i = 0; i < 5; i++) {
+                const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.48, 6), mat);
+                rung.rotation.z = Math.PI / 2;
+                rung.position.set(0, 0.18 + i * 0.18, 0);
+                group.add(rung);
+            }
+        } else if (safeShape === 'portal') {
+            const torus = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.055, 8, 28), mat);
+            torus.position.y = 0.65;
+            group.add(torus);
+            const glow = new THREE.Mesh(new THREE.CircleGeometry(0.36, 24), glowMat);
+            glow.position.y = 0.65;
+            group.add(glow);
+        } else if (safeShape === 'boat') {
+            const hull = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.25, 0.48), mat);
+            hull.position.y = 0.16;
+            const inside = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.26, 0.28), darkMat);
+            inside.position.y = 0.18;
+            group.add(hull); group.add(inside);
+        }
+
+        const pointer = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.28, 4), new THREE.MeshBasicMaterial({ color: 0xffee66, transparent: true, opacity: 0.8 }));
+        pointer.rotation.y = Math.PI / 4;
+        pointer.position.y = 1.15;
+        pointer.userData = { gmHighlight: true };
+        group.add(pointer);
+        return { group, shape: safeShape };
+    }
+
+    function createGMTransition(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `transition_${Date.now()}`;
+        if (gmTransitions.some(t => t.id === id)) { if (!cmd.silent) addLogMessage(`Passage already exists: ${id}`); return false; }
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_transition command.'); return false; }
+
+        const targetLevel = (cmd.targetLevel ?? cmd.toLevel ?? cmd.levelTo ?? level).toString();
+        if (!LEVELS[targetLevel]) { if (!cmd.silent) addLogMessage('Invalid transition target level.'); return false; }
+        const spawnX = Math.round(Number(cmd.spawnX ?? cmd.targetX ?? x));
+        const spawnY = Math.round(Number(cmd.spawnY ?? cmd.targetY ?? y));
+        if (!isValidTile(spawnX, spawnY, targetLevel)) { if (!cmd.silent) addLogMessage('Invalid transition spawn tile.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'Passage';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const colorHex = normalizeMarkerColor(cmd.color || '#222222');
+        const color = parseMarkerColor(colorHex);
+        const visual = buildGMTransitionVisual(cmd.shape, color);
+        const group = visual.group;
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.3, 1.0), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.6;
+        hitBox.userData = { isGMTransition: true, sourceLevel: level, transitionId: id, interactX: x, interactY: y, stopAdjacent: true };
+        group.add(hitBox);
+
+        const pos = getGridWorldPos(x, y, level);
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { transitionId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+
+        const transition = {
+            id, name, note, x, y, level,
+            targetLevel, spawnX, spawnY,
+            color: colorHex,
+            shape: visual.shape,
+            useFade: cmd.useFade !== false,
+            requiresFlag: typeof cmd.requiresFlag === 'string' && cmd.requiresFlag.trim() ? cmd.requiresFlag.trim() : null,
+            anchor: placement.anchorId || null,
+            group,
+            hitBox
+        };
+        gmTransitions.push(transition);
+        if (!cmd.silent) {
+            addLogMessage(`Passage created: ${name} (${formatDistanceDirection(x, y, level)}).`);
+            recordGMEvent('transition_created', { id, name, shape: transition.shape, x, y, level, targetLevel, spawnX, spawnY, anchor: transition.anchor });
+        }
+        return true;
+    }
+
+    function removeGMTransition(id, silent = false) {
+        const index = gmTransitions.findIndex(t => t.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No passage found: ${id}`); return false; }
+        const transition = gmTransitions[index];
+        const interIndex = interactables.indexOf(transition.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[transition.level].remove(transition.group);
+        disposeObject3D(transition.group);
+        gmTransitions.splice(index, 1);
+        if (!silent) {
+            addLogMessage(`Passage removed: ${transition.name}.`);
+            recordGMEvent('transition_removed', { id, name: transition.name, x: transition.x, y: transition.y, level: transition.level });
+        }
+        return true;
+    }
+
+    function clearGMTransitions() {
+        while (gmTransitions.length > 0) removeGMTransition(gmTransitions[0].id, true);
+    }
+
+    function executeGMTransition(id) {
+        const transition = gmTransitions.find(t => t.id === id);
+        if (!transition) return;
+        if (handlePendingItemUseOnTarget({ kind: 'transition', id: transition.id, name: transition.name, x: transition.x, y: transition.y, level: transition.level, note: transition.note, shape: transition.shape })) return;
+        setLastInteractionTarget({ kind: 'transition', id: transition.id, name: transition.name, x: transition.x, y: transition.y, level: transition.level, note: transition.note, shape: transition.shape });
+        recordGMEvent('transition_used', { id: transition.id, name: transition.name, x: transition.x, y: transition.y, level: transition.level, targetLevel: transition.targetLevel, spawnX: transition.spawnX, spawnY: transition.spawnY });
+        if (transition.requiresFlag && !worldFlags[transition.requiresFlag]) {
+            addLogMessage(`${transition.name} does not respond.`);
+            showDialogueMessage(transition.name, transition.note || 'Something blocks the way.');
+            recordGMEvent('transition_blocked_by_flag', { id: transition.id, requiresFlag: transition.requiresFlag });
+            return;
+        }
+        const go = () => executeLevelChange(transition.targetLevel, transition.spawnX, transition.spawnY);
+        if (transition.useFade) triggerFadeTransition(go);
+        else go();
+    }
+
     function moveGMObject(cmd) {
         const id = cmd.id || cmd.objectId || cmd.target;
         const obj = gmObjects.find(o => o.id === id);
@@ -2338,6 +2550,22 @@
                 walkable: floor.walkable !== false,
                 anchor: floor.anchor || null
             })),
+            transitions: gmTransitions.map(transition => ({
+                id: transition.id,
+                name: transition.name,
+                note: transition.note,
+                x: transition.x,
+                y: transition.y,
+                level: transition.level,
+                color: transition.color || '#222222',
+                shape: transition.shape || 'passage',
+                targetLevel: transition.targetLevel,
+                spawnX: transition.spawnX,
+                spawnY: transition.spawnY,
+                useFade: !!transition.useFade,
+                requiresFlag: transition.requiresFlag || null,
+                anchor: transition.anchor || null
+            })),
             removedWalls: gmRemovedWalls.map(wall => ({ ...wall }))
         };
     }
@@ -2346,7 +2574,7 @@
         syncWorldMemoryFromUI();
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
-            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors).`);
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTransitions.length} passages).`);
             return true;
         } catch (err) {
             if (!silent) addLogMessage('Could not save GM world in this browser.');
@@ -2375,6 +2603,7 @@
             clearGMHotspots();
             clearGMWalls();
             clearGMFloors();
+            clearGMTransitions();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
@@ -2393,6 +2622,7 @@
             if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
             if (Array.isArray(save.walls)) save.walls.forEach(wall => createGMWall({ ...wall, silent: true }));
             if (Array.isArray(save.floors)) save.floors.forEach(floor => createGMFloor({ ...floor, silent: true }));
+            if (Array.isArray(save.transitions)) save.transitions.forEach(transition => createGMTransition({ ...transition, silent: true }));
         } catch (err) {
             try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
             clearGMMarkers();
@@ -2400,6 +2630,7 @@
             clearGMHotspots();
             clearGMWalls();
             clearGMFloors();
+            clearGMTransitions();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
@@ -2407,7 +2638,7 @@
             return false;
         }
 
-        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors).`);
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTransitions.length} passages).`);
         return true;
     }
 
@@ -2418,6 +2649,7 @@
         clearGMHotspots();
         clearGMWalls();
         clearGMFloors();
+        clearGMTransitions();
         gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
@@ -2558,6 +2790,17 @@
                     if (removeGMFloor(cmd.id)) shouldSave = true;
                 }
                 else addLogMessage('Invalid remove_floor command.');
+            }
+
+            else if (cmd.op === 'create_transition' || cmd.op === 'create_passage' || cmd.op === 'create_portal' || cmd.op === 'create_stairs') {
+                if (createGMTransition(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_transition' || cmd.op === 'remove_passage' || cmd.op === 'remove_portal' || cmd.op === 'remove_stairs') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMTransition(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_transition command.');
             }
 
             else if (cmd.op === 'set_door_state') {
@@ -3138,8 +3381,8 @@
                 else if ((playerGridX === t1.x && playerGridY === t1.y) || (playerGridX === t2.x && playerGridY === t2.y)) { pathQueue = []; } 
                 else { pendingAction = null; addLogMessage("You can't reach the door."); }
 
-            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker || data.isGMObject || data.isGMHotspot)) {
-                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.isGMHotspot || !!data.stopAdjacent;
+            } else if (data && (data.isItem || data.isTransition || data.isGMTransition || data.isNPC || data.isGMMarker || data.isGMObject || data.isGMHotspot)) {
+                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.isGMHotspot || !!data.isGMTransition || !!data.stopAdjacent;
                 let newPath = findPath(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel, stopAdjacent);
 
                 pendingAction = () => {
@@ -3149,6 +3392,7 @@
                         else executeLevelChange(data.targetLevel, data.spawnX, data.spawnY);
                     }
                     else if (data.isNPC) startDialogue(data.npcId);
+                    else if (data.isGMTransition) executeGMTransition(data.transitionId);
                     else if (data.isGMMarker) examineGMMarker(data.markerId);
                     else if (data.isGMObject) examineGMObject(data.objectId);
                     else if (data.isGMHotspot) examineGMHotspot(data.hotspotId);
