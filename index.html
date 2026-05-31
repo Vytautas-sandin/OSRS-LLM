@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM WORLD MEMORY V0.8 BUILD - adds persistent summary, facts, and quest memory to GM payloads -->
+<!-- OSRS LLM INTERACTION CORE V1.1 BUILD - adds diegetic dialogue feedback, hotspots, last target, and safer in-world interactions -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · GM Prompt v0.9</title>
+    <title>Retro Coastal Town 3D · Interaction Core v1.1</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -21,6 +21,11 @@
         #tool-toggle { position: absolute; right: 10px; bottom: 60px; width: 140px; height: 40px; background: #3e3529; border: 2px solid #5c4e3c; color: #fff; display: none; align-items: center; justify-content: center; cursor: pointer; z-index: 20; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
         #tool-toggle:hover { background: #4e4539; }
         #tool-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
+
+        /* Look Around Button */
+        #look-btn { position: absolute; right: 10px; bottom: 10px; width: 140px; height: 40px; background: #3e3529; border: 2px solid #5c4e3c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 20; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
+        #look-btn:hover { background: #4e4539; }
+        #look-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
 
         /* Inventory Toggle Icon */
         #inv-toggle { position: absolute; right: 10px; top: 10px; width: 44px; height: 44px; background: #3e3529; border: 2px solid #5c4e3c; color: white; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 20; font-size: 24px; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
@@ -96,11 +101,12 @@
     <div id="inv-toggle" title="Toggle Inventory">🎒</div>
     <div id="inventory"></div>
     <div id="tool-toggle">👟 Mode: Walk</div>
+    <div id="look-btn" title="Inspect Nearby">🔎 Inspect</div>
     <div id="context-menu"></div>
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · GM Prompt v0.9</div>
+        <div id="dev-panel-title">LLM / GM Panel · Interaction Core v1.1</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -110,6 +116,7 @@
             <button id="save-world-state" class="dev-btn">Save</button>
             <button id="load-world-state" class="dev-btn">Load</button>
             <button id="reset-world-state" class="dev-btn">Reset</button>
+            <button id="look-around-dev" class="dev-btn">Inspect</button>
         </div>
         <div class="dev-label">Player action / question for the GM</div>
         <textarea id="player-action" spellcheck="false" placeholder="Example: I pry open the salt-worn chest with the shovel."></textarea>
@@ -797,6 +804,8 @@
         activeDialogue = DIALOGUES[genericId];
         dialogueStep = 0;
         document.getElementById('dialogue-box').style.display = 'flex';
+        const npc = npcs.find(n => n.id === npcId);
+        if (npc) setLastInteractionTarget({ kind: 'npc', id: npcId, name: npcId, x: npc.gridX, y: npc.gridY, level: npc.level });
         recordGMEvent('npc_dialogue_started', { npcId, dialogueId: genericId });
         renderDialogue();
     }
@@ -810,6 +819,15 @@
         const line = activeDialogue[dialogueStep];
         document.getElementById('d-speaker').innerText = line.speaker;
         document.getElementById('d-text').innerText = line.text;
+    }
+
+    function showDialogueMessage(speaker, text) {
+        const cleanSpeaker = String(speaker || 'World').slice(0, 60);
+        const cleanText = String(text || '').trim() || 'Nothing happens.';
+        activeDialogue = [{ speaker: cleanSpeaker, text: cleanText }];
+        dialogueStep = 0;
+        document.getElementById('dialogue-box').style.display = 'flex';
+        renderDialogue();
     }
 
     window.continueDialogue = function() {
@@ -835,7 +853,9 @@
     const worldMemory = { summary: '', facts: [], quests: {} };
     const gmMarkers = [];
     const gmObjects = [];
+    const gmHotspots = [];
     const gmEvents = [];
+    let lastInteractionTarget = null;
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
     const GM_EVENT_LIMIT = 80;
     const GM_MEMORY_LIMIT = 40;
@@ -877,6 +897,24 @@
 
     function markGMResponseResolved() {
         lastGMResponseEventIndex = gmEvents.length;
+    }
+
+    function setLastInteractionTarget(target) {
+        if (!target || typeof target !== 'object') return;
+        lastInteractionTarget = {
+            kind: String(target.kind || 'target'),
+            id: target.id ? String(target.id) : null,
+            name: target.name ? String(target.name) : null,
+            x: Number.isFinite(Number(target.x)) ? Number(target.x) : null,
+            y: Number.isFinite(Number(target.y)) ? Number(target.y) : null,
+            level: target.level ? String(target.level) : currentLevel,
+            note: target.note ? String(target.note).slice(0, 500) : '',
+            selectedAt: new Date().toISOString()
+        };
+    }
+
+    function getLastInteractionTarget() {
+        return lastInteractionTarget ? { ...lastInteractionTarget } : null;
     }
 
     function safeMemoryText(value, max = 2400) {
@@ -1033,6 +1071,112 @@
             }));
     }
 
+    function getNearbyHotspots(radius = 8) {
+        return gmHotspots
+            .filter(hotspot => hotspot.level === currentLevel)
+            .filter(hotspot => Math.max(Math.abs(hotspot.x - playerGridX), Math.abs(hotspot.y - playerGridY)) <= radius)
+            .map(hotspot => ({
+                id: hotspot.id,
+                name: hotspot.name,
+                x: hotspot.x,
+                y: hotspot.y,
+                surface: hotspot.surface,
+                note: hotspot.note,
+                visible: hotspot.visible !== false,
+                used: !!hotspot.used
+            }));
+    }
+
+    function distanceToPlayerTile(x, y, level = currentLevel) {
+        if (level !== currentLevel) return Infinity;
+        return Math.max(Math.abs(x - playerGridX), Math.abs(y - playerGridY));
+    }
+
+    function directionToPlayerTile(x, y, level = currentLevel) {
+        if (level !== currentLevel) return `on level ${level}`;
+        const dx = x - playerGridX;
+        const dy = y - playerGridY;
+        const horizontal = dx > 0 ? 'east' : dx < 0 ? 'west' : '';
+        const vertical = dy > 0 ? 'south' : dy < 0 ? 'north' : '';
+        if (!horizontal && !vertical) return 'here';
+        return [vertical, horizontal].filter(Boolean).join('-');
+    }
+
+    function formatDistanceDirection(x, y, level = currentLevel) {
+        if (level !== currentLevel) return `on ${LEVELS[level]?.name || 'another level'}`;
+        const dist = distanceToPlayerTile(x, y, level);
+        const dir = directionToPlayerTile(x, y, level);
+        if (dist === 0) return 'here';
+        return `${dist} tile${dist === 1 ? '' : 's'} ${dir}`;
+    }
+
+    function findNearbyFreeTile(level = currentLevel, maxRadius = 3) {
+        const originX = playerGridX;
+        const originY = playerGridY;
+        for (let r = 0; r <= maxRadius; r++) {
+            for (let dx = -r; dx <= r; dx++) {
+                for (let dy = -r; dy <= r; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                    const x = originX + dx;
+                    const y = originY + dy;
+                    if (!isValidTile(x, y, level)) continue;
+                    if (gmObjects.some(obj => obj.level === level && obj.x === x && obj.y === y)) continue;
+                    if (gmMarkers.some(marker => marker.level === level && marker.x === x && marker.y === y)) continue;
+                    if (gmHotspots.some(hotspot => hotspot.level === level && hotspot.x === x && hotspot.y === y)) continue;
+                    return { x, y };
+                }
+            }
+        }
+        return { x: originX, y: originY };
+    }
+
+    function lookAround() {
+        const discoverables = [];
+
+        gmHotspots.forEach(hotspot => discoverables.push({
+            kind: 'hotspot', name: hotspot.name, x: hotspot.x, y: hotspot.y, level: hotspot.level,
+            note: hotspot.note, extra: hotspot.surface || 'hotspot'
+        }));
+        gmObjects.forEach(obj => discoverables.push({
+            kind: 'object', name: obj.name, x: obj.x, y: obj.y, level: obj.level,
+            note: obj.note, extra: obj.used ? 'used' : obj.shape
+        }));
+        gmMarkers.forEach(marker => discoverables.push({
+            kind: 'marker', name: marker.name, x: marker.x, y: marker.y, level: marker.level,
+            note: marker.note, extra: 'marker'
+        }));
+        if (typeof groundItems !== 'undefined') groundItems.forEach(item => {
+            const data = item.hitBox.userData;
+            if (data.sourceLevel === currentLevel && ITEM_DEFS[data.type]) discoverables.push({
+                kind: 'item', name: ITEM_DEFS[data.type].name, x: data.interactX, y: data.interactY, level: data.sourceLevel,
+                note: '', extra: 'item'
+            });
+        });
+        if (typeof npcs !== 'undefined') npcs.forEach(npc => {
+            if (npc.level === currentLevel) discoverables.push({
+                kind: 'npc', name: npc.id, x: npc.gridX, y: npc.gridY, level: npc.level,
+                note: '', extra: npc.type
+            });
+        });
+
+        const nearby = discoverables
+            .filter(item => item.level === currentLevel)
+            .map(item => ({ ...item, dist: distanceToPlayerTile(item.x, item.y, item.level), dir: directionToPlayerTile(item.x, item.y, item.level) }))
+            .filter(item => item.dist <= 4)
+            .sort((a, b) => a.dist - b.dist)
+            .slice(0, 6);
+
+        addLogMessage('You inspect your surroundings.');
+        const text = nearby.length === 0
+            ? 'Nothing nearby catches your attention.'
+            : `Nearby, you notice ${nearby.map(item => item.name).join(', ')}.`;
+        showDialogueMessage('Inspect', text);
+
+        recordGMEvent('looked_around', {
+            results: nearby.map(item => ({ kind: item.kind, name: item.name, x: item.x, y: item.y, dist: item.dist, dir: item.dir }))
+        });
+    }
+
     function hasSavedGMWorld() {
         try { return !!localStorage.getItem(GM_SAVE_KEY); }
         catch (err) { return false; }
@@ -1049,7 +1193,7 @@
                 'Preserve continuity with worldMemory, flags, nearby context, inventory, and eventDelta.',
                 'Resolve the playerAction.raw fairly. Do not grant impossible outcomes without cost, clue, or consequence.',
                 'Use a few meaningful commands rather than many tiny ones.',
-                'Prefer creating interactable objects or markers over changing source code.',
+                'Prefer changing the world through diegetic objects, hotspots, dialogue, items, flags, and memory.',
                 'Keep names and ids stable. Use lowercase snake_case ids.'
             ],
             commandSchema: {
@@ -1059,9 +1203,12 @@
                 spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
                 move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
                 update_dialogue: { id: 'npc dialogue id', lines: [{ speaker: 'string', text: 'string' }] },
+                show_dialogue: { speaker: 'string', text: 'string; diegetic narration or object feedback shown in the dialogue UI' },
                 create_marker: { id: 'string', name: 'string', note: 'string', x: 'integer', y: 'integer', level: '-1 | 0 | 2', color: '#rrggbb' },
                 remove_marker: { id: 'string' },
-                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'integer', y: 'integer', level: '-1 | 0 | 2', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
+                create_hotspot: { id: 'string', name: 'string', note: 'string', surface: 'floor | wall | altar | sand | water | door', x: 'optional integer; omit with nearPlayer:true to auto-place near the player', y: 'optional integer; omit with nearPlayer:true to auto-place near the player', level: '-1 | 0 | 2', nearPlayer: 'optional boolean', visible: 'optional boolean; false creates an invisible tap area', color: '#rrggbb', setFlag: 'optional {key,value}', giveItem: 'optional item type', removeOnInteract: 'optional boolean' },
+                remove_hotspot: { id: 'string' },
+                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer; omit with nearPlayer:true to auto-place near the player', y: 'optional integer; omit with nearPlayer:true to auto-place near the player', level: '-1 | 0 | 2', nearPlayer: 'optional boolean', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
                 remove_object: { id: 'string' },
                 set_world_summary: { summary: 'short string' },
                 add_memory: { text: 'important persistent fact string' },
@@ -1072,9 +1219,9 @@
             exampleResponse: {
                 narration: 'You find a salt-worn seam in the stone. It clicks, but something deeper still holds shut.',
                 commands: [
-                    { op: 'add_log', text: 'You discovered a hidden seam in the temple stone.' },
+                    { op: 'show_dialogue', speaker: 'Temple Wall', text: 'A narrow seam in the wall clicks beneath your fingers.' },
                     { op: 'set_flag', key: 'found_temple_seam', value: true },
-                    { op: 'create_object', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', shape: 'stone', x: 15, y: 18, level: '0', color: '#9a9a8a' },
+                    { op: 'create_hotspot', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', surface: 'wall', x: 15, y: 18, level: '0', color: '#9a9a8a' },
                     { op: 'add_memory', text: 'The player found a hidden stone seam near the temple entrance.' }
                 ]
             }
@@ -1087,7 +1234,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'gm_prompt_v0_9',
+            build: 'interaction_core_v1_1',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1102,8 +1249,10 @@
                 npcs: getNearbyNPCs(),
                 items: getNearbyItems(),
                 markers: getNearbyMarkers(),
-                objects: getNearbyGMObjects()
+                objects: getNearbyGMObjects(),
+                hotspots: getNearbyHotspots()
             },
+            lastTarget: getLastInteractionTarget(),
             flags: worldFlags,
             worldMemory: memorySnapshot,
             gmInstructions: buildGMInstructions(),
@@ -1111,6 +1260,7 @@
                 hasSavedWorld: hasSavedGMWorld(),
                 markerCount: gmMarkers.length,
                 objectCount: gmObjects.length,
+                hotspotCount: gmHotspots.length,
                 memoryFactCount: memorySnapshot.facts.length,
                 questCount: memorySnapshot.quests.length
             },
@@ -1120,7 +1270,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema and update worldMemory when story facts or quest state change.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. Update worldMemory when story facts or quest state change.'
         };
     }
 
@@ -1154,7 +1304,7 @@
             'You are the GM for OSRS-LLM, a small OSRS-inspired 3D adventure engine.',
             '',
             'Resolve the player action using the payload below. Return valid JSON only: {"narration":"...","commands":[...]}.',
-            'Do not use markdown fences. Do not explain. Use only supported command ops from gmInstructions.commandSchema.',
+            'Do not use markdown fences. Do not explain. Use only supported command ops from gmInstructions.commandSchema. Use show_dialogue and create_hotspot for environmental discoveries.',
             'When important story context changes, update worldMemory using set_world_summary, add_memory, or set_quest.',
             '',
             'PAYLOAD:',
@@ -1275,9 +1425,145 @@
     function examineGMMarker(markerId) {
         const marker = gmMarkers.find(m => m.id === markerId);
         if (!marker) return;
+        setLastInteractionTarget({ kind: 'marker', id: marker.id, name: marker.name, x: marker.x, y: marker.y, level: marker.level, note: marker.note });
         addLogMessage(marker.name);
         if (marker.note) addLogMessage(marker.note);
+        showDialogueMessage(marker.name, marker.note || 'This marker catches your attention.');
         recordGMEvent('marker_examined', { id: marker.id, name: marker.name, x: marker.x, y: marker.y, level: marker.level, note: marker.note });
+    }
+
+    function buildGMHotspotVisual(surface, color, visible = true) {
+        const group = new THREE.Group();
+        if (!visible) return group;
+
+        const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true, transparent: true, opacity: 0.9 });
+        const safeSurface = ['floor', 'wall', 'altar', 'sand', 'water', 'door'].includes(surface) ? surface : 'floor';
+
+        if (safeSurface === 'wall' || safeSurface === 'door') {
+            const plate = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.36, 0.06), mat);
+            plate.position.set(0, 0.75, -0.43);
+            group.add(plate);
+        } else if (safeSurface === 'altar') {
+            const glyph = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.035, 12), mat);
+            glyph.position.y = 0.06;
+            group.add(glyph);
+        } else if (safeSurface === 'sand') {
+            const patch = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.025, 0.55), mat);
+            patch.position.y = 0.035;
+            patch.rotation.y = Math.PI / 8;
+            group.add(patch);
+        } else if (safeSurface === 'water') {
+            const ripple = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.025, 6, 24), mat);
+            ripple.rotation.x = Math.PI / 2;
+            ripple.position.y = 0.04;
+            group.add(ripple);
+        } else {
+            const mark = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.03, 4), mat);
+            mark.rotation.y = Math.PI / 4;
+            mark.position.y = 0.04;
+            group.add(mark);
+        }
+        return group;
+    }
+
+    function createGMHotspot(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `hotspot_${Date.now()}`;
+        if (gmHotspots.some(h => h.id === id)) { if (!cmd.silent) addLogMessage(`Hotspot already exists: ${id}`); return false; }
+
+        const level = (cmd.level ?? currentLevel).toString();
+        let x = Math.round(Number(cmd.x));
+        let y = Math.round(Number(cmd.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y) || cmd.nearPlayer === true || cmd.place === 'near_player') {
+            const tile = findNearbyFreeTile(level, 3);
+            x = tile.x;
+            y = tile.y;
+        }
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_hotspot command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'Interesting Spot';
+        const note = typeof cmd.note === 'string' ? cmd.note : '';
+        const surface = ['floor', 'wall', 'altar', 'sand', 'water', 'door'].includes(cmd.surface) ? cmd.surface : 'floor';
+        const visible = cmd.visible !== false && cmd.hidden !== true;
+        const colorHex = normalizeMarkerColor(cmd.color || (surface === 'sand' ? '#d9c27e' : '#b8b0a0'));
+        const color = parseMarkerColor(colorHex);
+        const group = buildGMHotspotVisual(surface, color, visible);
+
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.3, 1.0), new THREE.MeshBasicMaterial({ visible: false }));
+        hitBox.position.y = 0.65;
+        hitBox.userData = { isGMHotspot: true, sourceLevel: level, hotspotId: id, interactX: x, interactY: y };
+        group.add(hitBox);
+
+        const pos = getGridWorldPos(x, y, level);
+        group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.userData = { hotspotId: id };
+        levelGroups[level].add(group);
+        interactables.push(hitBox);
+
+        const setFlag = cmd.setFlag && typeof cmd.setFlag === 'object' && typeof cmd.setFlag.key === 'string'
+            ? { key: cmd.setFlag.key, value: cmd.setFlag.value }
+            : (typeof cmd.setFlag === 'string' ? { key: cmd.setFlag, value: true } : null);
+        const giveItem = typeof cmd.giveItem === 'string' && ITEM_DEFS[cmd.giveItem] ? cmd.giveItem : null;
+
+        gmHotspots.push({
+            id, name, note, x, y, level, surface, visible,
+            color: colorHex, giveItem, setFlag, removeOnInteract: !!cmd.removeOnInteract, used: !!cmd.used,
+            group, hitBox
+        });
+
+        if (!cmd.silent) {
+            addLogMessage(`Hotspot created: ${name}.`);
+            recordGMEvent('hotspot_created', { id, name, surface, x, y, level, note, visible });
+        }
+        return true;
+    }
+
+    function removeGMHotspot(id, silent = false) {
+        const index = gmHotspots.findIndex(h => h.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No hotspot found: ${id}`); return false; }
+        const hotspot = gmHotspots[index];
+        const interIndex = interactables.indexOf(hotspot.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[hotspot.level].remove(hotspot.group);
+        disposeObject3D(hotspot.group);
+        gmHotspots.splice(index, 1);
+        if (!silent) {
+            addLogMessage(`Hotspot removed: ${hotspot.name}.`);
+            recordGMEvent('hotspot_removed', { id, name: hotspot.name, x: hotspot.x, y: hotspot.y, level: hotspot.level });
+        }
+        return true;
+    }
+
+    function clearGMHotspots() {
+        while (gmHotspots.length > 0) removeGMHotspot(gmHotspots[0].id, true);
+    }
+
+    function examineGMHotspot(hotspotId) {
+        const hotspot = gmHotspots.find(h => h.id === hotspotId);
+        if (!hotspot) return;
+
+        setLastInteractionTarget({ kind: 'hotspot', id: hotspot.id, name: hotspot.name, x: hotspot.x, y: hotspot.y, level: hotspot.level, note: hotspot.note });
+        addLogMessage(hotspot.name);
+        if (hotspot.note) addLogMessage(hotspot.note);
+        showDialogueMessage(hotspot.name, hotspot.note || 'There is something worth noticing here.');
+        recordGMEvent('hotspot_examined', { id: hotspot.id, name: hotspot.name, surface: hotspot.surface, x: hotspot.x, y: hotspot.y, level: hotspot.level, wasUsed: !!hotspot.used });
+
+        let changed = false;
+        if (!hotspot.used) {
+            if (hotspot.setFlag && hotspot.setFlag.key) {
+                worldFlags[hotspot.setFlag.key] = hotspot.setFlag.value;
+                recordGMEvent('flag_set_by_hotspot', { hotspotId: hotspot.id, key: hotspot.setFlag.key, value: hotspot.setFlag.value });
+                changed = true;
+            }
+            if (hotspot.giveItem) changed = giveInventoryItem(hotspot.giveItem) || changed;
+            if (hotspot.setFlag || hotspot.giveItem) hotspot.used = true;
+            if (hotspot.removeOnInteract) {
+                removeGMHotspot(hotspotId, true);
+                recordGMEvent('hotspot_removed_on_interact', { id: hotspot.id, name: hotspot.name });
+                changed = true;
+            }
+        }
+
+        if (changed) saveGMWorld(true);
     }
 
     function buildGMObjectVisual(shape, color) {
@@ -1324,13 +1610,33 @@
         return { group, shape: safeShape };
     }
 
+    function addGMObjectHighlight(group) {
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffee66, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.025, 6, 24), ringMat);
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = 0.07;
+        ring.userData = { gmHighlight: true };
+        group.add(ring);
+
+        const pointer = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.32, 4), ringMat.clone());
+        pointer.rotation.y = Math.PI / 4;
+        pointer.position.y = 1.25;
+        pointer.userData = { gmHighlight: true };
+        group.add(pointer);
+    }
+
     function createGMObject(cmd) {
         const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `object_${Date.now()}`;
         if (gmObjects.some(obj => obj.id === id)) { if (!cmd.silent) addLogMessage(`Object already exists: ${id}`); return false; }
 
         const level = (cmd.level ?? currentLevel).toString();
-        const x = Math.round(Number(cmd.x));
-        const y = Math.round(Number(cmd.y));
+        let x = Math.round(Number(cmd.x));
+        let y = Math.round(Number(cmd.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y) || cmd.nearPlayer === true || cmd.place === 'near_player') {
+            const tile = findNearbyFreeTile(level, 3);
+            x = tile.x;
+            y = tile.y;
+        }
         if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_object command.'); return false; }
 
         const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Object';
@@ -1339,6 +1645,7 @@
         const color = parseMarkerColor(colorHex);
         const visual = buildGMObjectVisual(cmd.shape, color);
         const group = visual.group;
+        if (cmd.highlight !== false) addGMObjectHighlight(group);
 
         const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.2, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
         hitBox.position.y = 0.6;
@@ -1369,8 +1676,8 @@
         });
 
         if (!cmd.silent) {
-            addLogMessage(`Object created: ${name}.`);
-            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note });
+            addLogMessage(`Object created: ${name} (${formatDistanceDirection(x, y, level)}).`);
+            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note, direction: formatDistanceDirection(x, y, level) });
         }
         return true;
     }
@@ -1399,8 +1706,10 @@
         const obj = gmObjects.find(o => o.id === objectId);
         if (!obj) return;
 
+        setLastInteractionTarget({ kind: 'object', id: obj.id, name: obj.name, x: obj.x, y: obj.y, level: obj.level, note: obj.note });
         addLogMessage(obj.name);
         if (obj.note) addLogMessage(obj.note);
+        showDialogueMessage(obj.name, obj.note || 'You examine it closely.');
         recordGMEvent('object_interacted', { id: obj.id, name: obj.name, shape: obj.shape, x: obj.x, y: obj.y, level: obj.level, wasUsed: !!obj.used });
 
         let changed = false;
@@ -1429,7 +1738,7 @@
 
     function buildGMWorldSave() {
         return {
-            version: 2,
+            version: 3,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
@@ -1441,6 +1750,21 @@
                 y: marker.y,
                 level: marker.level,
                 color: marker.color || '#ffd34d'
+            })),
+            hotspots: gmHotspots.map(hotspot => ({
+                id: hotspot.id,
+                name: hotspot.name,
+                note: hotspot.note,
+                x: hotspot.x,
+                y: hotspot.y,
+                level: hotspot.level,
+                color: hotspot.color || '#b8b0a0',
+                surface: hotspot.surface || 'floor',
+                visible: hotspot.visible !== false,
+                giveItem: hotspot.giveItem || null,
+                setFlag: hotspot.setFlag || null,
+                removeOnInteract: !!hotspot.removeOnInteract,
+                used: !!hotspot.used
             })),
             objects: gmObjects.map(obj => ({
                 id: obj.id,
@@ -1463,7 +1787,7 @@
         syncWorldMemoryFromUI();
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
-            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots).`);
             return true;
         } catch (err) {
             if (!silent) addLogMessage('Could not save GM world in this browser.');
@@ -1489,6 +1813,7 @@
         try {
             clearGMMarkers();
             clearGMObjects();
+            clearGMHotspots();
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
@@ -1501,18 +1826,20 @@
                 renderWorldMemoryUI();
             }
             if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
+            if (Array.isArray(save.hotspots)) save.hotspots.forEach(hotspot => createGMHotspot({ ...hotspot, silent: true }));
             if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
         } catch (err) {
             try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
             clearGMMarkers();
             clearGMObjects();
+            clearGMHotspots();
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
 
-        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots).`);
         return true;
     }
 
@@ -1520,6 +1847,7 @@
         try { localStorage.removeItem(GM_SAVE_KEY); } catch (err) {}
         clearGMMarkers();
         clearGMObjects();
+        clearGMHotspots();
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
         gmEvents.length = 0;
@@ -1543,7 +1871,10 @@
         try { payload = JSON.parse(raw); }
         catch (err) { addLogMessage('Invalid JSON.'); return; }
 
-        if (payload.narration) addLogMessage(payload.narration);
+        if (payload.narration) {
+            addLogMessage(payload.narration);
+            showDialogueMessage('GM', payload.narration);
+        }
         const commands = Array.isArray(payload) ? payload : payload.commands;
         if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
 
@@ -1555,6 +1886,15 @@
 
             if (cmd.op === 'add_log') {
                 if (typeof cmd.text === 'string') addLogMessage(cmd.text);
+            }
+
+            else if (cmd.op === 'show_dialogue' || cmd.op === 'show_message') {
+                const text = cmd.text ?? cmd.message ?? cmd.narration;
+                if (typeof text === 'string') {
+                    showDialogueMessage(cmd.speaker || cmd.title || 'World', text);
+                    addLogMessage(`${cmd.speaker || 'World'}: ${text}`);
+                    recordGMEvent('dialogue_shown_by_gm', { speaker: cmd.speaker || cmd.title || 'World', text });
+                } else addLogMessage('Invalid show_dialogue command.');
             }
 
             else if (cmd.op === 'set_flag') {
@@ -1601,6 +1941,17 @@
                     if (removeGMMarker(cmd.id)) shouldSave = true;
                 }
                 else addLogMessage('Invalid remove_marker command.');
+            }
+
+            else if (cmd.op === 'create_hotspot') {
+                if (createGMHotspot(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_hotspot') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMHotspot(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_hotspot command.');
             }
 
             else if (cmd.op === 'create_object') {
@@ -1686,6 +2037,8 @@
     document.getElementById('save-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); saveGMWorld(false); });
     document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
     document.getElementById('reset-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resetGMWorldSave(); });
+    document.getElementById('look-around-dev').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); lookAround(); });
+    document.getElementById('look-btn').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); lookAround(); });
     window.setTimeout(() => {
         try { loadGMWorld(true); }
         catch (err) {
@@ -2042,7 +2395,7 @@
             activeDialogue = null;
         }
 
-        if (event.target.closest('#ui-layer') || event.target.closest('#inventory') || event.target.closest('#context-menu') || event.target.closest('#inv-toggle') || event.target.closest('#tool-toggle') || event.target.closest('#dev-toggle') || event.target.closest('#dev-panel') || event.target.closest('#chat-box') || event.target.closest('#dialogue-box')) return;
+        if (event.target.closest('#ui-layer') || event.target.closest('#inventory') || event.target.closest('#context-menu') || event.target.closest('#inv-toggle') || event.target.closest('#tool-toggle') || event.target.closest('#look-btn') || event.target.closest('#dev-toggle') || event.target.closest('#dev-panel') || event.target.closest('#chat-box') || event.target.closest('#dialogue-box')) return;
 
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
         mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -2103,8 +2456,8 @@
                 else if ((playerGridX === t1.x && playerGridY === t1.y) || (playerGridX === t2.x && playerGridY === t2.y)) { pathQueue = []; } 
                 else { pendingAction = null; addLogMessage("You can't reach the door."); }
 
-            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker || data.isGMObject)) {
-                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.stopAdjacent;
+            } else if (data && (data.isItem || data.isTransition || data.isNPC || data.isGMMarker || data.isGMObject || data.isGMHotspot)) {
+                const stopAdjacent = !!data.isNPC || !!data.isGMMarker || !!data.isGMObject || !!data.isGMHotspot || !!data.stopAdjacent;
                 let newPath = findPath(playerGridX, playerGridY, data.interactX, data.interactY, currentLevel, stopAdjacent);
 
                 pendingAction = () => {
@@ -2116,6 +2469,7 @@
                     else if (data.isNPC) startDialogue(data.npcId);
                     else if (data.isGMMarker) examineGMMarker(data.markerId);
                     else if (data.isGMObject) examineGMObject(data.objectId);
+                    else if (data.isGMHotspot) examineGMHotspot(data.hotspotId);
                 };
 
                 if (newPath.length > 0) pathQueue = newPath;
