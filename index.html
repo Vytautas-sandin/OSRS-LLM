@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM SEMANTIC PLACEMENT V1.3 BUILD - adds named world anchors and safer near-location placement -->
+<!-- OSRS LLM ADVENTURE SEED V1.4 BUILD - adds an in-world quest setup prompt using anchors, hotspots, objects, dialogue, and memory -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Semantic Placement v1.3</title>
+    <title>Retro Coastal Town 3D · Adventure Seed v1.4</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -47,7 +47,7 @@
         #world-memory { width: 100%; height: 70px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
         #llm-io { width: 100%; height: 130px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
         .dev-row { display: flex; gap: 6px; }
-        .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 6px; font-weight: bold; cursor: pointer; }
+        .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 5px; font-weight: bold; cursor: pointer; font-size: 11px; }
         .dev-btn:active { transform: translate(1px, 1px); }
         #use-indicator { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); max-width: calc(100vw - 30px); background: rgba(31, 45, 36, 0.95); border: 2px solid #d0c8b0; color: #fff; display: none; align-items: center; justify-content: center; padding: 8px 12px; z-index: 28; font-size: 13px; font-weight: bold; text-shadow: 1px 1px 0 #000; box-shadow: 2px 2px 6px rgba(0,0,0,0.5); pointer-events: none; }
 
@@ -108,10 +108,11 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Semantic Placement v1.3</div>
+        <div id="dev-panel-title">LLM / GM Panel · Adventure Seed v1.4</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
+            <button id="copy-adventure-seed" class="dev-btn">Copy Seed</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
         </div>
         <div class="dev-row">
@@ -121,7 +122,7 @@
             <button id="look-around-dev" class="dev-btn">Inspect</button>
         </div>
         <div class="dev-label">Player action / question for the GM</div>
-        <textarea id="player-action" spellcheck="false" placeholder="Example: I pry open the salt-worn chest with the shovel."></textarea>
+        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
         <div class="dev-label">World summary</div>
         <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
         <div class="dev-label">Memory facts / quest notes, one per line</div>
@@ -142,7 +143,7 @@
     </div>
 
 <script>
-    // OSRS LLM SEMANTIC PLACEMENT V1.3 BUILD
+    // OSRS LLM ADVENTURE SEED V1.4 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -1316,6 +1317,7 @@
                 'Use a few meaningful commands rather than many tiny ones.',
                 'Prefer changing the world through diegetic objects, hotspots, dialogue, items, flags, and memory.',
                 'Prefer near/world anchor placement over raw x/y coordinates. Use anchors from payload.worldAnchors, such as temple_entrance or west_beach.',
+                'When creating a quest setup, manifest it in-world through NPC dialogue, hotspots, objects, flags, and memory. Do not merely list quest options.',
                 'Keep names and ids stable. Use lowercase snake_case ids.'
             ],
             commandSchema: {
@@ -1356,7 +1358,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'semantic_placement_v1_3',
+            build: 'adventure_seed_v1_4',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1396,7 +1398,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. Update worldMemory when story facts or quest state change.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. If asked to seed an adventure, create a small playable in-world setup rather than listing options. Update worldMemory when story facts or quest state change.'
         };
     }
 
@@ -1444,6 +1446,44 @@
         copyTextToClipboard(text)
             .then(() => addLogMessage('GM prompt copied.'))
             .catch(() => addLogMessage('GM prompt created in the panel. Copy it manually.'));
+    }
+
+    function buildAdventureSeedPrompt() {
+        const payload = buildGMPayload();
+        const brief = (document.getElementById('player-action')?.value || '').trim() || 'Create a small, self-contained opening quest for this coastal town. Make it feel discoverable through the 3D world, not like a checklist.';
+        return [
+            'You are the GM and scenario designer for OSRS-LLM, a small OSRS-inspired 3D adventure engine.',
+            '',
+            'Create a playable in-world quest setup. Do NOT list options or instructions for the player. Instead, make the adventure exist inside the game world through dialogue, hotspots, objects, items, flags, and memory.',
+            '',
+            'Return valid JSON only: {"narration":"...","commands":[...]}',
+            'Do not use markdown fences. Do not explain outside JSON.',
+            '',
+            'ADVENTURE BRIEF:',
+            brief,
+            '',
+            'DESIGN RULES:',
+            '- Keep the setup small: 3 to 7 commands.',
+            '- Use named anchors from payload.worldAnchors instead of raw coordinates whenever possible.',
+            '- Start near the player or at an obvious nearby anchor unless the setup clearly points elsewhere through dialogue or visible world state.',
+            '- Use show_dialogue for the opening moment or an NPC/object line.',
+            '- Use create_hotspot for environmental clues such as seams, pressure stones, inscriptions, soft sand, wall cracks, altar marks, loose floorboards, or strange water.',
+            '- Use create_object only for visible physical props such as chests, scrolls, signs, stones, crates, or orbs.',
+            '- Use update_dialogue when an existing NPC should become part of the setup.',
+            '- Use set_quest and add_memory to preserve the adventure state, but do not rely on the player reading a quest log.',
+            '- Do not solve the quest in the setup. Create a concrete first thing the player can notice and interact with.',
+            '',
+            'CURRENT GAME PAYLOAD:',
+            JSON.stringify(payload, null, 2)
+        ].join('\n');
+    }
+
+    function copyAdventureSeedPrompt() {
+        const text = buildAdventureSeedPrompt();
+        document.getElementById('llm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('Adventure seed prompt copied.'))
+            .catch(() => addLogMessage('Adventure seed prompt created in the panel. Copy it manually.'));
     }
 
     function isValidTile(x, y, level) {
@@ -1980,7 +2020,8 @@
                 giveItem: hotspot.giveItem || null,
                 setFlag: hotspot.setFlag || null,
                 removeOnInteract: !!hotspot.removeOnInteract,
-                used: !!hotspot.used
+                used: !!hotspot.used,
+                anchor: hotspot.anchor || null
             })),
             objects: gmObjects.map(obj => ({
                 id: obj.id,
@@ -1994,7 +2035,8 @@
                 giveItem: obj.giveItem || null,
                 setFlag: obj.setFlag || null,
                 removeOnInteract: !!obj.removeOnInteract,
-                used: !!obj.used
+                used: !!obj.used,
+                anchor: obj.anchor || null
             }))
         };
     }
@@ -2250,6 +2292,7 @@
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
     document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
+    document.getElementById('copy-adventure-seed').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyAdventureSeedPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
     document.getElementById('save-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); saveGMWorld(false); });
     document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
