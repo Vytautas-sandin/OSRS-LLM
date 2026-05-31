@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<!-- OSRS LLM ADVENTURE SEED V1.4 BUILD - adds an in-world quest setup prompt using anchors, hotspots, objects, dialogue, and memory -->
+<!-- OSRS LLM MOBILE ORBIT CONTROLS V1.6 BUILD - adds drag-to-orbit camera controls and safer canvas-only tap handling -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · 3D Canvas Protocol v1.5</title>
+    <title>Retro Coastal Town 3D · Mobile Orbit Controls v1.6</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
-        canvas { display: block; image-rendering: pixelated; }
+        canvas { display: block; image-rendering: pixelated; touch-action: none; }
         
         /* General UI Layer */
         #ui-layer { position: absolute; top: 10px; left: 10px; color: #ffff00; text-shadow: 1px 1px 0 #000; pointer-events: none; z-index: 10; }
@@ -95,8 +95,8 @@
     <div id="ui-layer">
         <div id="level-display">Level: 0 (Ground)</div>
         <div class="instruction">Tap Ground/Pavement: Walk</div>
-        <div class="instruction">Tap Doors: Open/Close</div>
-        <div class="instruction">Tap NPCs/Items: Interact</div>
+        <div class="instruction">Drag Scene: Rotate / Pitch</div>
+        <div class="instruction">Tap Doors/NPCs/Items: Interact</div>
     </div>
 
     <div id="inv-toggle" title="Toggle Inventory">🎒</div>
@@ -108,7 +108,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · 3D Canvas v1.5</div>
+        <div id="dev-panel-title">LLM / GM Panel · Mobile Orbit v1.6</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -186,6 +186,8 @@
     renderer.setPixelRatio(0.5);
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
+    renderer.domElement.setAttribute('aria-label', '3D game canvas');
+    renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
     
@@ -1410,7 +1412,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'canvas_protocol_v1_5',
+            build: 'mobile_orbit_v1_6',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -2987,7 +2989,87 @@
         return []; 
     }
 
-    window.addEventListener('pointerdown', (event) => {
+    // --- Mobile canvas input: tap to act, drag to orbit camera ---
+    // The old handler ran on the whole window. This version listens only to the
+    // Three.js canvas, separates taps from drags, and ignores the bottom edge
+    // where mobile browser / Android navigation UI can accidentally generate taps.
+    const ORBIT_DRAG_THRESHOLD = 8;
+    const ORBIT_YAW_SPEED = 0.006;
+    const ORBIT_PITCH_SPEED = 0.004;
+    const CANVAS_BOTTOM_SAFE_PX = 76;
+    let orbitPointer = null;
+
+    function isCanvasPointSafe(event) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const x = event.clientX;
+        const y = event.clientY;
+        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return false;
+        const bottomSafe = Math.min(110, Math.max(CANVAS_BOTTOM_SAFE_PX, window.innerHeight * 0.08));
+        if (y > rect.bottom - bottomSafe) return false;
+        return true;
+    }
+
+    function handleCanvasPointerDown(event) {
+        if (!event.isPrimary) return;
+        if (event.button !== undefined && event.button !== 0) return;
+        if (!isCanvasPointSafe(event)) return;
+
+        orbitPointer = {
+            id: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            lastX: event.clientX,
+            lastY: event.clientY,
+            dragged: false
+        };
+
+        try { renderer.domElement.setPointerCapture(event.pointerId); } catch (err) {}
+        event.preventDefault();
+    }
+
+    function handleCanvasPointerMove(event) {
+        if (!orbitPointer || event.pointerId !== orbitPointer.id) return;
+
+        const dx = event.clientX - orbitPointer.lastX;
+        const dy = event.clientY - orbitPointer.lastY;
+        const totalDx = event.clientX - orbitPointer.startX;
+        const totalDy = event.clientY - orbitPointer.startY;
+        const totalDist = Math.hypot(totalDx, totalDy);
+
+        if (orbitPointer.dragged || totalDist > ORBIT_DRAG_THRESHOLD) {
+            orbitPointer.dragged = true;
+            cameraYaw -= dx * ORBIT_YAW_SPEED;
+            cameraPitch = Math.max(0.18, Math.min(Math.PI / 2 - 0.12, cameraPitch + dy * ORBIT_PITCH_SPEED));
+            ctxMenu.style.display = 'none';
+        }
+
+        orbitPointer.lastX = event.clientX;
+        orbitPointer.lastY = event.clientY;
+        event.preventDefault();
+    }
+
+    function handleCanvasPointerUp(event) {
+        if (!orbitPointer || event.pointerId !== orbitPointer.id) return;
+
+        const totalDx = event.clientX - orbitPointer.startX;
+        const totalDy = event.clientY - orbitPointer.startY;
+        const totalDist = Math.hypot(totalDx, totalDy);
+        const shouldTap = !orbitPointer.dragged && totalDist <= ORBIT_DRAG_THRESHOLD && isCanvasPointSafe(event);
+
+        try { renderer.domElement.releasePointerCapture(event.pointerId); } catch (err) {}
+        orbitPointer = null;
+
+        if (shouldTap) handleWorldTap(event);
+        event.preventDefault();
+    }
+
+    function handleCanvasPointerCancel(event) {
+        if (!orbitPointer || event.pointerId !== orbitPointer.id) return;
+        try { renderer.domElement.releasePointerCapture(event.pointerId); } catch (err) {}
+        orbitPointer = null;
+    }
+
+    function handleWorldTap(event) {
         ctxMenu.style.display = 'none';
 
         if (activeDialogue && !event.target.closest('#dialogue-box')) {
@@ -3117,7 +3199,12 @@
                 }
             }
         }
-    });
+    }
+
+    renderer.domElement.addEventListener('pointerdown', handleCanvasPointerDown, { passive: false });
+    renderer.domElement.addEventListener('pointermove', handleCanvasPointerMove, { passive: false });
+    renderer.domElement.addEventListener('pointerup', handleCanvasPointerUp, { passive: false });
+    renderer.domElement.addEventListener('pointercancel', handleCanvasPointerCancel, { passive: false });
 
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
