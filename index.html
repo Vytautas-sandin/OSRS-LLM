@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM CANVAS ENTITIES V1.8 BUILD - unifies GM-created props, walls, floors, transitions, hotspots and markers as selectable canvas entities -->
+<!-- OSRS LLM ENTITY TRANSFORM V2.6 BUILD - update/transform existing 3D canvas entities safely -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Terrain Canvas v1.9</title>
+    <title>Retro Coastal Town 3D · Entity Transform v2.6</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; touch-action: none; }
@@ -64,6 +64,7 @@
         .item-fish { width: 24px; height: 14px; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%; background: linear-gradient(to bottom, #4682b4, #87cefa); box-shadow: inset -1px -2px 2px rgba(0,0,0,0.3); }
         .item-shovel { width: 6px; height: 22px; border-radius: 2px; background: #8b4513; position: relative; box-shadow: 1px 1px 1px rgba(0,0,0,0.5); transform: rotate(15deg); }
         .item-shovel::before { content: ''; position: absolute; bottom: 100%; left: -4px; width: 14px; height: 12px; background: #a0a0a0; border-radius: 4px 4px 10px 10px; box-shadow: inset -1px -1px 2px rgba(0,0,0,0.3); }
+        .item-generic { width: 22px; height: 22px; border-radius: 5px; background: #ffd34d; box-shadow: inset -2px -2px 4px rgba(0,0,0,0.45), 1px 1px 1px rgba(0,0,0,0.5); }
 
         /* Context Menu */
         #context-menu { position: absolute; background: #d0c8b0; border: 1px solid #000; display: none; flex-direction: column; min-width: 120px; font-family: sans-serif; font-size: 14px; z-index: 100; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); }
@@ -108,7 +109,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Terrain Canvas v1.9</div>
+        <div id="dev-panel-title">LLM / GM Panel · GM Rules v2.7</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -120,6 +121,12 @@
             <button id="load-world-state" class="dev-btn">Load</button>
             <button id="reset-world-state" class="dev-btn">Reset</button>
             <button id="look-around-dev" class="dev-btn">Inspect</button>
+            <button id="undo-gm-apply" class="dev-btn">Undo</button>
+        </div>
+        <div class="dev-row">
+            <button id="validate-llm-json" class="dev-btn">Validate</button>
+            <button id="export-world-save" class="dev-btn">Export Save</button>
+            <button id="import-world-save" class="dev-btn">Import Save</button>
         </div>
         <div class="dev-label">Player action / question for the GM</div>
         <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
@@ -143,7 +150,7 @@
     </div>
 
 <script>
-    // OSRS LLM 3D CANVAS PROTOCOL V1.5 BUILD
+    // OSRS LLM ENTITY TRANSFORM V2.6 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -806,41 +813,92 @@
     let dialogueStep = 0;
     const npcs = [];
 
-    function spawnNPC(id, name, x, y, level, type) {
+    function spawnNPC(id, name, x, y, level, type, options = {}) {
         const npcGroup = new THREE.Group();
+        const npcType = String(type || 'human').toLowerCase();
+        const colorHex = options.color ? normalizeMarkerColor(options.color) : null;
+        const colors = {
+            bob: 0x44aa44, alice: 0xaa44aa, charlie: 0x4444aa, sage: 0xeeeeee,
+            human: 0x6688cc, guard: 0x888888, merchant: 0xcc8844, villager: 0x66aa77,
+            ghost: 0xddeeff, crab: 0xcc3333, animal: 0x996633
+        };
+        const bodyColor = colorHex ? parseMarkerColor(colorHex) : (colors[id] ?? colors[npcType] ?? colors.human);
+        const matBody = new THREE.MeshLambertMaterial({
+            color: bodyColor,
+            flatShading: true,
+            transparent: npcType === 'ghost',
+            opacity: npcType === 'ghost' ? 0.72 : 1
+        });
+        const matHead = new THREE.MeshLambertMaterial({
+            color: npcType === 'ghost' ? 0xeef7ff : 0xffccaa,
+            flatShading: true,
+            transparent: npcType === 'ghost',
+            opacity: npcType === 'ghost' ? 0.72 : 1
+        });
         
-        if (type === 'human') {
-            const colors = { 'bob': 0x44aa44, 'alice': 0xaa44aa, 'charlie': 0x4444aa, 'sage': 0xeeeeee };
-            const matBody = new THREE.MeshLambertMaterial({ color: colors[id], flatShading: true }); 
-            const matHead = new THREE.MeshLambertMaterial({ color: 0xffccaa, flatShading: true }); 
+        if (npcType === 'crab' || npcType === 'beast') {
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.3), matBody);
+            body.position.y = 0.1;
+            npcGroup.add(body);
+            if (npcType === 'beast') {
+                const head = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.18), matBody);
+                head.position.set(0.22, 0.18, 0);
+                npcGroup.add(head);
+            }
+        } else if (npcType === 'animal') {
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), matBody);
+            body.scale.set(1.3, 0.7, 0.9);
+            body.position.y = 0.25;
+            npcGroup.add(body);
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), matHead);
+            head.position.set(0.28, 0.33, 0);
+            npcGroup.add(head);
+        } else {
             npcGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 0.1, 8), matBody).translateY(0.05));
             npcGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.25, 0.5, 8), matBody).translateY(0.35));
             npcGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), matHead).translateY(0.75));
-        } else if (type === 'crab') {
-            const matShell = new THREE.MeshLambertMaterial({ color: 0xcc3333, flatShading: true });
-            const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.3), matShell);
-            body.position.y = 0.1;
-            npcGroup.add(body);
+            if (npcType === 'guard') {
+                const helm = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.19, 0.12, 8), new THREE.MeshLambertMaterial({ color: 0x777777, flatShading: true }));
+                helm.position.y = 0.92;
+                npcGroup.add(helm);
+            }
         }
         
         const pos = getGridWorldPos(x, y, level);
         npcGroup.position.set(pos.x, pos.y, pos.z);
         
-        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.5, 0.8), new THREE.MeshBasicMaterial({visible: false}));
-        hitBox.position.y = type === 'crab' ? 0.2 : 0.75;
-        hitBox.userData = { isNPC: true, sourceLevel: level, npcId: id, interactX: x, interactY: y };
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.8, npcType === 'crab' || npcType === 'animal' ? 0.8 : 1.5, 0.8), new THREE.MeshBasicMaterial({visible: false}));
+        hitBox.position.y = (npcType === 'crab' || npcType === 'animal') ? 0.35 : 0.75;
+        hitBox.userData = { isNPC: true, sourceLevel: level, npcId: id, npcName: options.name || name || id, interactX: x, interactY: y, isGMNPC: !!options.gmCreated };
         npcGroup.add(hitBox);
         
         levelGroups[level].add(npcGroup);
         interactables.push(hitBox);
         
-        npcs.push({
-            id: id, type: type, mesh: npcGroup, hitbox: hitBox,
-            gridX: x, gridY: y, homeX: x, homeY: y, level: level,
-            pathQueue: [], isMoving: false,
-            startPos: new THREE.Vector3(), targetPos: new THREE.Vector3(),
+        const npc = {
+            id: id,
+            name: options.name || name || id,
+            note: options.note || '',
+            type: npcType,
+            color: colorHex,
+            gmCreated: !!options.gmCreated,
+            dialogueId: options.dialogueId || id,
+            state: options.state && typeof options.state === 'object' ? { ...options.state } : {},
+            mesh: npcGroup,
+            hitbox: hitBox,
+            gridX: x,
+            gridY: y,
+            homeX: x,
+            homeY: y,
+            level: level,
+            pathQueue: [],
+            isMoving: false,
+            startPos: new THREE.Vector3(),
+            targetPos: new THREE.Vector3(),
             tickCounter: Math.floor(Math.random() * 5)
-        });
+        };
+        npcs.push(npc);
+        return npc;
     }
 
     spawnNPC('bob', 'Bob', 11, 8, '0', 'human'); 
@@ -851,13 +909,24 @@
     spawnNPC('crab2', 'Crab', 18, 20, '2', 'crab');
 
     function startDialogue(npcId) {
-        let genericId = npcId.replace(/[0-9]/g, ''); 
         const npc = npcs.find(n => n.id === npcId);
-        if (npc && handlePendingItemUseOnTarget({ kind: 'npc', id: npcId, name: npcId, x: npc.gridX, y: npc.gridY, level: npc.level })) return;
-        activeDialogue = DIALOGUES[genericId];
+        const displayName = npc?.name || npcId;
+        if (npc && handlePendingItemUseOnTarget({ kind: 'npc', id: npcId, name: displayName, x: npc.gridX, y: npc.gridY, level: npc.level, note: npc.note || '', type: npc.type })) return;
+
+        if (npc) setLastInteractionTarget({ kind: 'npc', id: npcId, name: displayName, x: npc.gridX, y: npc.gridY, level: npc.level, note: npc.note || '', type: npc.type, gmCreated: !!npc.gmCreated });
+        recordGMEvent('npc_selected', { npcId, name: displayName, gmCreated: !!npc?.gmCreated, type: npc?.type || 'unknown' });
+
+        if (npc && npc.gmCreated) {
+            const actionBox = document.getElementById('player-action');
+            if (actionBox && !actionBox.value.trim()) actionBox.value = `I interact with ${displayName}.`;
+            addLogMessage(`Selected NPC for GM: ${displayName}.`);
+            return;
+        }
+
+        let genericId = npc?.dialogueId || npcId.replace(/[0-9]/g, ''); 
+        activeDialogue = DIALOGUES[genericId] || [{ speaker: displayName, text: npc?.note || 'This conversation is best handled in the GM chat.' }];
         dialogueStep = 0;
         document.getElementById('dialogue-box').style.display = 'flex';
-        if (npc) setLastInteractionTarget({ kind: 'npc', id: npcId, name: npcId, x: npc.gridX, y: npc.gridY, level: npc.level });
         recordGMEvent('npc_dialogue_started', { npcId, dialogueId: genericId });
         renderDialogue();
     }
@@ -910,17 +979,25 @@
     const gmFloors = [];
     const gmTerrain = [];
     const gmTransitions = [];
+    const gmNPCs = [];
+    const gmItemDefs = {};
+    let gmItemInstanceSerial = 0;
+    const removedBaseGroundItemIds = new Set();
     const gmRemovedWalls = [];
     const gmEvents = [];
     let lastInteractionTarget = null;
     let selectedUseItem = null;
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
+    const GM_UNDO_KEY = 'osrs_llm_gm_undo_v1';
+    const GM_HISTORY_KEY = 'osrs_llm_gm_history_v1';
     const GM_EVENT_LIMIT = 80;
     const GM_MEMORY_LIMIT = 40;
     let lastGMResponseEventIndex = 0;
     try {
         if (new URLSearchParams(window.location.search).has('resetgm')) {
             localStorage.removeItem(GM_SAVE_KEY);
+            localStorage.removeItem(GM_UNDO_KEY);
+            localStorage.removeItem(GM_HISTORY_KEY);
         }
     } catch (err) {}
 
@@ -979,9 +1056,7 @@
     }
 
     function getSelectedUseItemSnapshot() {
-        if (!selectedUseItem) return null;
-        const def = ITEM_DEFS[selectedUseItem];
-        return { type: selectedUseItem, name: def ? def.name : selectedUseItem };
+        return selectedUseItem ? { ...selectedUseItem } : null;
     }
 
     function updateUseIndicator() {
@@ -1001,14 +1076,14 @@
         if (input) input.value = String(text || '').slice(0, 900);
     }
 
-    function beginUseItem(itemType) {
-        if (!ITEM_DEFS[itemType]) return false;
-        selectedUseItem = itemType;
+    function beginUseItem(itemValue) {
+        const item = getItemSnapshot(itemValue);
+        if (!item) return false;
+        selectedUseItem = item;
         updateUseIndicator();
-        const name = ITEM_DEFS[itemType].name;
-        showDialogueMessage('Inventory', `Using ${name}. Tap an object or hotspot in the world.`);
-        addLogMessage(`Using ${name}. Tap a target.`);
-        recordGMEvent('item_use_started', { itemType, itemName: name });
+        showDialogueMessage('Inventory', `Using ${item.name}. Tap an object or hotspot in the world.`);
+        addLogMessage(`Using ${item.name}. Tap a target.`);
+        recordGMEvent('item_use_started', { itemId: item.id, itemType: item.type, itemName: item.name, tags: item.tags || [] });
         return true;
     }
 
@@ -1016,7 +1091,7 @@
         const item = getSelectedUseItemSnapshot();
         selectedUseItem = null;
         updateUseIndicator();
-        if (item) recordGMEvent('item_use_cleared', { itemType: item.type, itemName: item.name });
+        if (item) recordGMEvent('item_use_cleared', { itemId: item.id, itemType: item.type, itemName: item.name });
     }
 
     function handlePendingItemUseOnTarget(target) {
@@ -1027,13 +1102,15 @@
         setPlayerActionText(actionText);
         setLastInteractionTarget({
             ...target,
-            usedItem: item.type,
+            usedItem: item.id,
+            usedItemType: item.type,
             usedItemName: item.name,
             proposedAction: actionText
         });
         showDialogueMessage(targetName, `You try using ${item.name} on ${targetName}. Copy the GM prompt to resolve what happens.`);
         addLogMessage(`Prepared action: ${actionText}`);
         recordGMEvent('item_use_targeted', {
+            itemId: item.id,
             itemType: item.type,
             itemName: item.name,
             targetKind: target.kind,
@@ -1062,13 +1139,15 @@
             x,
             y,
             level,
-            usedItem: item.type,
+            usedItem: item.id,
+            usedItemType: item.type,
             usedItemName: item.name,
             proposedAction: actionText
         });
         showDialogueMessage('Inventory', `You try using ${item.name} on the ${targetName}. Copy the GM prompt to resolve what happens.`);
         addLogMessage(`Prepared action: ${actionText}`);
         recordGMEvent('item_use_targeted', {
+            itemId: item.id,
             itemType: item.type,
             itemName: item.name,
             targetKind: 'tile',
@@ -1199,7 +1278,16 @@
     function getNearbyNPCs(radius = 6) {
         return npcs
             .filter(npc => npc.level === currentLevel && Math.max(Math.abs(npc.gridX - playerGridX), Math.abs(npc.gridY - playerGridY)) <= radius)
-            .map(npc => ({ id: npc.id, type: npc.type, x: npc.gridX, y: npc.gridY }));
+            .map(npc => ({
+                id: npc.id,
+                name: npc.name || npc.id,
+                type: npc.type,
+                x: npc.gridX,
+                y: npc.gridY,
+                note: npc.note || '',
+                gmCreated: !!npc.gmCreated,
+                state: npc.state || {}
+            }));
     }
 
     function getNearbyItems(radius = 6) {
@@ -1207,7 +1295,19 @@
             .filter(item => item.hitBox.userData.sourceLevel === currentLevel)
             .map(item => item.hitBox.userData)
             .filter(data => Math.max(Math.abs(data.interactX - playerGridX), Math.abs(data.interactY - playerGridY)) <= radius)
-            .map(data => ({ type: data.type, x: data.interactX, y: data.interactY }));
+            .map(data => {
+                const snap = getItemSnapshot(data.item || data.type);
+                return snap ? {
+                    ...snap,
+                    groundItemId: data.groundItemId || null,
+                    sourceKind: data.sourceKind || 'runtime',
+                    persistent: !!data.persistentGroundItem,
+                    x: data.interactX,
+                    y: data.interactY,
+                    level: data.sourceLevel
+                } : null;
+            })
+            .filter(Boolean);
     }
 
     function getNearbyMarkers(radius = 8) {
@@ -1284,6 +1384,8 @@
                 y: floor.y,
                 height: floor.height,
                 walkable: floor.walkable !== false,
+                visible: floor.visible !== false,
+                state: floor.state || {},
                 anchor: floor.anchor || null
             }));
     }
@@ -1301,6 +1403,8 @@
                 mode: patch.mode,
                 height: patch.height,
                 delta: patch.delta,
+                visible: patch.visible !== false,
+                state: patch.state || {},
                 anchor: patch.anchor || null
             }));
     }
@@ -1331,12 +1435,15 @@
             kind,
             id: entity.id,
             name: entity.name || entity.id || kind,
-            x: entity.x,
-            y: entity.y,
+            x: entity.x ?? entity.gridX,
+            y: entity.y ?? entity.gridY,
             level: entity.level,
             anchor: entity.anchor || null
         };
         if (entity.note) base.note = entity.note;
+        if (entity.gmCreated !== undefined) base.gmCreated = !!entity.gmCreated;
+        if (entity.visible !== undefined) base.visible = entity.visible !== false;
+        if (entity.state && typeof entity.state === 'object') base.state = entity.state;
         if (entity.shape) base.shape = entity.shape;
         if (entity.surface) base.surface = entity.surface;
         if (entity.dir) base.dir = entity.dir;
@@ -1354,6 +1461,30 @@
         return base;
     }
 
+    function getGroundItemEntitySnapshots() {
+        if (typeof groundItems === 'undefined') return [];
+        return groundItems.map(entry => {
+            const data = entry.hitBox?.userData || {};
+            const snap = getItemSnapshot(data.item || data.type);
+            if (!snap) return null;
+            return {
+                kind: 'item',
+                id: data.groundItemId || snap.id,
+                itemId: snap.id,
+                name: snap.name,
+                type: snap.type,
+                tags: snap.tags || [],
+                x: data.interactX,
+                y: data.interactY,
+                level: data.sourceLevel,
+                shape: snap.shape,
+                sourceKind: data.sourceKind || 'runtime',
+                persistent: !!data.persistentGroundItem,
+                description: snap.description || ''
+            };
+        }).filter(Boolean);
+    }
+
     function getAllCanvasEntities() {
         return [
             ...gmObjects.map(entity => getCanvasEntitySnapshot('prop', entity)),
@@ -1362,7 +1493,9 @@
             ...gmWalls.map(entity => getCanvasEntitySnapshot('wall', entity)),
             ...gmFloors.map(entity => getCanvasEntitySnapshot('floor', entity)),
             ...gmTerrain.map(entity => getCanvasEntitySnapshot('terrain', entity)),
-            ...gmTransitions.map(entity => getCanvasEntitySnapshot('transition', entity))
+            ...gmTransitions.map(entity => getCanvasEntitySnapshot('transition', entity)),
+            ...gmNPCs.map(entity => getCanvasEntitySnapshot('npc', entity)),
+            ...getGroundItemEntitySnapshots()
         ].filter(Boolean);
     }
 
@@ -1468,15 +1601,16 @@
         }));
         if (typeof groundItems !== 'undefined') groundItems.forEach(item => {
             const data = item.hitBox.userData;
-            if (data.sourceLevel === currentLevel && ITEM_DEFS[data.type]) discoverables.push({
-                kind: 'item', name: ITEM_DEFS[data.type].name, x: data.interactX, y: data.interactY, level: data.sourceLevel,
-                note: '', extra: 'item'
+            const snap = getItemSnapshot(data.item || data.type);
+            if (data.sourceLevel === currentLevel && snap) discoverables.push({
+                kind: 'item', name: snap.name, x: data.interactX, y: data.interactY, level: data.sourceLevel,
+                note: snap.description || '', extra: data.sourceKind || 'item'
             });
         });
         if (typeof npcs !== 'undefined') npcs.forEach(npc => {
             if (npc.level === currentLevel) discoverables.push({
-                kind: 'npc', name: npc.id, x: npc.gridX, y: npc.gridY, level: npc.level,
-                note: '', extra: npc.type
+                kind: 'npc', name: npc.name || npc.id, x: npc.gridX, y: npc.gridY, level: npc.level,
+                note: npc.note || '', extra: npc.type
             });
         });
 
@@ -1505,28 +1639,82 @@
 
     function buildGMInstructions() {
         return {
+            version: 'gm_rules_v2_7',
             role: 'You are the GM in the chat interface. The HTML game is only a 3D canvas / state board that receives world-delta commands.',
+            architecture: {
+                chat: 'All narration, dialogue, pushback, uncertainty, character intent, and roleplay happen in the LLM chat response.',
+                canvas: 'The HTML game only receives compact world-delta commands for visible/stateful changes: entities, terrain, items, inventory, passages, flags, and memory.',
+                loop: 'Player explores canvas -> player attempts action -> GM resolves in chat -> GM returns JSON delta -> canvas updates.'
+            },
+            responsePolicy: {
+                default: 'Prefer the smallest useful world delta. Do not change the 3D canvas unless something physical, positional, persistent, or mechanically relevant changed.',
+                noChange: 'If the action fails or is only conversational, commands may be [] or limited to set_flag/add_memory when the attempt matters later.',
+                existingFirst: 'Before creating a new entity, check payload.lastTarget, payload.nearby.entities, and payload.canvasEntities for an existing id to update, move, damage, hide, reveal, transform, or remove.',
+                stableIds: 'Keep existing ids stable. New ids must be lowercase snake_case and describe the concrete thing being created.',
+                placement: 'Use semantic anchors from payload.worldAnchors or near:"player_nearby" before raw x/y coordinates.',
+                limits: 'For normal action resolution, return 0 to 6 commands. Use more only for scene seeding or major construction.'
+            },
+            commandDecisionGuide: {
+                conversation_or_npc_reply: 'Use narration only; optionally set_flag/add_memory if the conversation changes state. Do not use show_dialogue for normal roleplay.',
+                inspect_or_notice: 'Use narration. Create a hotspot only if the discovered feature should become a tappable target on the canvas.',
+                take_or_receive_item: 'Use give_item for inventory, spawn_item for an item lying in the 3D scene, remove_ground_item if it was picked up from the scene.',
+                use_item_on_target: 'Usually update_entity/transform_entity/set_entity_state, create_transition, create_structure, terrain command, set_flag, or consume_item depending on the result.',
+                break_or_damage: 'Use damage_entity for light damage, transform_entity for changed shape/state, remove_wall/remove_prop for complete destruction, and create_prop/create_structure for debris when visible.',
+                repair_or_build: 'Use repair_entity, transform_entity, create_structure, create_floor, create_wall, spawn_item/remove_item/consume_item for resources when relevant.',
+                move_or_push: 'Use move_prop/move_npc/move_ground_item or update_entity with placement changes.',
+                dig_or_shape_ground: 'Use dig_tile/lower_terrain/raise_terrain/fill_tile/flatten_terrain for true terrain change; pair with create_prop/hotspot only if a targetable hole, mound, or clue remains.',
+                open_route: 'Use create_transition for enterable routes such as stairs, holes, ladders, boats, passages, or portals.'
+            },
+            outputChecklist: [
+                'Did you narrate the fiction in narration, not in debug/game UI commands?',
+                'Did you update existing ids instead of duplicating entities when possible?',
+                'Did you use anchors/near instead of raw coordinates when possible?',
+                'Are commands limited to visible/stateful changes?',
+                'Are ids stable, lowercase, and snake_case?',
+                'Would the player see the important physical result on the 3D canvas or in inventory?'
+            ],
             outputContract: {
                 format: 'Return valid JSON only. No markdown fences. No explanation outside JSON.',
                 shape: { narration: 'story narration for the chat interface; the engine treats this as debug context', commands: 'array of world-delta command objects for the 3D canvas' }
             },
             priorities: [
-                'Narrate, roleplay, dialogue, pushback, and skill checks in the chat response/narration field. Do not rely on the game UI for flavor text.',
-                'Use JSON commands only for visible or stateful changes to the 3D canvas: objects, items, walls, floors, passages, true terrain deformation, positions, flags, and memory.',
-                'Resolve the playerAction.raw fairly using inventory, target, nearby context, flags, worldMemory, eventDelta, and common sense.',
-                'If an action fails, you may return only narration plus a set_flag/add_memory/event-style command if the failed attempt matters.',
+                'Narrate, roleplay, dialogue, pushback, and skill checks in the chat response/narration field. The canvas should stay mostly flavor-text-free.',
+                'Use JSON commands only for visible or persistent state changes to the 3D canvas, inventory, flags, or memory.',
+                'Resolve playerAction.raw fairly using inventory, selected target, nearby entities, flags, worldMemory, eventDelta, and common sense.',
+                'Prefer modifying existing canvas entities over creating new duplicates. Use update_entity/transform_entity/set_entity_state/hide_entity/reveal_entity/set_blocking/set_color/rename_entity/damage_entity/repair_entity when possible.',
                 'Prefer named anchors from payload.worldAnchors over raw x/y coordinates. Use player_nearby for immediate consequences.',
-                'For environmental features such as cracks, seams, inscriptions, suspicious sand, or pressure stones, use create_hotspot only if the 3D canvas needs an interactable target.',
-                'For physical props, use create_prop/create_object. Use blocksMovement:true only when the prop should block pathing. For blocked or opened movement, use create_wall/remove_wall/create_floor/remove_floor. For true ground deformation, use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile. For new entrances, stairs, holes, portals, boats, ladders, or passages the player can enter, use create_transition.',
+                'Keep the delta small, undo-safe, and concrete. Failed actions can have no canvas commands unless their failure creates lasting state.',
                 'Keep ids stable, lowercase, and snake_case.'
             ],
             commandSchema: {
                 add_log: { text: 'short debug/status text only; do not put important story here' },
                 set_flag: { key: 'string', value: 'boolean | string | number' },
-                give_item: { type: 'berries | shell | rod | fish | shovel' },
-                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', radius: 'optional search radius around near' },
+                update_entity: { id: 'existing entity id', kind: 'optional prop | hotspot | marker | wall | floor | terrain | transition | npc | item', name: 'optional new name', note: 'optional note', color: 'optional #rrggbb', shape: 'optional new shape for props/transitions/items', visible: 'optional boolean', state: 'optional object merged into entity state' },
+                transform_entity: { alias: 'update_entity; use for changing shape/color/name/state of an existing entity by id' },
+                set_entity_state: { id: 'existing entity id', kind: 'optional entity kind', state: 'object to merge into entity state' },
+                hide_entity: { id: 'existing entity id', kind: 'optional entity kind' },
+                reveal_entity: { id: 'existing entity id', kind: 'optional entity kind' },
+                set_blocking: { id: 'prop/floor id', kind: 'optional prop | floor', blocksMovement: 'boolean', walkable: 'optional boolean for floors' },
+                set_color: { id: 'existing entity id', kind: 'optional entity kind', color: '#rrggbb' },
+                rename_entity: { id: 'existing entity id', kind: 'optional entity kind', name: 'new display name', note: 'optional new note' },
+                damage_entity: { id: 'existing entity id', kind: 'optional entity kind', damage: 'optional string/number/object describing damage', state: 'optional object merged into entity state' },
+                repair_entity: { id: 'existing entity id', kind: 'optional entity kind', state: 'optional object merged into entity state' },
+                define_item: { type: 'optional reusable template id for generic items', name: 'display name', category: 'tool | food | material | key | misc', color: '#rrggbb', shape: 'sphere | cube | crystal | rod | scroll | shell', tags: 'optional array' },
+                give_item: { item: { id: 'unique item id', name: 'display name', tags: ['key','temple'], color: '#rrggbb', shape: 'crystal', description: 'optional' } },
+                spawn_item: { item: { id: 'unique item id', name: 'display name', tags: [], color: '#rrggbb', shape: 'sphere' }, x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', radius: 'optional search radius around near; persists on ground until picked up or removed' },
+                remove_ground_item: { id: 'ground item id OR item id/type/tag/name', count: 'optional number, default 1' },
+                move_ground_item: { id: 'ground item id OR item id/type/tag/name', x: 'optional integer', y: 'optional integer', level: 'optional', near: 'optional world anchor id' },
+                remove_item: { id: 'unique item id or type/tag/name in inventory', count: 'optional number, default 1' },
+                consume_item: { id: 'unique item id or type/tag/name', count: 'optional number, default 1; alias of remove_item for used resources' },
+                set_inventory: { items: 'array of unique item objects; replaces inventory, use sparingly' },
                 move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
+                create_npc: { id: 'string', name: 'string', note: 'optional metadata/personality/role for the GM chat', type: 'human | villager | merchant | guard | ghost | crab | animal | beast', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', color: '#rrggbb' },
+                move_npc: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id' },
+                remove_npc: { id: 'string; removes GM-created NPCs' },
+                set_npc_state: { id: 'string', name: 'optional string', note: 'optional string', state: 'object merged into NPC state' },
                 create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest | hole | debris | rubble | stairs | ladder | pillar | plank', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb', blocksMovement: 'optional boolean for barricades, rubble, pillars, etc.' },
+                create_structure: { id: 'string group id', name: 'optional display name', structure: 'bridge | platform | room | barricade | wall_line | rubble_field | ramp', near: 'optional world anchor id', x: 'optional center/start x', y: 'optional center/start y', level: '-1 | 0 | 2', width: 'tiles, default depends on structure', depth: 'tiles for platforms/rooms', length: 'tiles for bridges/barricades/wall lines/ramps', dir: 'N | S | E | W direction/orientation', color: '#rrggbb', blocksMovement: 'for barricades/rubble, default true' },
+                remove_structure: { id: 'structure group id; removes any GM-created parts with this id prefix' },
                 move_prop: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near' },
                 remove_prop: { id: 'string' },
                 create_object: { alias: 'create_prop' },
@@ -1576,11 +1764,12 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'terrain_canvas_v1_9',
+            build: 'gm_rules_v2_7',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
-                inventory: inventory.filter(Boolean),
+                inventory: getInventoryCompactSnapshot(),
+                inventoryDetailed: getInventorySnapshot(),
                 activeTool: activeTool,
                 selectedUseItem: getSelectedUseItemSnapshot()
             },
@@ -1609,6 +1798,7 @@
             lastTarget: getLastInteractionTarget(),
             flags: worldFlags,
             worldMemory: memorySnapshot,
+            itemDefs: getItemDefsSnapshot(),
             worldAnchors: getWorldAnchorList(),
             gmInstructions: buildGMInstructions(),
             gmSave: {
@@ -1620,10 +1810,19 @@
                 floorCount: gmFloors.length,
                 terrainCount: gmTerrain.length,
                 transitionCount: gmTransitions.length,
+                npcCount: gmNPCs.length,
+                customItemDefCount: Object.keys(gmItemDefs).length,
+                groundItemCount: (typeof groundItems !== 'undefined') ? groundItems.length : 0,
+                persistentGroundItemCount: (typeof getPersistentGroundItemsSnapshot === 'function') ? getPersistentGroundItemsSnapshot().length : 0,
                 entityCount: getAllCanvasEntities().length,
                 removedBaseWallCount: gmRemovedWalls.length,
                 memoryFactCount: memorySnapshot.facts.length,
                 questCount: memorySnapshot.quests.length
+            },
+            gmSafety: {
+                hasUndoSnapshot: hasGMUndoSnapshot(),
+                commandHistory: getGMCommandHistory(5),
+                note: 'Undo restores the GM world/inventory snapshot from before the last applied JSON.'
             },
             eventDelta: {
                 since: 'last_applied_gm_response',
@@ -1631,7 +1830,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM in chat. Resolve playerAction.raw using nearby context, lastTarget, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only with narration for chat plus commands for the 3D canvas. Use commands for stateful/visible changes only. Prefer updating existing canvas entities when possible. Use create_prop/create_hotspot/create_wall/remove_wall/create_floor/remove_floor/set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile/create_transition/spawn_item/set_flag/add_memory as needed.'
+            request: 'Act as GM in chat. Resolve playerAction.raw using nearby context, lastTarget, selectedUseItem, flags, worldMemory, worldAnchors, canvasEntities, and eventDelta. Return JSON only with narration for chat plus commands for the 3D canvas. Use commands only for stateful/visible changes. Prefer small, undo-safe deltas; update existing canvas entities and unique item ids before creating duplicates. Follow payload.gmInstructions.responsePolicy, commandDecisionGuide, and outputChecklist.'
         };
     }
 
@@ -1668,17 +1867,28 @@
             'Return valid JSON only: {"narration":"...","commands":[...]}',
             'Do not use markdown fences. Do not explain outside JSON. Use only supported command ops from payload.gmInstructions.commandSchema.',
             '',
+            'RESPONSE METHOD:',
+            '1. Read playerAction, lastTarget, selectedUseItem, inventory, nearby entities, flags, worldMemory, and eventDelta.',
+            '2. Decide what fiction happens in chat. Put that in narration.',
+            '3. Decide whether the canvas must change. If not, commands can be [].',
+            '4. If the canvas changes, prefer updating existing entity ids before creating new ones.',
+            '5. Keep the delta small, concrete, and undo-safe.',
+            '',
             'CANVAS RULES:',
-            '- If nothing physical/stateful changes, commands may be empty or may only set a flag/memory fact.',
-            '- Use create_prop/create_object for visible physical props.',
-            '- Use create_hotspot for interactable target points such as seams, cracks, inscriptions, pressure stones, soft sand, or suspicious water.',
-            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for hard structural changes like blocked passages, broken walls, bridges, platforms, or opened paths. Use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile for true ground deformation. Use create_transition for passages the player should enter.',
-            '- Use spawn_item/give_item/remove_prop/set_flag/add_memory when inventory or story state changes.',
+            '- The engine is not the narrator. Do not use add_log/show_dialogue for main story or NPC dialogue.',
+            '- Use commands only for physical/stateful consequences: entities, terrain, inventory, items on ground, passages, NPC positions, flags, and memory.',
+            '- Failed or impossible actions usually need narration only; add a flag/memory only if the failed attempt matters later.',
+            '- Use update_entity/transform_entity/set_entity_state/hide_entity/reveal_entity/set_blocking/set_color/rename_entity/damage_entity/repair_entity before creating duplicates.',
+            '- Use create_prop/create_object for visible physical props; create_hotspot only for tappable environmental targets; create_npc for visible characters/creatures whose dialogue stays in chat.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor for single-tile structural changes; create_structure for bridges, platforms, rooms, barricades, wall lines, rubble fields, or ramps.',
+            '- Use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile for true ground deformation. Use create_transition for passages the player can enter.',
+            '- Use unique item objects with give_item/spawn_item; spawned/dropped ground items persist until picked up or removed.',
             '- Prefer named anchors from payload.worldAnchors instead of raw coordinates.',
             '',
             'PAYLOAD:',
             JSON.stringify(payload, null, 2)
-        ].join('\n');
+        ].join('
+');
     }
 
     function copyGMPrompt() {
@@ -1695,7 +1905,7 @@
         return [
             'You are the GM and scene designer for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
             '',
-            'Create a small playable scene setup. Do not present a menu of options. Narrate the setup in the JSON narration field, then use commands to make the 3D canvas match the new situation.',
+            'Create a small playable scene setup. Do not present a menu of options. Narrate the setup in the JSON narration field, then use commands to make the 3D canvas match the new situation. Prefer 3 to 8 concrete commands and use existing anchors/entities when possible.',
             '',
             'Return valid JSON only: {"narration":"...","commands":[...]}',
             'Do not use markdown fences. Do not explain outside JSON.',
@@ -1706,9 +1916,9 @@
             'DESIGN RULES:',
             '- Keep the setup small: 3 to 8 commands.',
             '- Use named anchors from payload.worldAnchors instead of raw coordinates whenever possible.',
-            '- Use create_prop/create_object for physical visible props.',
+            '- Use create_prop/create_object for physical visible props. Use update_entity/transform_entity to modify existing entities by id instead of making duplicates. Use create_npc for visible characters/creatures whose roleplay happens in chat.',
             '- Use create_hotspot for targetable environmental details.',
-            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for hard structural changes like opened gaps, barricades, platforms, bridges, or blocked paths. Use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile for true ground deformation. Use create_transition for stairs, ladders, holes, boats, portals, or passages.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for single-tile structural changes. Use create_structure for larger hard changes like bridges, platforms, rooms, barricades, wall lines, rubble fields, or ramps. Use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile for true ground deformation. Use create_transition for stairs, ladders, holes, boats, portals, or passages.',
             '- Use set_flag and add_memory for state that matters later.',
             '- The narration is for the chat, not the game UI. The game canvas should only receive physical/state updates.',
             '',
@@ -1855,14 +2065,261 @@
         };
     }
 
-    function giveInventoryItem(type) {
-        if (!ITEM_DEFS[type]) { addLogMessage(`Unknown item: ${type}`); return false; }
+
+    function sanitizeItemId(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_\-\s]/g, '')
+            .replace(/[\s\-]+/g, '_')
+            .slice(0, 48);
+    }
+
+    function sanitizeItemInstanceId(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_\-\s]/g, '')
+            .replace(/[\s\-]+/g, '_')
+            .slice(0, 64);
+    }
+
+    function nextItemInstanceId(base = 'item') {
+        gmItemInstanceSerial += 1;
+        const safeBase = sanitizeItemId(base) || 'item';
+        return `${safeBase}_${Date.now().toString(36)}_${gmItemInstanceSerial.toString(36)}`;
+    }
+
+    function itemColorToCss(color) {
+        if (typeof color === 'string') return normalizeMarkerColor(color);
+        if (typeof color === 'number' && Number.isFinite(color)) return `#${color.toString(16).padStart(6, '0').slice(-6)}`;
+        return '#ffd34d';
+    }
+
+    function parseItemColorNumber(value, fallback = 0xffd34d) {
+        try { return new THREE.Color(normalizeMarkerColor(value)).getHex(); }
+        catch (err) { return fallback; }
+    }
+
+    function normalizeItemTags(value, fallback = []) {
+        const raw = Array.isArray(value) ? value : String(value || '').split(',');
+        const seen = new Set();
+        const out = [];
+        [...fallback, ...raw].forEach(tag => {
+            const clean = sanitizeItemId(tag);
+            if (clean && !seen.has(clean)) { seen.add(clean); out.push(clean); }
+        });
+        return out.slice(0, 12);
+    }
+
+    function itemNameFromId(id) {
+        return String(id || 'item').replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+    }
+
+    function isItemInstance(value) {
+        return !!value && typeof value === 'object' && !Array.isArray(value) && !!value.id && !!value.name;
+    }
+
+    function registerGMItemDef(cmd = {}) {
+        const type = sanitizeItemId(cmd.type || cmd.baseType || cmd.item || cmd.id || cmd.key);
+        if (!type) { if (!cmd.silent) addLogMessage('Invalid define_item command.'); return false; }
+        const name = String(cmd.name || cmd.title || itemNameFromId(type)).trim().slice(0, 64);
+        const category = String(cmd.category || cmd.itemType || cmd.typeCategory || cmd.kind || 'misc').trim().toLowerCase();
+        const shape = String(cmd.shape || cmd.icon || 'sphere').trim().toLowerCase();
+        const colorCss = normalizeMarkerColor(cmd.color || cmd.colour || '#ffd34d');
+        const tags = normalizeItemTags(cmd.tags, [category, type]);
+        const def = {
+            name,
+            color: parseItemColorNumber(colorCss),
+            cssClass: '',
+            type: ['food', 'tool', 'material', 'key', 'misc'].includes(category) ? category : 'misc',
+            shape,
+            tags,
+            description: String(cmd.description || cmd.note || '').trim().slice(0, 500),
+            gmDefined: true
+        };
+        ITEM_DEFS[type] = def;
+        gmItemDefs[type] = { type, name: def.name, category: def.type, color: colorCss, shape: def.shape, tags: def.tags, description: def.description };
+        try { renderInventory(); } catch (err) {}
+        if (!cmd.silent) {
+            addLogMessage(`Item template defined: ${def.name}.`);
+            recordGMEvent('item_template_defined_by_gm', gmItemDefs[type]);
+        }
+        return true;
+    }
+
+    function ensureItemDefFromCommand(cmd = {}) {
+        const raw = cmd?.type || cmd?.baseType || cmd?.template || cmd?.itemType || (typeof cmd?.item === 'string' ? cmd.item : null) || cmd?.id || cmd?.key;
+        const type = sanitizeItemId(raw);
+        if (!type) return null;
+        if (!ITEM_DEFS[type]) {
+            const name = cmd.name || cmd.title || itemNameFromId(type);
+            registerGMItemDef({ ...cmd, type, name, silent: true });
+        } else if (ITEM_DEFS[type].gmDefined && (cmd.name || cmd.color || cmd.shape || cmd.tags || cmd.description || cmd.note)) {
+            registerGMItemDef({ ...gmItemDefs[type], ...cmd, type, silent: true });
+        }
+        return ITEM_DEFS[type] ? type : null;
+    }
+
+    function makeItemInstance(spec = {}, options = {}) {
+        let source = spec;
+        if (source && typeof source === 'object' && source.item && typeof source.item === 'object') source = source.item;
+        if (typeof source === 'string') source = { type: source };
+        if (!source || typeof source !== 'object') return null;
+
+        let type = sanitizeItemId(source.type || source.baseType || source.template || source.itemType || source.kind);
+        const explicitId = sanitizeItemInstanceId(source.instanceId || source.itemId || source.id);
+        if (!type && explicitId && ITEM_DEFS[explicitId]) type = explicitId;
+        if (!type && explicitId && !source.name) type = explicitId;
+        if (!type && source.name) type = sanitizeItemId(source.name);
+        if (!type) type = 'custom_item';
+
+        if (!ITEM_DEFS[type] && (source.name || source.color || source.shape || source.tags || source.description || source.note || type !== 'custom_item')) {
+            registerGMItemDef({ ...source, type, silent: true });
+        }
+        const def = ITEM_DEFS[type] || {};
+        const id = explicitId || nextItemInstanceId(type);
+        const category = String(source.category || source.itemType || def.type || 'misc').toLowerCase();
+        const colorCss = normalizeMarkerColor(source.color || source.colour || itemColorToCss(def.color));
+        const shape = String(source.shape || source.icon || def.shape || 'sphere').toLowerCase();
+        const name = String(source.name || source.title || def.name || itemNameFromId(id)).trim().slice(0, 64);
+        const tags = normalizeItemTags(source.tags, [category, type, ...(def.tags || [])]);
+        const state = (source.state && typeof source.state === 'object') ? JSON.parse(JSON.stringify(source.state)) : {};
+        return {
+            id,
+            type,
+            baseType: type,
+            name,
+            category: ['food', 'tool', 'material', 'key', 'misc'].includes(category) ? category : 'misc',
+            tags,
+            color: colorCss,
+            shape,
+            description: String(source.description || source.note || def.description || '').trim().slice(0, 700),
+            state,
+            unique: source.unique !== false,
+            custom: !!def.gmDefined || !!source.custom || !ITEM_DEFS[type]
+        };
+    }
+
+    function getItemInstance(value) {
+        if (!value) return null;
+        if (isItemInstance(value)) return value;
+        if (typeof value === 'string') return makeItemInstance(value);
+        if (typeof value === 'object') return makeItemInstance(value);
+        return null;
+    }
+
+    function getItemView(value) {
+        const item = getItemInstance(value);
+        if (!item) return null;
+        const def = ITEM_DEFS[item.type] || ITEM_DEFS[item.baseType] || {};
+        return {
+            ...item,
+            cssClass: def.cssClass || '',
+            colorCss: normalizeMarkerColor(item.color || itemColorToCss(def.color)),
+            category: item.category || def.type || 'misc',
+            shape: item.shape || def.shape || 'sphere'
+        };
+    }
+
+    function getItemSnapshot(value, slot = null) {
+        const item = getItemView(value);
+        if (!item) return null;
+        const snap = {
+            id: item.id,
+            type: item.type,
+            baseType: item.baseType || item.type,
+            name: item.name,
+            category: item.category || 'misc',
+            tags: item.tags || [],
+            shape: item.shape || 'sphere',
+            color: item.colorCss || item.color || '#ffd34d',
+            description: item.description || '',
+            state: item.state || {},
+            unique: item.unique !== false,
+            custom: !!item.custom
+        };
+        if (slot !== null) snap.slot = slot;
+        return snap;
+    }
+
+    function itemMatchesIdentifier(value, identifier) {
+        const item = getItemView(value);
+        const id = sanitizeItemInstanceId(identifier);
+        const type = sanitizeItemId(identifier);
+        if (!item || (!id && !type)) return false;
+        return item.id === id || item.type === type || item.baseType === type || item.name.toLowerCase() === String(identifier || '').toLowerCase() || (item.tags || []).includes(type);
+    }
+
+    function inventoryHasItem(identifier) {
+        return inventory.some(item => itemMatchesIdentifier(item, identifier));
+    }
+
+    function getItemDefsSnapshot() {
+        return Object.values(gmItemDefs).map(def => ({ ...def }));
+    }
+
+    function getInventorySnapshot() {
+        return inventory
+            .map((item, slot) => getItemSnapshot(item, slot))
+            .filter(Boolean);
+    }
+
+    function getInventoryCompactSnapshot() {
+        return getInventorySnapshot().map(item => ({ id: item.id, name: item.name, type: item.type, tags: item.tags }));
+    }
+
+    function clearGMItemDefs() {
+        Object.keys(gmItemDefs).forEach(type => {
+            delete gmItemDefs[type];
+            if (ITEM_DEFS[type] && ITEM_DEFS[type].gmDefined) delete ITEM_DEFS[type];
+        });
+        // Keep item instances; they carry their own display/state data even if a template is cleared.
+        try { renderInventory(); } catch (err) {}
+    }
+
+    function giveInventoryItem(itemSpec, cmd = {}) {
+        const spec = (cmd.item && typeof cmd.item === 'object') ? cmd.item : { ...cmd, ...(typeof itemSpec === 'object' ? itemSpec : { type: itemSpec }) };
+        const item = makeItemInstance(spec);
+        if (!item) { addLogMessage('Invalid item.'); return false; }
         const emptySlot = inventory.findIndex(i => i === null);
         if (emptySlot === -1) { addLogMessage('Your inventory is full!'); return false; }
-        inventory[emptySlot] = type;
+        inventory[emptySlot] = item;
         renderInventory();
-        addLogMessage(`You receive ${ITEM_DEFS[type].name}.`);
-        recordGMEvent('item_received', { type, name: ITEM_DEFS[type].name });
+        addLogMessage(`You receive ${item.name}.`);
+        recordGMEvent('item_received', { item: getItemSnapshot(item), custom: !!item.custom });
+        return true;
+    }
+
+    function removeInventoryItem(identifier, count = 1) {
+        const target = identifier && typeof identifier === 'object' ? (identifier.id || identifier.type || identifier.name) : identifier;
+        const targetCount = Math.max(1, Math.round(Number(count) || 1));
+        let removed = 0;
+        let removedItems = [];
+        for (let i = 0; i < inventory.length && removed < targetCount; i++) {
+            if (inventory[i] && itemMatchesIdentifier(inventory[i], target)) {
+                removedItems.push(getItemSnapshot(inventory[i]));
+                inventory[i] = null;
+                removed++;
+            }
+        }
+        if (removed <= 0) { addLogMessage(`You do not have ${target || 'that item'}.`); return false; }
+        renderInventory();
+        addLogMessage(`Removed ${removed} item${removed === 1 ? '' : 's'}.`);
+        recordGMEvent('item_removed_by_gm', { count: removed, items: removedItems });
+        return true;
+    }
+
+    function setInventoryFromGM(items) {
+        if (!Array.isArray(items)) { addLogMessage('Invalid set_inventory command.'); return false; }
+        inventory.fill(null);
+        items.slice(0, MAX_INV).forEach((entry, index) => {
+            const item = makeItemInstance(entry);
+            if (item) inventory[index] = item;
+        });
+        renderInventory();
+        recordGMEvent('inventory_set_by_gm', { items: getInventorySnapshot() });
+        addLogMessage('Inventory updated by GM.');
         return true;
     }
 
@@ -1923,10 +2380,11 @@
         group.add(hitBox);
 
         group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.visible = cmd.visible !== false && cmd.hidden !== true;
         group.userData = { markerId: id };
         levelGroups[level].add(group);
         interactables.push(hitBox);
-        gmMarkers.push({ id, name, note, x, y, level, color: colorHex, anchor: placement.anchorId || null, group, hitBox });
+        gmMarkers.push({ id, name, note, x, y, level, color: colorHex, visible: cmd.visible !== false && cmd.hidden !== true, state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {}, anchor: placement.anchorId || cmd.anchor || null, group, hitBox });
         if (!cmd.silent) {
             addLogMessage(`Marker placed: ${name}.`);
             recordGMEvent('marker_created', { id, name, x, y, level, note });
@@ -2024,6 +2482,7 @@
 
         const pos = getGridWorldPos(x, y, level);
         group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.visible = visible;
         group.userData = { hotspotId: id };
         levelGroups[level].add(group);
         interactables.push(hitBox);
@@ -2031,17 +2490,17 @@
         const setFlag = cmd.setFlag && typeof cmd.setFlag === 'object' && typeof cmd.setFlag.key === 'string'
             ? { key: cmd.setFlag.key, value: cmd.setFlag.value }
             : (typeof cmd.setFlag === 'string' ? { key: cmd.setFlag, value: true } : null);
-        const giveItem = typeof cmd.giveItem === 'string' && ITEM_DEFS[cmd.giveItem] ? cmd.giveItem : null;
+        const giveItem = (cmd.giveItem !== undefined && cmd.giveItem !== null) ? cmd.giveItem : null;
 
         gmHotspots.push({
             id, name, note, x, y, level, surface, visible,
-            color: colorHex, anchor: placement.anchorId || null, giveItem, setFlag, removeOnInteract: !!cmd.removeOnInteract, used: !!cmd.used,
+            color: colorHex, state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {}, anchor: placement.anchorId || cmd.anchor || null, giveItem, setFlag, removeOnInteract: !!cmd.removeOnInteract, used: !!cmd.used,
             group, hitBox
         });
 
         if (!cmd.silent) {
             addLogMessage(`Hotspot created: ${name}.`);
-            recordGMEvent('hotspot_created', { id, name, surface, x, y, level, note, visible, anchor: placement.anchorId || null, direction: formatDistanceDirection(x, y, level) });
+            recordGMEvent('hotspot_created', { id, name, surface, x, y, level, note, visible, anchor: placement.anchorId || cmd.anchor || null, direction: formatDistanceDirection(x, y, level) });
         }
         return true;
     }
@@ -2207,6 +2666,7 @@
         const visual = buildGMObjectVisual(cmd.shape, color);
         const group = visual.group;
         if (cmd.highlight !== false) addGMObjectHighlight(group);
+        group.visible = cmd.visible !== false && cmd.hidden !== true;
 
         const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.2, 0.9), new THREE.MeshBasicMaterial({ visible: false }));
         hitBox.position.y = 0.6;
@@ -2222,14 +2682,16 @@
         const setFlag = cmd.setFlag && typeof cmd.setFlag === 'object' && typeof cmd.setFlag.key === 'string'
             ? { key: cmd.setFlag.key, value: cmd.setFlag.value }
             : (typeof cmd.setFlag === 'string' ? { key: cmd.setFlag, value: true } : null);
-        const giveItem = typeof cmd.giveItem === 'string' && ITEM_DEFS[cmd.giveItem] ? cmd.giveItem : null;
+        const giveItem = (cmd.giveItem !== undefined && cmd.giveItem !== null) ? cmd.giveItem : null;
 
         const blocksMovement = cmd.blocksMovement === true || cmd.blocking === true || cmd.blocks === true;
         const gmObject = {
             id, name, note, x, y, level,
             color: colorHex,
-            anchor: placement.anchorId || null,
+            anchor: placement.anchorId || cmd.anchor || null,
             shape: visual.shape,
+            visible: cmd.visible !== false && cmd.hidden !== true,
+            state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {},
             giveItem,
             setFlag,
             blocksMovement,
@@ -2244,7 +2706,7 @@
 
         if (!cmd.silent) {
             addLogMessage(`Object created: ${name} (${formatDistanceDirection(x, y, level)}).`);
-            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note, blocksMovement, anchor: placement.anchorId || null, direction: formatDistanceDirection(x, y, level) });
+            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note, blocksMovement, anchor: placement.anchorId || cmd.anchor || null, direction: formatDistanceDirection(x, y, level) });
         }
         return true;
     }
@@ -2353,11 +2815,12 @@
         const mesh = buildWall(wall, level, height);
         mesh.userData = { ...mesh.userData, isGMWall: true, sourceLevel: level, wallId: id, interactX: x, interactY: y, stopAdjacent: true };
         interactables.push(mesh);
-        const saved = { id, name, x, y, level, dir, type, color, height, anchor: placement.anchorId || null, wallRef: wall, hitMesh: mesh };
+        mesh.visible = cmd.visible !== false && cmd.hidden !== true;
+        const saved = { id, name, x, y, level, dir, type, color, height, visible: cmd.visible !== false && cmd.hidden !== true, state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {}, anchor: placement.anchorId || cmd.anchor || null, wallRef: wall, hitMesh: mesh };
         gmWalls.push(saved);
         if (!cmd.silent) {
             addLogMessage(`Wall created: ${name}.`);
-            recordGMEvent('wall_created', { id, name, x, y, level, dir, anchor: placement.anchorId || null });
+            recordGMEvent('wall_created', { id, name, x, y, level, dir, anchor: placement.anchorId || cmd.anchor || null });
         }
         return true;
     }
@@ -2508,7 +2971,9 @@
             shape: cmd.shape === 'circle' ? 'circle' : 'square',
             height: Number.isFinite(Number(cmd.height)) ? Number(cmd.height) : undefined,
             delta: Number.isFinite(Number(cmd.delta)) ? Number(cmd.delta) : undefined,
-            anchor: placement.anchorId || null
+            anchor: placement.anchorId || cmd.anchor || null,
+            visible: cmd.visible !== false && cmd.hidden !== true,
+            state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {}
         };
         gmTerrain.push(patch);
         rebuildGMTerrainForLevel(level);
@@ -2567,14 +3032,15 @@
         const mesh = new THREE.Mesh(new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE), new THREE.MeshLambertMaterial({ color, flatShading: true, side: THREE.DoubleSide }));
         mesh.rotation.x = -Math.PI / 2;
         mesh.position.set(x * TILE_SIZE, height + 0.035, y * TILE_SIZE);
+        mesh.visible = cmd.visible !== false && cmd.hidden !== true;
         mesh.userData = { isGMFloor: true, floorId: id, sourceLevel: level, interactX: x, interactY: y };
         levelGroups[level].add(mesh);
         if (walkable) walkables[level].push(mesh);
-        const saved = { id, name, x, y, level, color: colorHex, height, walkable, anchor: placement.anchorId || null, mesh, hadFloorHeight, oldFloorHeight, wasUnwalkable };
+        const saved = { id, name, x, y, level, color: colorHex, height, walkable, visible: cmd.visible !== false && cmd.hidden !== true, state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {}, anchor: placement.anchorId || cmd.anchor || null, mesh, hadFloorHeight, oldFloorHeight, wasUnwalkable };
         gmFloors.push(saved);
         if (!cmd.silent) {
             addLogMessage(`Floor created: ${name}.`);
-            recordGMEvent('floor_created', { id, name, x, y, level, height, walkable, anchor: placement.anchorId || null });
+            recordGMEvent('floor_created', { id, name, x, y, level, height, walkable, anchor: placement.anchorId || cmd.anchor || null });
         }
         return true;
     }
@@ -2603,6 +3069,204 @@
 
     function clearGMFloors() {
         while (gmFloors.length > 0) removeGMFloor(gmFloors[0].id, true);
+    }
+
+    function normalizeStructureId(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_\-\s]/g, '')
+            .replace(/[\s\-]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 64) || `structure_${Date.now()}`;
+    }
+
+    function normalizeStructureType(value) {
+        const raw = String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        if (['bridge', 'platform', 'room', 'barricade', 'wall_line', 'rubble_field', 'ramp'].includes(raw)) return raw;
+        if (raw === 'floor_area' || raw === 'area' || raw === 'deck') return 'platform';
+        if (raw === 'barrier' || raw === 'blockade') return 'barricade';
+        if (raw === 'wall' || raw === 'wallline') return 'wall_line';
+        if (raw === 'rubble' || raw === 'debris_field') return 'rubble_field';
+        return 'platform';
+    }
+
+    function structureDirection(dir) {
+        const d = normalizeWallDir(dir || 'E');
+        if (d === 'N') return { dx: 0, dy: -1, perpendicular: 'E' };
+        if (d === 'S') return { dx: 0, dy: 1, perpendicular: 'E' };
+        if (d === 'W') return { dx: -1, dy: 0, perpendicular: 'N' };
+        return { dx: 1, dy: 0, perpendicular: 'N' };
+    }
+
+    function clampStructureSize(value, fallback, min = 1, max = 8) {
+        return Math.max(min, Math.min(max, Math.round(Number(value) || fallback)));
+    }
+
+    function createGMStructure(cmd) {
+        const id = normalizeStructureId(cmd.id || cmd.structureId || cmd.name);
+        const prefix = `${id}_`;
+        const alreadyExists = [...gmObjects, ...gmFloors, ...gmWalls, ...gmTerrain, ...gmTransitions, ...gmHotspots, ...gmMarkers, ...gmNPCs]
+            .some(entity => entity && typeof entity.id === 'string' && (entity.id === id || entity.id.startsWith(prefix)));
+        if (alreadyExists) { if (!cmd.silent) addLogMessage(`Structure already exists: ${id}`); return false; }
+
+        const kind = normalizeStructureType(cmd.structure || cmd.type || cmd.kind || cmd.preset);
+        const placement = resolveGMPlacement({ ...cmd, adjust: cmd.adjust ?? false }, currentLevel, 3);
+        const level = placement.level;
+        const baseX = placement.x;
+        const baseY = placement.y;
+        if (!isValidTile(baseX, baseY, level)) { if (!cmd.silent) addLogMessage('Invalid create_structure command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : kind.replace(/_/g, ' ');
+        const color = normalizeMarkerColor(cmd.color || (kind === 'bridge' ? '#8b5a2b' : kind === 'room' ? '#8c8578' : '#8d877b'));
+        const wallColor = normalizeMarkerColor(cmd.wallColor || cmd.color || '#8a8a8a');
+        const height = Number.isFinite(Number(cmd.height)) ? Number(cmd.height) : undefined;
+        const dirInfo = structureDirection(cmd.dir || cmd.orientation || cmd.direction || 'E');
+        const created = [];
+        const failed = [];
+        const makeId = suffix => `${id}_${suffix}`;
+        const tryCreateFloor = (suffix, x, y, options = {}) => {
+            if (!isValidTile(x, y, level)) { failed.push(suffix); return false; }
+            const ok = createGMFloor({
+                id: makeId(suffix), name: `${name} ${suffix.replace(/_/g, ' ')}`,
+                x, y, level, color: options.color || color,
+                height: options.height !== undefined ? options.height : (height !== undefined ? height : getWalkableHeight(x, y, level)),
+                walkable: options.walkable !== false, adjust: false, silent: true
+            });
+            if (ok) created.push(makeId(suffix)); else failed.push(suffix);
+            return ok;
+        };
+        const tryCreateWall = (suffix, x, y, dir, options = {}) => {
+            if (!isValidTile(x, y, level)) { failed.push(suffix); return false; }
+            const ok = createGMWall({
+                id: makeId(suffix), name: `${name} ${suffix.replace(/_/g, ' ')}`,
+                x, y, level, dir, type: options.type || cmd.wallType || 'stone',
+                color: options.color || wallColor, height: options.height || cmd.wallHeight || 1.6,
+                adjust: false, silent: true
+            });
+            if (ok) created.push(makeId(suffix)); else failed.push(suffix);
+            return ok;
+        };
+        const tryCreateProp = (suffix, x, y, options = {}) => {
+            if (!isValidTile(x, y, level)) { failed.push(suffix); return false; }
+            const ok = createGMObject({
+                id: makeId(suffix), name: options.name || `${name} ${suffix.replace(/_/g, ' ')}`,
+                note: options.note || '', shape: options.shape || cmd.shape || 'rubble',
+                x, y, level, color: options.color || color,
+                blocksMovement: options.blocksMovement !== undefined ? options.blocksMovement : !!cmd.blocksMovement,
+                adjust: false, silent: true
+            });
+            if (ok) created.push(makeId(suffix)); else failed.push(suffix);
+            return ok;
+        };
+
+        if (kind === 'platform') {
+            const width = clampStructureSize(cmd.width, 3, 1, 8);
+            const depth = clampStructureSize(cmd.depth || cmd.length, 3, 1, 8);
+            const startX = baseX - Math.floor(width / 2);
+            const startY = baseY - Math.floor(depth / 2);
+            for (let ix = 0; ix < width; ix++) for (let iy = 0; iy < depth; iy++) tryCreateFloor(`floor_${ix}_${iy}`, startX + ix, startY + iy);
+        }
+        else if (kind === 'bridge') {
+            const length = clampStructureSize(cmd.length || cmd.width, 4, 1, 10);
+            const bridgeWidth = clampStructureSize(cmd.bridgeWidth || cmd.depth || 1, 1, 1, 3);
+            for (let i = 0; i < length; i++) {
+                for (let w = 0; w < bridgeWidth; w++) {
+                    const side = w - Math.floor(bridgeWidth / 2);
+                    const px = baseX + dirInfo.dx * i + (dirInfo.dx === 0 ? side : 0);
+                    const py = baseY + dirInfo.dy * i + (dirInfo.dy === 0 ? side : 0);
+                    tryCreateFloor(`bridge_${i}_${w}`, px, py, { color: color || '#8b5a2b' });
+                }
+            }
+        }
+        else if (kind === 'ramp') {
+            const length = clampStructureSize(cmd.length, 4, 2, 8);
+            const step = Math.max(0.05, Math.min(0.5, Math.abs(Number(cmd.step) || 0.22)));
+            const startHeight = Number.isFinite(Number(cmd.startHeight)) ? Number(cmd.startHeight) : getWalkableHeight(baseX, baseY, level);
+            for (let i = 0; i < length; i++) {
+                const px = baseX + dirInfo.dx * i;
+                const py = baseY + dirInfo.dy * i;
+                tryCreateFloor(`ramp_${i}`, px, py, { height: startHeight + i * step, color });
+            }
+        }
+        else if (kind === 'barricade') {
+            const length = clampStructureSize(cmd.length || cmd.width, 3, 1, 8);
+            const blocks = cmd.blocksMovement !== false;
+            for (let i = 0; i < length; i++) {
+                const px = baseX + dirInfo.dx * i;
+                const py = baseY + dirInfo.dy * i;
+                tryCreateProp(`barricade_${i}`, px, py, { shape: cmd.shape || 'plank', blocksMovement: blocks, color });
+            }
+        }
+        else if (kind === 'rubble_field') {
+            const width = clampStructureSize(cmd.width, 3, 1, 6);
+            const depth = clampStructureSize(cmd.depth || cmd.length, 3, 1, 6);
+            const startX = baseX - Math.floor(width / 2);
+            const startY = baseY - Math.floor(depth / 2);
+            for (let ix = 0; ix < width; ix++) for (let iy = 0; iy < depth; iy++) {
+                if ((ix + iy) % 2 === 0 || cmd.dense === true) tryCreateProp(`rubble_${ix}_${iy}`, startX + ix, startY + iy, { shape: 'rubble', blocksMovement: cmd.blocksMovement === true, color });
+            }
+        }
+        else if (kind === 'wall_line') {
+            const length = clampStructureSize(cmd.length || cmd.width, 3, 1, 10);
+            const wallDir = normalizeWallDir(cmd.wallDir || cmd.side || cmd.facing || (dirInfo.dx === 0 ? 'E' : 'N'));
+            for (let i = 0; i < length; i++) {
+                const px = baseX + dirInfo.dx * i;
+                const py = baseY + dirInfo.dy * i;
+                tryCreateWall(`wall_${i}`, px, py, wallDir);
+            }
+        }
+        else if (kind === 'room') {
+            const width = clampStructureSize(cmd.width, 4, 2, 8);
+            const depth = clampStructureSize(cmd.depth || cmd.length, 4, 2, 8);
+            const startX = baseX - Math.floor(width / 2);
+            const startY = baseY - Math.floor(depth / 2);
+            const entrance = String(cmd.entrance || cmd.openSide || '').toUpperCase();
+            const doorX = startX + Math.floor(width / 2);
+            const doorY = startY + Math.floor(depth / 2);
+            for (let ix = 0; ix < width; ix++) for (let iy = 0; iy < depth; iy++) tryCreateFloor(`room_floor_${ix}_${iy}`, startX + ix, startY + iy, { color });
+            for (let ix = 0; ix < width; ix++) {
+                const x = startX + ix;
+                if (!(entrance === 'N' && x === doorX)) tryCreateWall(`room_n_${ix}`, x, startY, 'N');
+                if (!(entrance === 'S' && x === doorX)) tryCreateWall(`room_s_${ix}`, x, startY + depth - 1, 'S');
+            }
+            for (let iy = 0; iy < depth; iy++) {
+                const y = startY + iy;
+                if (!(entrance === 'W' && y === doorY)) tryCreateWall(`room_w_${iy}`, startX, y, 'W');
+                if (!(entrance === 'E' && y === doorY)) tryCreateWall(`room_e_${iy}`, startX + width - 1, y, 'E');
+            }
+        }
+
+        if (created.length === 0) { if (!cmd.silent) addLogMessage('No structure parts could be created.'); return false; }
+        if (!cmd.silent) {
+            addLogMessage(`Structure created: ${name}.`);
+            recordGMEvent('structure_created', { id, name, structure: kind, x: baseX, y: baseY, level, parts: created.length, failed: failed.length, anchor: placement.anchorId || cmd.anchor || null });
+        }
+        return true;
+    }
+
+    function removeGMStructure(cmdOrId, silent = false) {
+        const rawId = typeof cmdOrId === 'string' ? cmdOrId : (cmdOrId?.id || cmdOrId?.structureId || cmdOrId?.target);
+        const id = normalizeStructureId(rawId);
+        const prefix = `${id}_`;
+        let removed = 0;
+        [...gmTransitions].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMTransition(e.id, true)) removed++; });
+        [...gmTerrain].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMTerrainPatch(e.id, true)) removed++; });
+        [...gmFloors].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMFloor(e.id, true)) removed++; });
+        [...gmWalls].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMWall(e.id, true)) removed++; });
+        [...gmObjects].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMObject(e.id, true)) removed++; });
+        [...gmHotspots].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMHotspot(e.id, true)) removed++; });
+        [...gmMarkers].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMMarker(e.id, true)) removed++; });
+        [...gmNPCs].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMNPC(e.id, true)) removed++; });
+        if (removed > 0) {
+            if (!silent) {
+                addLogMessage(`Structure removed: ${id}.`);
+                recordGMEvent('structure_removed', { id, parts: removed });
+            }
+            return true;
+        }
+        if (!silent) addLogMessage(`No structure found: ${id}`);
+        return false;
     }
 
 
@@ -2694,6 +3358,7 @@
 
         const pos = getGridWorldPos(x, y, level);
         group.position.set(pos.x, pos.y + 0.02, pos.z);
+        group.visible = cmd.visible !== false && cmd.hidden !== true;
         group.userData = { transitionId: id };
         levelGroups[level].add(group);
         interactables.push(hitBox);
@@ -2703,9 +3368,11 @@
             targetLevel, spawnX, spawnY,
             color: colorHex,
             shape: visual.shape,
+            visible: cmd.visible !== false && cmd.hidden !== true,
+            state: (cmd.state && typeof cmd.state === 'object') ? JSON.parse(JSON.stringify(cmd.state)) : {},
             useFade: cmd.useFade !== false,
             requiresFlag: typeof cmd.requiresFlag === 'string' && cmd.requiresFlag.trim() ? cmd.requiresFlag.trim() : null,
-            anchor: placement.anchorId || null,
+            anchor: placement.anchorId || cmd.anchor || null,
             group,
             hitBox
         };
@@ -2754,6 +3421,109 @@
         else go();
     }
 
+
+    function createGMNPC(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `npc_${Date.now()}`;
+        if (npcs.some(npc => npc.id === id)) { if (!cmd.silent) addLogMessage(`NPC already exists: ${id}`); return false; }
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_npc command.'); return false; }
+
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : id;
+        const note = typeof cmd.note === 'string' ? cmd.note : (typeof cmd.description === 'string' ? cmd.description : '');
+        const type = String(cmd.type || cmd.npcType || 'human').toLowerCase();
+        const color = normalizeMarkerColor(cmd.color || '#6688cc');
+        const npc = spawnNPC(id, name, x, y, level, type, {
+            gmCreated: true,
+            name,
+            note,
+            color,
+            dialogueId: cmd.dialogueId || id,
+            state: cmd.state && typeof cmd.state === 'object' ? cmd.state : {}
+        });
+        npc.anchor = placement.anchorId || cmd.anchor || null;
+        gmNPCs.push(npc);
+        if (Array.isArray(cmd.lines)) {
+            DIALOGUES[id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
+        }
+        if (!cmd.silent) {
+            addLogMessage(`NPC created: ${name} (${formatDistanceDirection(x, y, level)}).`);
+            recordGMEvent('npc_created', { id, name, type, x, y, level, anchor: npc.anchor, note });
+        }
+        return true;
+    }
+
+    function removeGMNPC(id, silent = false) {
+        const index = gmNPCs.findIndex(npc => npc.id === id);
+        if (index === -1) { if (!silent) addLogMessage(`No GM NPC found: ${id}`); return false; }
+        const npc = gmNPCs[index];
+        const interIndex = interactables.indexOf(npc.hitbox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        levelGroups[npc.level].remove(npc.mesh);
+        disposeObject3D(npc.mesh);
+        const npcIndex = npcs.indexOf(npc);
+        if (npcIndex > -1) npcs.splice(npcIndex, 1);
+        gmNPCs.splice(index, 1);
+        if (lastInteractionTarget && lastInteractionTarget.kind === 'npc' && lastInteractionTarget.id === id) lastInteractionTarget = null;
+        if (!silent) {
+            addLogMessage(`NPC removed: ${npc.name}.`);
+            recordGMEvent('npc_removed', { id, name: npc.name, x: npc.gridX, y: npc.gridY, level: npc.level });
+        }
+        return true;
+    }
+
+    function clearGMNPCs() {
+        while (gmNPCs.length > 0) removeGMNPC(gmNPCs[0].id, true);
+    }
+
+    function moveGMNPC(cmd) {
+        const id = cmd.id || cmd.npcId || cmd.target;
+        const npc = npcs.find(n => n.id === id);
+        if (!npc) { addLogMessage(`No NPC found: ${id}`); return false; }
+        const placement = resolveGMPlacement({ ...cmd, adjust: cmd.adjust ?? true }, npc.level, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { addLogMessage('Invalid move_npc command.'); return false; }
+        if (npc.level !== level) {
+            levelGroups[npc.level].remove(npc.mesh);
+            levelGroups[level].add(npc.mesh);
+            npc.hitbox.userData.sourceLevel = level;
+        }
+        npc.pathQueue = [];
+        npc.isMoving = false;
+        const pos = getGridWorldPos(x, y, level);
+        npc.mesh.position.set(pos.x, pos.y, pos.z);
+        npc.gridX = x;
+        npc.gridY = y;
+        npc.level = level;
+        npc.anchor = placement.anchorId || npc.anchor || null;
+        npc.hitbox.userData.interactX = x;
+        npc.hitbox.userData.interactY = y;
+        npc.hitbox.userData.sourceLevel = level;
+        addLogMessage(`NPC moved: ${npc.name || npc.id}.`);
+        recordGMEvent('npc_moved', { id: npc.id, name: npc.name || npc.id, x, y, level, anchor: npc.anchor, gmCreated: !!npc.gmCreated });
+        return true;
+    }
+
+    function setGMNPCState(cmd) {
+        const id = cmd.id || cmd.npcId || cmd.target;
+        const npc = npcs.find(n => n.id === id);
+        if (!npc) { addLogMessage(`No NPC found: ${id}`); return false; }
+        if (typeof cmd.name === 'string' && cmd.name.trim()) {
+            npc.name = cmd.name.trim();
+            npc.hitbox.userData.npcName = npc.name;
+        }
+        if (typeof cmd.note === 'string') npc.note = cmd.note;
+        if (cmd.state && typeof cmd.state === 'object') npc.state = { ...(npc.state || {}), ...cmd.state };
+        if (Array.isArray(cmd.lines)) DIALOGUES[npc.dialogueId || npc.id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
+        addLogMessage(`NPC state updated: ${npc.name || npc.id}.`);
+        recordGMEvent('npc_state_updated', { id: npc.id, name: npc.name || npc.id, note: npc.note || '', state: npc.state || {} });
+        return true;
+    }
+
     function moveGMObject(cmd) {
         const id = cmd.id || cmd.objectId || cmd.target;
         const obj = gmObjects.find(o => o.id === id);
@@ -2777,7 +3547,7 @@
         obj.hitBox.userData.sourceLevel = level;
         setGMObjectBlocking(obj, !!obj.blocksMovement);
         addLogMessage(`Object moved: ${obj.name}.`);
-        recordGMEvent('object_moved', { id: obj.id, name: obj.name, x, y, level, blocksMovement: !!obj.blocksMovement, anchor: placement.anchorId || null });
+        recordGMEvent('object_moved', { id: obj.id, name: obj.name, x, y, level, blocksMovement: !!obj.blocksMovement, anchor: placement.anchorId || cmd.anchor || null });
         return true;
     }
 
@@ -2796,12 +3566,259 @@
         return true;
     }
 
+
+    function clonePlainObject(value) {
+        if (!value || typeof value !== 'object') return {};
+        try { return JSON.parse(JSON.stringify(value)); }
+        catch (err) { return { ...value }; }
+    }
+
+    function cleanEntityKind(kind) {
+        const raw = String(kind || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        if (['object', 'prop', 'gm_object'].includes(raw)) return 'prop';
+        if (['hotspot', 'marker', 'wall', 'floor', 'terrain', 'transition', 'passage', 'portal', 'stairs', 'npc', 'item', 'ground_item'].includes(raw)) {
+            if (['passage', 'portal', 'stairs'].includes(raw)) return 'transition';
+            if (raw === 'ground_item') return 'item';
+            return raw;
+        }
+        return '';
+    }
+
+    function getEntityCommandId(cmd = {}) {
+        return cmd.id || cmd.entityId || cmd.target || cmd.objectId || cmd.npcId || cmd.itemId || cmd.groundItemId;
+    }
+
+    function findCanvasEntityRef(id, kindHint = '') {
+        const cleanId = String(id || '').trim();
+        if (!cleanId) return null;
+        const kind = cleanEntityKind(kindHint);
+        const checks = [
+            ['prop', gmObjects, e => e.id === cleanId],
+            ['hotspot', gmHotspots, e => e.id === cleanId],
+            ['marker', gmMarkers, e => e.id === cleanId],
+            ['wall', gmWalls, e => e.id === cleanId],
+            ['floor', gmFloors, e => e.id === cleanId],
+            ['terrain', gmTerrain, e => e.id === cleanId],
+            ['transition', gmTransitions, e => e.id === cleanId],
+            ['npc', gmNPCs, e => e.id === cleanId || e.name === cleanId],
+            ['item', (typeof groundItems !== 'undefined' ? groundItems : []), e => groundItemMatches(e, cleanId)]
+        ];
+        for (const [k, arr, test] of checks) {
+            if (kind && kind !== k) continue;
+            const entity = arr.find(test);
+            if (entity) return { kind: k, entity };
+        }
+        if (!kind || kind === 'item') {
+            const slot = inventory.findIndex(item => itemMatchesIdentifier(item, cleanId));
+            if (slot >= 0) return { kind: 'inventory_item', entity: inventory[slot], slot };
+        }
+        return null;
+    }
+
+    function mergeEntityState(entity, cmd = {}) {
+        if (!entity) return false;
+        let changed = false;
+        if (cmd.state && typeof cmd.state === 'object') {
+            entity.state = { ...(entity.state || {}), ...clonePlainObject(cmd.state) };
+            changed = true;
+        }
+        if (cmd.condition !== undefined) {
+            entity.state = { ...(entity.state || {}), condition: cmd.condition };
+            changed = true;
+        }
+        if (cmd.damage !== undefined || cmd.damaged !== undefined) {
+            entity.state = { ...(entity.state || {}), damaged: cmd.damaged !== undefined ? !!cmd.damaged : true, damage: cmd.damage ?? entity.state?.damage ?? true };
+            changed = true;
+        }
+        if (cmd.repaired === true) {
+            entity.state = { ...(entity.state || {}), damaged: false, repaired: true };
+            changed = true;
+        }
+        return changed;
+    }
+
+    function applyVisibilityToEntity(ref, visible) {
+        const v = visible !== false;
+        const entity = ref.entity;
+        if (ref.kind === 'inventory_item') return false;
+        entity.visible = v;
+        if (entity.group) entity.group.visible = v;
+        if (entity.mesh) entity.mesh.visible = v;
+        if (entity.hitMesh) entity.hitMesh.visible = v;
+        if (entity.wallRef && entity.wallRef.mesh) entity.wallRef.mesh.visible = v;
+        return true;
+    }
+
+    function rebuildGMObjectFromData(obj, updates = {}) {
+        const data = {
+            id: obj.id, name: obj.name, note: obj.note, x: obj.x, y: obj.y, level: obj.level,
+            color: obj.color, shape: obj.shape, giveItem: obj.giveItem, setFlag: obj.setFlag,
+            blocksMovement: !!obj.blocksMovement, removeOnInteract: !!obj.removeOnInteract, used: !!obj.used,
+            visible: obj.visible !== false, state: obj.state || {}, anchor: obj.anchor || null,
+            ...updates, silent: true, highlight: updates.highlight ?? false
+        };
+        removeGMObject(obj.id, true);
+        return createGMObject(data);
+    }
+
+    function rebuildGMHotspotFromData(h, updates = {}) {
+        const data = {
+            id: h.id, name: h.name, note: h.note, x: h.x, y: h.y, level: h.level,
+            color: h.color, surface: h.surface, visible: h.visible !== false,
+            giveItem: h.giveItem, setFlag: h.setFlag, removeOnInteract: !!h.removeOnInteract,
+            used: !!h.used, state: h.state || {}, anchor: h.anchor || null,
+            ...updates, silent: true
+        };
+        removeGMHotspot(h.id, true);
+        return createGMHotspot(data);
+    }
+
+    function rebuildGMMarkerFromData(m, updates = {}) {
+        const data = {
+            id: m.id, name: m.name, note: m.note, x: m.x, y: m.y, level: m.level,
+            color: m.color, visible: m.visible !== false, state: m.state || {}, anchor: m.anchor || null,
+            ...updates, silent: true
+        };
+        removeGMMarker(m.id, true);
+        return createGMMarker(data);
+    }
+
+    function rebuildGMWallFromData(w, updates = {}) {
+        const data = {
+            id: w.id, name: w.name, x: w.x, y: w.y, level: w.level, dir: w.dir,
+            type: w.type, color: w.color, height: w.height, visible: w.visible !== false,
+            state: w.state || {}, anchor: w.anchor || null, ...updates, silent: true
+        };
+        removeGMWall(w.id, true);
+        return createGMWall(data);
+    }
+
+    function rebuildGMFloorFromData(f, updates = {}) {
+        const data = {
+            id: f.id, name: f.name, x: f.x, y: f.y, level: f.level,
+            color: f.color, height: f.height, walkable: f.walkable !== false,
+            visible: f.visible !== false, state: f.state || {}, anchor: f.anchor || null,
+            ...updates, silent: true
+        };
+        removeGMFloor(f.id, true);
+        return createGMFloor(data);
+    }
+
+    function rebuildGMTerrainFromData(t, updates = {}) {
+        const data = {
+            id: t.id, name: t.name, x: t.x, y: t.y, level: t.level,
+            radius: t.radius, mode: t.mode, shape: t.shape, height: t.height, delta: t.delta,
+            visible: t.visible !== false, state: t.state || {}, anchor: t.anchor || null,
+            ...updates, silent: true
+        };
+        removeGMTerrainPatch(t.id, true);
+        return createGMTerrainPatch(data);
+    }
+
+    function rebuildGMTransitionFromData(t, updates = {}) {
+        const data = {
+            id: t.id, name: t.name, note: t.note, x: t.x, y: t.y, level: t.level,
+            color: t.color, shape: t.shape, targetLevel: t.targetLevel, spawnX: t.spawnX, spawnY: t.spawnY,
+            useFade: !!t.useFade, requiresFlag: t.requiresFlag || null, visible: t.visible !== false,
+            state: t.state || {}, anchor: t.anchor || null, ...updates, silent: true
+        };
+        removeGMTransition(t.id, true);
+        return createGMTransition(data);
+    }
+
+    function updateGroundOrInventoryItem(ref, cmd = {}) {
+        const current = ref.kind === 'inventory_item' ? getItemSnapshot(ref.entity) : getItemSnapshot(ref.entity.hitBox?.userData?.item || ref.entity.hitBox?.userData?.type);
+        if (!current) return false;
+        const itemPatch = cmd.item && typeof cmd.item === 'object' ? cmd.item : cmd;
+        const merged = makeItemInstance({ ...current, ...itemPatch, state: { ...(current.state || {}), ...(itemPatch.state || {}) } });
+        if (!merged) return false;
+        if (ref.kind === 'inventory_item') {
+            inventory[ref.slot] = merged;
+            renderInventory();
+            return true;
+        }
+        const entry = ref.entity;
+        const data = entry.hitBox.userData || {};
+        const x = data.interactX, y = data.interactY, level = data.sourceLevel;
+        const id = data.groundItemId || `ground_${merged.id}`;
+        const opts = { id, sourceKind: data.sourceKind || 'gm', gmCreated: !!data.gmCreated, persistent: data.persistentGroundItem !== false, anchor: data.anchor || null, silent: true };
+        removeGroundItemEntry(entry, { silent: true, markBaseRemoved: false });
+        spawnGroundItem(merged, x, y, level, opts);
+        return true;
+    }
+
+    function applyEntityTransformCommand(cmd = {}) {
+        const id = getEntityCommandId(cmd);
+        const ref = findCanvasEntityRef(id, cmd.kind || cmd.entityKind || cmd.type);
+        if (!ref) { addLogMessage(`No entity found: ${id || '(missing id)'}`); return false; }
+        const op = normalizeGMOp(cmd.op || 'update_entity');
+        const patch = {};
+        if (typeof cmd.name === 'string') patch.name = cmd.name.trim().slice(0, 80);
+        if (typeof cmd.note === 'string' || typeof cmd.description === 'string') patch.note = String(cmd.note ?? cmd.description).slice(0, 700);
+        if (cmd.color || cmd.colour) patch.color = normalizeMarkerColor(cmd.color || cmd.colour);
+        if (cmd.shape) patch.shape = String(cmd.shape).trim().toLowerCase();
+        if (cmd.surface) patch.surface = String(cmd.surface).trim().toLowerCase();
+        if (cmd.visible !== undefined) patch.visible = cmd.visible !== false;
+        if (op === 'hide_entity') patch.visible = false;
+        if (op === 'reveal_entity') patch.visible = true;
+        if (cmd.hidden !== undefined) patch.visible = !cmd.hidden;
+        if (cmd.blocksMovement !== undefined || cmd.blocking !== undefined || op === 'set_blocking') patch.blocksMovement = cmd.blocksMovement ?? cmd.blocking ?? cmd.blocks ?? true;
+        if (cmd.walkable !== undefined) patch.walkable = cmd.walkable !== false;
+        if (cmd.targetLevel || cmd.spawnX !== undefined || cmd.spawnY !== undefined || cmd.requiresFlag !== undefined) {
+            if (cmd.targetLevel !== undefined) patch.targetLevel = String(cmd.targetLevel);
+            if (cmd.spawnX !== undefined) patch.spawnX = Math.round(Number(cmd.spawnX));
+            if (cmd.spawnY !== undefined) patch.spawnY = Math.round(Number(cmd.spawnY));
+            if (cmd.requiresFlag !== undefined) patch.requiresFlag = cmd.requiresFlag || null;
+        }
+        if (cmd.height !== undefined) patch.height = Number(cmd.height);
+        if (cmd.delta !== undefined) patch.delta = Number(cmd.delta);
+        if (cmd.radius !== undefined) patch.radius = Math.round(Number(cmd.radius));
+        if (cmd.mode !== undefined) patch.mode = normalizeTerrainMode(cmd);
+        if (cmd.state && typeof cmd.state === 'object') patch.state = { ...(ref.entity.state || {}), ...clonePlainObject(cmd.state) };
+        if (op === 'damage_entity' || cmd.damage !== undefined || cmd.damaged !== undefined) patch.state = { ...(patch.state || ref.entity.state || {}), damaged: cmd.damaged !== undefined ? !!cmd.damaged : true, damage: cmd.damage ?? true };
+        if (op === 'repair_entity' || cmd.repaired === true) patch.state = { ...(patch.state || ref.entity.state || {}), damaged: false, repaired: true };
+
+        let changed = false;
+        if (ref.kind === 'prop') {
+            const obj = ref.entity;
+            const needsRebuild = patch.shape || patch.color || patch.name || patch.note || patch.visible !== undefined || patch.blocksMovement !== undefined || patch.state;
+            if (patch.blocksMovement !== undefined && !patch.shape && !patch.color && !patch.visible && !patch.name && !patch.note && !patch.state) {
+                obj.blocksMovement = !!patch.blocksMovement;
+                setGMObjectBlocking(obj, obj.blocksMovement);
+                changed = true;
+            } else if (needsRebuild) changed = rebuildGMObjectFromData(obj, patch);
+        } else if (ref.kind === 'hotspot') changed = rebuildGMHotspotFromData(ref.entity, patch);
+        else if (ref.kind === 'marker') changed = rebuildGMMarkerFromData(ref.entity, patch);
+        else if (ref.kind === 'wall') changed = rebuildGMWallFromData(ref.entity, patch);
+        else if (ref.kind === 'floor') changed = rebuildGMFloorFromData(ref.entity, patch);
+        else if (ref.kind === 'terrain') changed = rebuildGMTerrainFromData(ref.entity, patch);
+        else if (ref.kind === 'transition') changed = rebuildGMTransitionFromData(ref.entity, patch);
+        else if (ref.kind === 'npc') {
+            const npc = ref.entity;
+            if (typeof patch.name === 'string') { npc.name = patch.name; npc.hitbox.userData.npcName = patch.name; }
+            if (typeof patch.note === 'string') npc.note = patch.note;
+            if (patch.state) npc.state = { ...(npc.state || {}), ...patch.state };
+            if (patch.visible !== undefined && npc.mesh) { npc.visible = patch.visible; npc.mesh.visible = patch.visible; }
+            changed = true;
+        } else if (ref.kind === 'item' || ref.kind === 'inventory_item') changed = updateGroundOrInventoryItem(ref, { ...cmd, ...patch });
+
+        if (changed) {
+            addLogMessage(`Entity updated: ${id}.`);
+            recordGMEvent('entity_transformed', { id, kind: ref.kind, op, patch });
+        }
+        return !!changed;
+    }
+
     function buildGMWorldSave() {
         return {
-            version: 6,
+            version: 9,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
+            itemDefs: getItemDefsSnapshot(),
+            inventory: getInventorySnapshot(),
+            groundItems: getPersistentGroundItemsSnapshot(),
+            removedBaseGroundItems: Array.from(removedBaseGroundItemIds),
             markers: gmMarkers.map(marker => ({
                 id: marker.id,
                 name: marker.name,
@@ -2810,6 +3827,8 @@
                 y: marker.y,
                 level: marker.level,
                 color: marker.color || '#ffd34d',
+                visible: marker.visible !== false,
+                state: marker.state || {},
                 anchor: marker.anchor || null
             })),
             hotspots: gmHotspots.map(hotspot => ({
@@ -2822,6 +3841,7 @@
                 color: hotspot.color || '#b8b0a0',
                 surface: hotspot.surface || 'floor',
                 visible: hotspot.visible !== false,
+                state: hotspot.state || {},
                 giveItem: hotspot.giveItem || null,
                 setFlag: hotspot.setFlag || null,
                 removeOnInteract: !!hotspot.removeOnInteract,
@@ -2837,6 +3857,8 @@
                 level: obj.level,
                 color: obj.color || '#ffd34d',
                 shape: obj.shape || 'crate',
+                visible: obj.visible !== false,
+                state: obj.state || {},
                 giveItem: obj.giveItem || null,
                 setFlag: obj.setFlag || null,
                 blocksMovement: !!obj.blocksMovement,
@@ -2854,6 +3876,8 @@
                 type: wall.type || 'stone',
                 color: wall.color || '#8a8a8a',
                 height: wall.height || 1.6,
+                visible: wall.visible !== false,
+                state: wall.state || {},
                 anchor: wall.anchor || null
             })),
             floors: gmFloors.map(floor => ({
@@ -2865,6 +3889,8 @@
                 color: floor.color || '#8c8578',
                 height: floor.height,
                 walkable: floor.walkable !== false,
+                visible: floor.visible !== false,
+                state: floor.state || {},
                 anchor: floor.anchor || null
             })),
             terrain: gmTerrain.map(patch => ({
@@ -2878,6 +3904,8 @@
                 shape: patch.shape || 'square',
                 height: patch.height,
                 delta: patch.delta,
+                visible: patch.visible !== false,
+                state: patch.state || {},
                 anchor: patch.anchor || null
             })),
             transitions: gmTransitions.map(transition => ({
@@ -2894,7 +3922,22 @@
                 spawnY: transition.spawnY,
                 useFade: !!transition.useFade,
                 requiresFlag: transition.requiresFlag || null,
+                visible: transition.visible !== false,
+                state: transition.state || {},
                 anchor: transition.anchor || null
+            })),
+            npcs: gmNPCs.map(npc => ({
+                id: npc.id,
+                name: npc.name || npc.id,
+                note: npc.note || '',
+                x: npc.gridX,
+                y: npc.gridY,
+                level: npc.level,
+                type: npc.type || 'human',
+                color: npc.color || '#6688cc',
+                state: npc.state || {},
+                dialogueId: npc.dialogueId || npc.id,
+                anchor: npc.anchor || null
             })),
             removedWalls: gmRemovedWalls.map(wall => ({ ...wall }))
         };
@@ -2904,7 +3947,7 @@
         syncWorldMemoryFromUI();
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
-            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTerrain.length} terrain, ${gmTransitions.length} passages).`);
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTerrain.length} terrain, ${gmTransitions.length} passages, ${gmNPCs.length} npcs, ${Object.keys(gmItemDefs).length} item templates, ${getPersistentGroundItemsSnapshot().length} ground items).`);
             return true;
         } catch (err) {
             if (!silent) addLogMessage('Could not save GM world in this browser.');
@@ -2935,9 +3978,51 @@
             clearGMFloors();
             clearGMTerrain();
             clearGMTransitions();
+            clearGMNPCs();
+            clearPersistentGroundItems();
+            clearGMItemDefs();
+            removedBaseGroundItemIds.clear();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
+            if (Array.isArray(save.itemDefs)) save.itemDefs.forEach(def => registerGMItemDef({ ...def, silent: true }));
+            if (Array.isArray(save.inventory)) {
+                inventory.fill(null);
+                save.inventory.slice(0, MAX_INV).forEach((entry, index) => {
+                    const item = makeItemInstance(entry);
+                    if (item) inventory[index] = item;
+                });
+                renderInventory();
+            }
+            if (Array.isArray(save.removedBaseGroundItems)) {
+                save.removedBaseGroundItems.forEach(id => {
+                    const cleanId = sanitizeItemInstanceId(id);
+                    if (cleanId) {
+                        removedBaseGroundItemIds.add(cleanId);
+                        removeGroundItemById(cleanId, { silent: true, markBaseRemoved: false });
+                    }
+                });
+            }
+            if (Array.isArray(save.groundItems)) {
+                save.groundItems.forEach(entry => {
+                    if (!entry) return;
+                    const item = makeItemInstance(entry.item || entry);
+                    if (!item) return;
+                    const x = Math.round(Number(entry.x));
+                    const y = Math.round(Number(entry.y));
+                    const level = (entry.level ?? currentLevel).toString();
+                    if (isValidTile(x, y, level)) {
+                        spawnGroundItem(item, x, y, level, {
+                            id: entry.id || entry.groundItemId || `ground_${item.id}`,
+                            sourceKind: entry.sourceKind || 'gm',
+                            gmCreated: entry.gmCreated !== false,
+                            persistent: true,
+                            anchor: entry.anchor || null,
+                            silent: true
+                        });
+                    }
+                });
+            }
             if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
             if (save.memory && typeof save.memory === 'object') {
                 worldMemory.summary = safeMemoryText(save.memory.summary, 2400);
@@ -2955,6 +4040,7 @@
             if (Array.isArray(save.floors)) save.floors.forEach(floor => createGMFloor({ ...floor, silent: true }));
             if (Array.isArray(save.terrain)) save.terrain.forEach(patch => createGMTerrainPatch({ ...patch, silent: true }));
             if (Array.isArray(save.transitions)) save.transitions.forEach(transition => createGMTransition({ ...transition, silent: true }));
+            if (Array.isArray(save.npcs)) save.npcs.forEach(npc => createGMNPC({ ...npc, silent: true }));
         } catch (err) {
             try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
             clearGMMarkers();
@@ -2964,6 +4050,10 @@
             clearGMFloors();
             clearGMTerrain();
             clearGMTransitions();
+            clearGMNPCs();
+            clearPersistentGroundItems();
+            clearGMItemDefs();
+            removedBaseGroundItemIds.clear();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
@@ -2971,23 +4061,29 @@
             return false;
         }
 
-        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTerrain.length} terrain, ${gmTransitions.length} passages).`);
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors, ${gmTerrain.length} terrain, ${gmTransitions.length} passages, ${gmNPCs.length} npcs, ${Object.keys(gmItemDefs).length} item templates, ${getPersistentGroundItemsSnapshot().length} ground items).`);
         return true;
     }
 
     function resetGMWorldSave() {
-        try { localStorage.removeItem(GM_SAVE_KEY); } catch (err) {}
+        try { localStorage.removeItem(GM_SAVE_KEY); localStorage.removeItem(GM_UNDO_KEY); } catch (err) {}
         clearGMMarkers();
         clearGMObjects();
         clearGMHotspots();
         clearGMWalls();
         clearGMFloors();
+        clearGMTerrain();
         clearGMTransitions();
+        clearGMNPCs();
+        clearPersistentGroundItems();
+        clearGMItemDefs();
+        removedBaseGroundItemIds.clear();
         gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
         gmEvents.length = 0;
         markGMResponseResolved();
+        if (typeof spawnBaseGroundItems === 'function') spawnBaseGroundItems();
         addLogMessage('GM save reset.');
     }
 
@@ -2999,22 +4095,176 @@
             .toLowerCase();
     }
 
-    function applyLLMCommands() {
-        const raw = document.getElementById('llm-io').value.trim();
-        if (!raw) { addLogMessage('Paste JSON commands first.'); return; }
+    const GM_SUPPORTED_OPS = new Set([
+        'add_log', 'show_dialogue', 'show_message', 'set_flag',
+        'define_item', 'register_item', 'create_item_def', 'give_item', 'create_item', 'remove_item', 'consume_item', 'take_item', 'set_inventory',
+        'spawn_item', 'remove_ground_item', 'despawn_item', 'remove_world_item', 'move_ground_item', 'move_world_item',
+        'move_player',
+        'create_npc', 'spawn_npc', 'move_npc', 'remove_npc', 'delete_npc', 'set_npc_state', 'update_npc',
+        'create_marker', 'remove_marker', 'create_hotspot', 'remove_hotspot',
+        'create_object', 'create_prop', 'move_object', 'move_prop', 'set_object_position', 'remove_object', 'remove_prop',
+        'create_structure', 'build_structure', 'construct', 'remove_structure', 'delete_structure', 'dismantle_structure',
+        'create_wall', 'create_barrier', 'remove_wall', 'remove_barrier', 'break_wall',
+        'create_floor', 'create_bridge', 'set_tile_floor', 'set_tile_height', 'remove_floor', 'remove_bridge',
+        'set_terrain', 'change_terrain', 'terrain_patch', 'raise_terrain', 'lower_terrain', 'dig_tile', 'dig_terrain', 'fill_tile', 'fill_terrain', 'flatten_terrain', 'remove_terrain', 'remove_terrain_patch',
+        'create_transition', 'create_passage', 'create_portal', 'create_stairs', 'remove_transition', 'remove_passage', 'remove_portal', 'remove_stairs',
+        'set_door_state', 'update_entity', 'transform_entity', 'set_entity_state', 'hide_entity', 'reveal_entity', 'set_blocking', 'set_color', 'rename_entity', 'damage_entity', 'repair_entity', 'set_world_summary', 'set_summary', 'add_memory', 'add_fact', 'clear_memory', 'set_world_memory', 'set_quest', 'remove_quest', 'update_dialogue'
+    ]);
 
+    function parseGMCommandPayload(raw) {
+        if (!raw || !raw.trim()) return { ok: false, error: 'Paste JSON commands first.' };
         let payload;
         try { payload = JSON.parse(raw); }
-        catch (err) { addLogMessage('Invalid JSON.'); return; }
+        catch (err) { return { ok: false, error: `Invalid JSON: ${err.message}` }; }
+        const commands = Array.isArray(payload) ? payload : payload.commands;
+        if (!Array.isArray(commands)) return { ok: false, error: 'No commands array found.' };
+        return { ok: true, payload, commands };
+    }
+
+    function summarizeGMCommands(commands) {
+        const summary = { total: 0, supported: 0, unsupported: 0, ops: {}, unsupportedOps: [] };
+        commands.forEach(cmd => {
+            if (!cmd || typeof cmd.op !== 'string') return;
+            const op = normalizeGMOp(cmd.op);
+            summary.total++;
+            summary.ops[op] = (summary.ops[op] || 0) + 1;
+            if (GM_SUPPORTED_OPS.has(op)) summary.supported++;
+            else { summary.unsupported++; if (!summary.unsupportedOps.includes(op)) summary.unsupportedOps.push(op); }
+        });
+        return summary;
+    }
+
+    function validateLLMCommands() {
+        const raw = document.getElementById('llm-io').value.trim();
+        const parsed = parseGMCommandPayload(raw);
+        if (!parsed.ok) { addLogMessage(parsed.error); return false; }
+        const summary = summarizeGMCommands(parsed.commands);
+        const opList = Object.entries(summary.ops).map(([op, count]) => `${op}${count > 1 ? `×${count}` : ''}`).join(', ');
+        if (summary.unsupported > 0) {
+            addLogMessage(`Validation warning: ${summary.unsupported} unsupported op(s): ${summary.unsupportedOps.join(', ')}`);
+            showDialogueMessage('Validate JSON', `Found ${summary.total} command(s). Unsupported: ${summary.unsupportedOps.join(', ')}. Supported ops will still apply if you tap Apply JSON.`);
+            return false;
+        }
+        addLogMessage(`Validation OK: ${summary.total} command(s).`);
+        showDialogueMessage('Validate JSON', summary.total === 0 ? 'No command objects found.' : `Ready to apply ${summary.total} command(s): ${opList}.`);
+        return true;
+    }
+
+    function storeGMUndoSnapshot(reason = 'before_apply') {
+        try {
+            const wrapper = { savedAt: new Date().toISOString(), reason, save: buildGMWorldSave() };
+            localStorage.setItem(GM_UNDO_KEY, JSON.stringify(wrapper));
+            return true;
+        } catch (err) {
+            addLogMessage('Could not create undo snapshot.');
+            return false;
+        }
+    }
+
+    function hasGMUndoSnapshot() {
+        try { return !!localStorage.getItem(GM_UNDO_KEY); }
+        catch (err) { return false; }
+    }
+
+    function undoLastGMApply() {
+        let raw;
+        try { raw = localStorage.getItem(GM_UNDO_KEY); }
+        catch (err) { addLogMessage('Could not read undo snapshot.'); return false; }
+        if (!raw) { addLogMessage('No undo snapshot found.'); return false; }
+        let wrapper;
+        try { wrapper = JSON.parse(raw); }
+        catch (err) { addLogMessage('Undo snapshot was corrupted.'); return false; }
+        const save = wrapper.save || wrapper;
+        try {
+            localStorage.setItem(GM_SAVE_KEY, JSON.stringify(save));
+            const ok = loadGMWorld(false);
+            if (ok) {
+                addLogMessage('Undid last GM apply.');
+                recordGMEvent('gm_undo_applied', { restoredAt: wrapper.savedAt || null, reason: wrapper.reason || null });
+            }
+            return ok;
+        } catch (err) {
+            addLogMessage('Undo failed.');
+            return false;
+        }
+    }
+
+    function recordGMCommandHistory(raw, payload, commands, shouldSave) {
+        try {
+            const summary = summarizeGMCommands(commands);
+            const history = getGMCommandHistory(20);
+            history.unshift({
+                time: new Date().toISOString(),
+                commandCount: summary.total,
+                ops: summary.ops,
+                saved: !!shouldSave,
+                hasNarration: !!(payload && payload.narration),
+                rawPreview: String(raw || '').slice(0, 500)
+            });
+            localStorage.setItem(GM_HISTORY_KEY, JSON.stringify(history.slice(0, 20)));
+        } catch (err) {}
+    }
+
+    function getGMCommandHistory(limit = 8) {
+        try {
+            const history = JSON.parse(localStorage.getItem(GM_HISTORY_KEY) || '[]');
+            return Array.isArray(history) ? history.slice(0, limit) : [];
+        } catch (err) { return []; }
+    }
+
+    function exportGMWorldSave() {
+        const save = buildGMWorldSave();
+        const text = JSON.stringify(save, null, 2);
+        const io = document.getElementById('llm-io');
+        if (io) io.value = text;
+        copyTextToClipboard(text);
+        addLogMessage('GM save exported to JSON.');
+        recordGMEvent('gm_save_exported', { bytes: text.length });
+    }
+
+    function importGMWorldSave() {
+        const raw = document.getElementById('llm-io').value.trim();
+        if (!raw) { addLogMessage('Paste exported save JSON first.'); return false; }
+        let payload;
+        try { payload = JSON.parse(raw); }
+        catch (err) { addLogMessage(`Invalid save JSON: ${err.message}`); return false; }
+        const save = payload.save || payload.gmWorldSave || payload.worldSave || payload;
+        if (!save || typeof save !== 'object' || !save.version) {
+            addLogMessage('This does not look like a GM save export.');
+            return false;
+        }
+        storeGMUndoSnapshot('before_import_save');
+        try {
+            localStorage.setItem(GM_SAVE_KEY, JSON.stringify(save));
+            const ok = loadGMWorld(false);
+            if (ok) {
+                addLogMessage('GM save imported.');
+                recordGMEvent('gm_save_imported', { version: save.version || null, savedAt: save.savedAt || null });
+            }
+            return ok;
+        } catch (err) {
+            addLogMessage('Import failed.');
+            return false;
+        }
+    }
+
+    function applyLLMCommands() {
+        const raw = document.getElementById('llm-io').value.trim();
+        const parsed = parseGMCommandPayload(raw);
+        if (!parsed.ok) { addLogMessage(parsed.error); return; }
+
+        const payload = parsed.payload;
+        const commands = parsed.commands;
+        const summary = summarizeGMCommands(commands);
+        if (summary.unsupported > 0) addLogMessage(`Validation warning: unsupported op(s): ${summary.unsupportedOps.join(', ')}`);
+        storeGMUndoSnapshot('before_apply_json');
 
         if (payload.narration) {
             addLogMessage('GM narration received in chat.');
             recordGMEvent('gm_narration_received', { text: String(payload.narration).slice(0, 500) });
         }
-        const commands = Array.isArray(payload) ? payload : payload.commands;
-        if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
 
-        recordGMEvent('gm_response_started', { commandCount: commands.length, hasNarration: !!payload.narration });
+        recordGMEvent('gm_response_started', { commandCount: commands.length, hasNarration: !!payload.narration, unsupportedOps: summary.unsupportedOps });
         let shouldSave = false;
         commands.forEach(cmd => {
             if (!cmd || typeof cmd.op !== 'string') return;
@@ -3042,8 +4292,24 @@
                 }
             }
 
-            else if (cmd.op === 'give_item') {
-                giveInventoryItem(cmd.type);
+            else if (['update_entity', 'transform_entity', 'set_entity_state', 'hide_entity', 'reveal_entity', 'set_blocking', 'set_color', 'rename_entity', 'damage_entity', 'repair_entity'].includes(cmd.op)) {
+                if (applyEntityTransformCommand(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'define_item' || cmd.op === 'register_item' || cmd.op === 'create_item_def') {
+                if (registerGMItemDef(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'give_item' || cmd.op === 'create_item') {
+                if (giveInventoryItem(cmd.item || cmd, cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_item' || cmd.op === 'consume_item' || cmd.op === 'take_item') {
+                if (removeInventoryItem(cmd.id || cmd.itemId || cmd.type || cmd.item || cmd.name, cmd.count || 1)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'set_inventory') {
+                if (setInventoryFromGM(cmd.items)) shouldSave = true;
             }
 
             else if (cmd.op === 'spawn_item') {
@@ -3051,11 +4317,30 @@
                 const level = placement.level;
                 const x = placement.x;
                 const y = placement.y;
-                if (ITEM_DEFS[cmd.type] && isValidTile(x, y, level)) {
-                    spawnGroundItem(cmd.type, x, y, level);
-                    addLogMessage(`Something appears nearby: ${ITEM_DEFS[cmd.type].name}.`);
-                    recordGMEvent('item_spawned_by_gm', { type: cmd.type, name: ITEM_DEFS[cmd.type].name, x, y, level, anchor: placement.anchorId || null });
+                const item = makeItemInstance(cmd.item && typeof cmd.item === 'object' ? cmd.item : cmd);
+                if (item && isValidTile(x, y, level)) {
+                    const hitBox = spawnGroundItem(item, x, y, level, {
+                        id: cmd.groundItemId || cmd.groundId || `ground_${item.id}`,
+                        sourceKind: 'gm',
+                        gmCreated: true,
+                        persistent: true,
+                        anchor: placement.anchorId || cmd.anchor || null
+                    });
+                    addLogMessage(`Something appears nearby: ${item.name}.`);
+                    recordGMEvent('item_spawned_by_gm', { groundItemId: hitBox?.userData?.groundItemId || null, item: getItemSnapshot(item), x, y, level, anchor: placement.anchorId || cmd.anchor || null });
+                    shouldSave = true;
                 } else addLogMessage('Invalid spawn_item command.');
+            }
+
+            else if (cmd.op === 'remove_ground_item' || cmd.op === 'despawn_item' || cmd.op === 'remove_world_item') {
+                if (removeGroundItemByIdentifier(cmd.id || cmd.groundItemId || cmd.itemId || cmd.type || cmd.item || cmd.name, cmd.count || 1)) shouldSave = true;
+                else addLogMessage('No matching ground item found.');
+            }
+
+            else if (cmd.op === 'move_ground_item' || cmd.op === 'move_world_item') {
+                const placement = resolveGMPlacement(cmd, currentLevel, 3);
+                if (moveGroundItemByIdentifier(cmd.id || cmd.groundItemId || cmd.itemId || cmd.type || cmd.item || cmd.name, placement.x, placement.y, placement.level)) shouldSave = true;
+                else addLogMessage('No matching ground item found.');
             }
 
             else if (cmd.op === 'move_player') {
@@ -3067,6 +4352,25 @@
                     addLogMessage('The world shifts around you.');
                     recordGMEvent('player_moved_by_gm', { x, y, level });
                 } else addLogMessage('Invalid move_player command.');
+            }
+
+            else if (cmd.op === 'create_npc' || cmd.op === 'spawn_npc') {
+                if (createGMNPC(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'move_npc') {
+                if (moveGMNPC(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_npc' || cmd.op === 'delete_npc') {
+                if (typeof (cmd.id || cmd.npcId || cmd.target) === 'string') {
+                    if (removeGMNPC(cmd.id || cmd.npcId || cmd.target)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_npc command.');
+            }
+
+            else if (cmd.op === 'set_npc_state' || cmd.op === 'update_npc') {
+                if (setGMNPCState(cmd)) shouldSave = true;
             }
 
             else if (cmd.op === 'create_marker') {
@@ -3104,6 +4408,14 @@
                     if (removeGMObject(cmd.id)) shouldSave = true;
                 }
                 else addLogMessage('Invalid remove_object command.');
+            }
+
+            else if (cmd.op === 'create_structure' || cmd.op === 'build_structure' || cmd.op === 'construct') {
+                if (createGMStructure(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_structure' || cmd.op === 'delete_structure' || cmd.op === 'dismantle_structure') {
+                if (removeGMStructure(cmd)) shouldSave = true;
             }
 
             else if (cmd.op === 'create_wall' || cmd.op === 'create_barrier') {
@@ -3206,6 +4518,7 @@
         });
 
         recordGMEvent('gm_response_applied', { commandCount: commands.length, saved: shouldSave });
+        recordGMCommandHistory(raw, payload, commands, shouldSave);
         if (shouldSave) saveGMWorld(true);
         markGMResponseResolved();
     }
@@ -3225,6 +4538,10 @@
     document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
     document.getElementById('reset-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resetGMWorldSave(); });
     document.getElementById('look-around-dev').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); lookAround(); });
+    document.getElementById('undo-gm-apply').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); undoLastGMApply(); });
+    document.getElementById('validate-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateLLMCommands(); });
+    document.getElementById('export-world-save').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); exportGMWorldSave(); });
+    document.getElementById('import-world-save').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); importGMWorldSave(); });
     document.getElementById('look-btn').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); lookAround(); });
     window.setTimeout(() => {
         try { loadGMWorld(true); }
@@ -3279,57 +4596,221 @@
     function renderInventory() {
         const slots = document.querySelectorAll('.inv-slot');
         slots.forEach((slot, i) => {
-            slot.innerHTML = ''; 
-            if(inventory[i]) {
-                const def = ITEM_DEFS[inventory[i]];
+            slot.innerHTML = '';
+            const item = getItemView(inventory[i]);
+            if(item) {
                 const icon = document.createElement('div');
-                icon.className = `item-icon ${def.cssClass}`;
+                icon.className = item.cssClass ? `item-icon ${item.cssClass}` : 'item-icon item-generic';
+                if (!item.cssClass) icon.style.background = item.colorCss;
+                icon.title = item.name;
                 slot.appendChild(icon);
             }
         });
 
-        // Toggle Tool UI visibility if player owns shovel
-        if (inventory.includes('shovel')) { toolToggleBtn.style.display = 'flex'; } 
+        // Toggle Tool UI visibility if player owns a shovel-like item.
+        if (inventoryHasItem('shovel') || inventoryHasItem('digging')) { toolToggleBtn.style.display = 'flex'; }
         else { toolToggleBtn.style.display = 'none'; activeTool = 'walk'; toolToggleBtn.innerText = '👟 Mode: Walk'; }
     }
 
-    function spawnGroundItem(type, x, y, level) {
-        const def = ITEM_DEFS[type];
+    function getGroundItemDataSnapshot(entry) {
+        const data = entry?.hitBox?.userData || {};
+        const item = getItemSnapshot(data.item || data.type);
+        if (!item || !data.groundItemId) return null;
+        return {
+            id: data.groundItemId,
+            groundItemId: data.groundItemId,
+            item,
+            x: data.interactX,
+            y: data.interactY,
+            level: data.sourceLevel,
+            sourceKind: data.sourceKind || 'gm',
+            gmCreated: !!data.gmCreated,
+            anchor: data.anchor || null
+        };
+    }
+
+    function getPersistentGroundItemsSnapshot() {
+        if (typeof groundItems === 'undefined') return [];
+        return groundItems
+            .filter(entry => {
+                const data = entry?.hitBox?.userData || {};
+                return !!data.persistentGroundItem && data.sourceKind !== 'base';
+            })
+            .map(getGroundItemDataSnapshot)
+            .filter(Boolean);
+    }
+
+    function groundItemExists(id) {
+        const cleanId = sanitizeItemInstanceId(id);
+        return !!cleanId && groundItems.some(entry => entry.hitBox?.userData?.groundItemId === cleanId);
+    }
+
+    function removeGroundItemEntry(entry, options = {}) {
+        if (!entry || !entry.hitBox) return false;
+        const data = entry.hitBox.userData || {};
+        const level = data.sourceLevel;
+        if (levelGroups[level]) {
+            levelGroups[level].remove(entry.hitBox);
+            if (data.linkedMesh) levelGroups[level].remove(data.linkedMesh);
+        }
+        const interIndex = interactables.indexOf(entry.hitBox);
+        if (interIndex > -1) interactables.splice(interIndex, 1);
+        const gIdx = groundItems.indexOf(entry);
+        if (gIdx > -1) groundItems.splice(gIdx, 1);
+        if (data.linkedMesh) disposeObject3D(data.linkedMesh);
+        disposeObject3D(entry.hitBox);
+        if (options.markBaseRemoved !== false && data.sourceKind === 'base' && data.groundItemId) {
+            removedBaseGroundItemIds.add(data.groundItemId);
+        }
+        return true;
+    }
+
+    function removeGroundItemById(id, options = {}) {
+        const cleanId = sanitizeItemInstanceId(id);
+        if (!cleanId) return false;
+        const entry = groundItems.find(g => g.hitBox?.userData?.groundItemId === cleanId);
+        return removeGroundItemEntry(entry, options);
+    }
+
+    function groundItemMatches(entry, identifier) {
+        if (!entry) return false;
+        const data = entry.hitBox?.userData || {};
+        const raw = typeof identifier === 'object' ? (identifier.id || identifier.groundItemId || identifier.itemId || identifier.type || identifier.name) : identifier;
+        if (!raw) return false;
+        const cleanId = sanitizeItemInstanceId(raw);
+        if (cleanId && data.groundItemId === cleanId) return true;
+        return itemMatchesIdentifier(data.item || data.type, raw);
+    }
+
+    function removeGroundItemByIdentifier(identifier, count = 1) {
+        const targetCount = Math.max(1, Math.round(Number(count) || 1));
+        let removed = 0;
+        const removedItems = [];
+        [...groundItems].forEach(entry => {
+            if (removed >= targetCount) return;
+            if (!groundItemMatches(entry, identifier)) return;
+            const data = entry.hitBox.userData || {};
+            removedItems.push(getGroundItemDataSnapshot(entry));
+            if (removeGroundItemEntry(entry)) removed++;
+        });
+        if (removed > 0) {
+            recordGMEvent('ground_item_removed_by_gm', { count: removed, items: removedItems.filter(Boolean) });
+            addLogMessage(`Removed ${removed} ground item${removed === 1 ? '' : 's'}.`);
+            return true;
+        }
+        return false;
+    }
+
+    function moveGroundItemByIdentifier(identifier, x, y, level = currentLevel) {
+        const entry = groundItems.find(g => groundItemMatches(g, identifier));
+        const nx = Math.round(Number(x));
+        const ny = Math.round(Number(y));
+        const nl = (level ?? currentLevel).toString();
+        if (!entry || !isValidTile(nx, ny, nl)) return false;
+        const data = entry.hitBox.userData || {};
+        if (levelGroups[data.sourceLevel]) {
+            levelGroups[data.sourceLevel].remove(entry.hitBox);
+            if (data.linkedMesh) levelGroups[data.sourceLevel].remove(data.linkedMesh);
+        }
+        data.sourceLevel = nl;
+        data.interactX = nx;
+        data.interactY = ny;
+        const pos = getGridWorldPos(nx, ny, nl);
+        if (data.linkedMesh) {
+            data.linkedMesh.position.x = pos.x;
+            data.linkedMesh.position.z = pos.z;
+            data.linkedMesh.position.y = pos.y + (data.visualYOffset || 0.2);
+        }
+        entry.hitBox.position.set(pos.x, pos.y + 0.3, pos.z);
+        levelGroups[nl].add(entry.hitBox);
+        if (data.linkedMesh) levelGroups[nl].add(data.linkedMesh);
+        recordGMEvent('ground_item_moved_by_gm', { groundItemId: data.groundItemId, item: getItemSnapshot(data.item || data.type), x: nx, y: ny, level: nl });
+        addLogMessage(`Moved ${getItemView(data.item || data.type)?.name || 'ground item'}.`);
+        return true;
+    }
+
+    function clearPersistentGroundItems() {
+        [...groundItems].forEach(entry => {
+            const data = entry.hitBox?.userData || {};
+            if (data.sourceKind !== 'base' && data.persistentGroundItem) removeGroundItemEntry(entry, { markBaseRemoved: false });
+        });
+    }
+
+    function buildGroundItemMesh(item) {
+        const view = getItemView(item);
+        if (!view) return null;
         let mesh;
-        if (type === 'rod') {
-            mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8), new THREE.MeshLambertMaterial({color: def.color}));
+        const color = parseItemColorNumber(view.colorCss || view.color);
+        const shape = view.shape || view.type;
+        if (view.type === 'rod' || shape === 'rod' || shape === 'stick') {
+            mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8), new THREE.MeshLambertMaterial({color}));
             mesh.rotation.z = Math.PI / 4; mesh.position.y = 0.4;
-        } else if (type === 'shovel') {
+        } else if (view.type === 'shovel' || shape === 'shovel') {
             mesh = new THREE.Group();
             const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8), new THREE.MeshLambertMaterial({color: 0x8b4513}));
-            const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.02), new THREE.MeshLambertMaterial({color: def.color}));
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.02), new THREE.MeshLambertMaterial({color}));
             head.position.y = -0.4;
             mesh.add(handle); mesh.add(head);
             mesh.rotation.z = Math.PI / 4; mesh.position.y = 0.4;
-        } else if (type === 'shell') {
-            mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15), new THREE.MeshLambertMaterial({color: def.color}));
+        } else if (view.type === 'shell' || shape === 'shell' || shape === 'crystal') {
+            mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15), new THREE.MeshLambertMaterial({color}));
             mesh.position.y = 0.1;
+        } else if (shape === 'cube' || shape === 'crate') {
+            mesh = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), new THREE.MeshLambertMaterial({ color }));
+            mesh.position.y = 0.18;
+        } else if (shape === 'scroll') {
+            mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.35, 8), new THREE.MeshLambertMaterial({ color }));
+            mesh.rotation.z = Math.PI / 2; mesh.position.y = 0.15;
         } else {
-            mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshLambertMaterial({ color: def.color }));
+            mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshLambertMaterial({ color }));
             mesh.position.y = 0.2;
         }
-        
+        return mesh;
+    }
+
+    function spawnGroundItem(itemSpec, x, y, level, options = {}) {
+        const item = makeItemInstance(itemSpec);
+        if (!item) { if (!options.silent) addLogMessage('Unknown item.'); return null; }
+        const mesh = buildGroundItemMesh(item);
+        if (!mesh) { if (!options.silent) addLogMessage('Could not create item visual.'); return null; }
+
+        const sourceKind = String(options.sourceKind || (options.gmCreated ? 'gm' : 'dropped')).toLowerCase();
+        const groundItemId = sanitizeItemInstanceId(options.id || options.groundItemId || `ground_${item.id}` || nextItemInstanceId('ground_item'));
+        if (!groundItemId) { if (!options.silent) addLogMessage('Invalid ground item id.'); return null; }
+        if (groundItemExists(groundItemId)) removeGroundItemById(groundItemId, { silent: true, markBaseRemoved: false });
+
         const pos = getGridWorldPos(x, y, level);
-        mesh.position.x = pos.x; mesh.position.z = pos.z; mesh.position.y += pos.y;
-        
+        mesh.position.x = pos.x; mesh.position.z = pos.z;
+        const visualYOffset = mesh.position.y || 0.2;
+        mesh.position.y = pos.y + visualYOffset;
+
         const hitBox = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshBasicMaterial({visible: false}));
         hitBox.position.copy(mesh.position);
-        hitBox.userData = { isItem: true, sourceLevel: level, type: type, interactX: x, interactY: y, linkedMesh: mesh };
-        
+        hitBox.userData = {
+            isItem: true,
+            sourceLevel: level,
+            type: item.type,
+            item,
+            groundItemId,
+            sourceKind,
+            gmCreated: !!options.gmCreated,
+            persistentGroundItem: options.persistent !== undefined ? !!options.persistent : sourceKind !== 'base',
+            anchor: options.anchor || null,
+            visualYOffset,
+            interactX: x,
+            interactY: y,
+            linkedMesh: mesh
+        };
+
         levelGroups[level].add(mesh); levelGroups[level].add(hitBox);
-        groundItems.push({ mesh: mesh, hitBox: hitBox });
+        groundItems.push({ mesh, hitBox, item });
         interactables.push(hitBox);
+        return hitBox;
     }
 
     function handleInventoryClick(event, index) {
-        if(!inventory[index]) return;
-        const itemType = inventory[index];
-        const def = ITEM_DEFS[itemType];
+        const item = getItemView(inventory[index]);
+        if(!item) return;
 
         let menuX = event.clientX - 10;
         let menuY = event.clientY - 10;
@@ -3346,48 +4827,82 @@
             return btn;
         };
 
-        ctxMenu.appendChild(createBtn(`Use ${def.name}`, '', () => { beginUseItem(itemType); }));
+        ctxMenu.appendChild(createBtn(`Use ${item.name}`, '', () => { beginUseItem(inventory[index]); }));
 
-        if (def.type === 'food') {
-            ctxMenu.appendChild(createBtn(`Eat ${def.name}`, '', () => { inventory[index] = null; addLogMessage(`You eat the ${def.name}.`); renderInventory(); recordGMEvent('item_eaten', { type: itemType, name: def.name }); }));
-        } else if (def.type === 'misc' && itemType === 'shell') {
-            ctxMenu.appendChild(createBtn(`Listen to Shell`, '', () => { addLogMessage(`"You hear the gentle roar of the ocean..."`); }));
-        } else if (def.type === 'tool') {
-            if (itemType === 'rod') ctxMenu.appendChild(createBtn(`Examine ${def.name}`, '', () => { addLogMessage(`A sturdy fishing rod. Used on water.`); }));
-            if (itemType === 'shovel') ctxMenu.appendChild(createBtn(`Examine ${def.name}`, '', () => { addLogMessage(`Use this to dig holes and raise the earth.`); }));
+        if (item.category === 'food' || (item.tags || []).includes('food')) {
+            ctxMenu.appendChild(createBtn(`Eat ${item.name}`, '', () => {
+                const eaten = getItemSnapshot(inventory[index]);
+                inventory[index] = null;
+                addLogMessage(`You eat the ${item.name}.`);
+                renderInventory();
+                recordGMEvent('item_eaten', { item: eaten });
+            }));
         }
-        
-        ctxMenu.appendChild(createBtn(`Drop ${def.name}`, '', () => {
-            inventory[index] = null; spawnGroundItem(itemType, playerGridX, playerGridY, currentLevel);
-            addLogMessage(`You drop the ${def.name}.`); renderInventory();
-            recordGMEvent('item_dropped', { type: itemType, name: def.name, x: playerGridX, y: playerGridY, level: currentLevel });
+
+        if ((item.tags || []).includes('shell') || item.type === 'shell') {
+            ctxMenu.appendChild(createBtn(`Listen to ${item.name}`, '', () => { addLogMessage(`You hear the gentle roar of the ocean...`); }));
+        }
+
+        ctxMenu.appendChild(createBtn(`Examine ${item.name}`, '', () => {
+            const desc = item.description || `${item.name}.`;
+            addLogMessage(desc);
+            showDialogueMessage(item.name, desc);
+            recordGMEvent('item_examined', { item: getItemSnapshot(item) });
+        }));
+
+        ctxMenu.appendChild(createBtn(`Drop ${item.name}`, '', () => {
+            const dropped = inventory[index];
+            const snap = getItemSnapshot(dropped);
+            inventory[index] = null;
+            const droppedHitBox = spawnGroundItem(dropped, playerGridX, playerGridY, currentLevel, {
+                id: `ground_${snap?.id || Date.now()}`,
+                sourceKind: 'dropped',
+                persistent: true
+            });
+            addLogMessage(`You drop the ${item.name}.`); renderInventory();
+            recordGMEvent('item_dropped', { groundItemId: droppedHitBox?.userData?.groundItemId || null, item: snap, x: playerGridX, y: playerGridY, level: currentLevel });
+            saveGMWorld(true);
         }));
         ctxMenu.appendChild(createBtn(`Cancel`, 'ctx-cancel', () => {}));
     }
 
     function executePickupItem(hitBox) {
         const emptySlot = inventory.findIndex(i => i === null);
-        if (emptySlot === -1) { addLogMessage("Your inventory is full!"); return; }
-        const type = hitBox.userData.type;
+        if (emptySlot === -1) { addLogMessage('Your inventory is full!'); return; }
+        const item = makeItemInstance(hitBox.userData.item || hitBox.userData.type);
+        if (!item) { addLogMessage('Unknown item.'); return; }
         const linkedMesh = hitBox.userData.linkedMesh;
-        inventory[emptySlot] = type;
-        addLogMessage(`You pick up ${ITEM_DEFS[type].name}.`);
+        inventory[emptySlot] = item;
+        addLogMessage(`You pick up ${item.name}.`);
         renderInventory();
-        recordGMEvent('item_picked_up', { type, name: ITEM_DEFS[type].name, x: hitBox.userData.interactX, y: hitBox.userData.interactY, level: hitBox.userData.sourceLevel });
+        recordGMEvent('item_picked_up', { item: getItemSnapshot(item), x: hitBox.userData.interactX, y: hitBox.userData.interactY, level: hitBox.userData.sourceLevel });
 
-        levelGroups[hitBox.userData.sourceLevel].remove(hitBox);
-        levelGroups[hitBox.userData.sourceLevel].remove(linkedMesh);
-        
-        const interIndex = interactables.indexOf(hitBox);
-        if (interIndex > -1) interactables.splice(interIndex, 1);
-        const gIdx = groundItems.findIndex(g => g.hitBox === hitBox);
-        if (gIdx > -1) groundItems.splice(gIdx, 1);
+        const entry = groundItems.find(g => g.hitBox === hitBox);
+        if (entry) removeGroundItemEntry(entry);
+        saveGMWorld(true);
     }
 
-    spawnGroundItem('shovel', 13, 13, '0'); // Shovel near center
-    spawnGroundItem('shell', 4, 20, '0');
-    spawnGroundItem('rod', 7, 13, '0'); 
-    spawnGroundItem('berries', 15, 29, '0'); 
+    const BASE_GROUND_ITEMS = [
+        { id: 'base_shovel_01', item: 'shovel', x: 13, y: 13, level: '0' },
+        { id: 'base_shell_01', item: 'shell', x: 4, y: 20, level: '0' },
+        { id: 'base_rod_01', item: 'rod', x: 7, y: 13, level: '0' },
+        { id: 'base_berries_01', item: 'berries', x: 15, y: 29, level: '0' }
+    ];
+
+    function spawnBaseGroundItems() {
+        BASE_GROUND_ITEMS.forEach(def => {
+            if (removedBaseGroundItemIds.has(def.id) || groundItemExists(def.id)) return;
+            spawnGroundItem(def.item, def.x, def.y, def.level, {
+                id: def.id,
+                sourceKind: 'base',
+                gmCreated: false,
+                persistent: false,
+                silent: true
+            });
+        });
+    }
+
+    spawnBaseGroundItems();
 
     // --- 6. PLAYER, CAMERA, & TICK LOGIC ---
     const playerGeo = new THREE.Group();
@@ -3445,7 +4960,7 @@
         setTimeout(() => {
             if (Math.random() > 0.4) {
                 const emptySlot = inventory.findIndex(i => i === null);
-                if (emptySlot !== -1) { inventory[emptySlot] = 'fish'; renderInventory(); addLogMessage("You caught a Raw Fish!"); recordGMEvent('fish_caught', { type: 'fish', level: currentLevel, x: playerGridX, y: playerGridY }); } 
+                if (emptySlot !== -1) { inventory[emptySlot] = makeItemInstance('fish'); renderInventory(); addLogMessage("You caught a Raw Fish!"); recordGMEvent('fish_caught', { item: getItemSnapshot(inventory[emptySlot]), level: currentLevel, x: playerGridX, y: playerGridY }); } 
                 else { addLogMessage("You caught a fish, but your inventory is full!"); recordGMEvent('fish_caught_inventory_full', { level: currentLevel, x: playerGridX, y: playerGridY }); }
             } else { addLogMessage("The fish got away."); recordGMEvent('fish_got_away', { level: currentLevel, x: playerGridX, y: playerGridY }); }
         }, 2000);
@@ -3678,7 +5193,7 @@
             const data = hit.object.userData;
 
             if (data && data.isWater) {
-                if (!inventory.includes('rod')) { addLogMessage("You need a Fishing Rod to fish."); return; }
+                if (!inventoryHasItem('rod')) { addLogMessage("You need a Fishing Rod to fish."); return; }
                 
                 // Target the specific walkable tile the user clicked the water from
                 const clickX = Math.round(hit.point.x / TILE_SIZE);
