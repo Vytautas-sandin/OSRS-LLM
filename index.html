@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM ACTION PAYLOAD V0.5 BUILD - adds player_action to copied GM payload -->
+<!-- OSRS LLM EVENT DELTA V0.7 BUILD - adds recent event tracking to copied GM payload -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Recovery v0.6</title>
+    <title>Retro Coastal Town 3D · Event Delta v0.7</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -97,7 +97,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Recovery v0.6</div>
+        <div id="dev-panel-title">LLM / GM Panel · Event Delta v0.7</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
@@ -364,6 +364,7 @@
 
         rebuildTerrainMesh(level);
         addLogMessage(amount > 0 ? "You raised the earth." : "You dug a hole.");
+        recordGMEvent(amount > 0 ? 'terrain_raised' : 'terrain_dug', { x: gridX, y: gridY, level, amount });
         
         // Ensure player snaps to new height if they modify the tile they stand on
         if (playerGridX === gridX && playerGridY === gridY) {
@@ -787,6 +788,7 @@
         activeDialogue = DIALOGUES[genericId];
         dialogueStep = 0;
         document.getElementById('dialogue-box').style.display = 'flex';
+        recordGMEvent('npc_dialogue_started', { npcId, dialogueId: genericId });
         renderDialogue();
     }
 
@@ -823,12 +825,48 @@
     const worldFlags = {};
     const gmMarkers = [];
     const gmObjects = [];
+    const gmEvents = [];
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
+    const GM_EVENT_LIMIT = 80;
+    let lastGMResponseEventIndex = 0;
     try {
         if (new URLSearchParams(window.location.search).has('resetgm')) {
             localStorage.removeItem(GM_SAVE_KEY);
         }
     } catch (err) {}
+
+    function recordGMEvent(type, detail = {}) {
+        const safeDetail = detail && typeof detail === 'object' ? detail : { value: detail };
+        gmEvents.push({
+            t: Date.now(),
+            type: String(type || 'event'),
+            level: (typeof currentLevel !== 'undefined') ? currentLevel : null,
+            playerTile: {
+                x: (typeof playerGridX !== 'undefined') ? playerGridX : null,
+                y: (typeof playerGridY !== 'undefined') ? playerGridY : null
+            },
+            detail: safeDetail
+        });
+        if (gmEvents.length > GM_EVENT_LIMIT) {
+            const removed = gmEvents.length - GM_EVENT_LIMIT;
+            gmEvents.splice(0, removed);
+            lastGMResponseEventIndex = Math.max(0, lastGMResponseEventIndex - removed);
+        }
+    }
+
+    function getEventsSinceLastGM() {
+        return gmEvents.slice(lastGMResponseEventIndex).map(event => ({
+            time: new Date(event.t).toISOString(),
+            type: event.type,
+            level: event.level,
+            playerTile: event.playerTile,
+            detail: event.detail
+        }));
+    }
+
+    function markGMResponseResolved() {
+        lastGMResponseEventIndex = gmEvents.length;
+    }
 
     function getRecentLogLines() {
         return Array.from(document.querySelectorAll('#chat-box .log-msg')).map(el => el.innerText).slice(-8);
@@ -885,7 +923,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'recovery_v0_6',
+            build: 'event_delta_v0_7',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -908,8 +946,13 @@
                 markerCount: gmMarkers.length,
                 objectCount: gmObjects.length
             },
+            eventDelta: {
+                since: 'last_applied_gm_response',
+                count: getEventsSinceLastGM().length,
+                events: getEventsSinceLastGM()
+            },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw and return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, and custom objects.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, and eventDelta. Return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, and custom objects.'
         };
     }
 
@@ -948,6 +991,7 @@
         inventory[emptySlot] = type;
         renderInventory();
         addLogMessage(`You receive ${ITEM_DEFS[type].name}.`);
+        recordGMEvent('item_received', { type, name: ITEM_DEFS[type].name });
         return true;
     }
 
@@ -1011,7 +1055,10 @@
         levelGroups[level].add(group);
         interactables.push(hitBox);
         gmMarkers.push({ id, name, note, x, y, level, color: colorHex, group, hitBox });
-        if (!cmd.silent) addLogMessage(`Marker placed: ${name}.`);
+        if (!cmd.silent) {
+            addLogMessage(`Marker placed: ${name}.`);
+            recordGMEvent('marker_created', { id, name, x, y, level, note });
+        }
         return true;
     }
 
@@ -1024,7 +1071,10 @@
         levelGroups[marker.level].remove(marker.group);
         disposeObject3D(marker.group);
         gmMarkers.splice(index, 1);
-        if (!silent) addLogMessage(`Marker removed: ${marker.name}.`);
+        if (!silent) {
+            addLogMessage(`Marker removed: ${marker.name}.`);
+            recordGMEvent('marker_removed', { id, name: marker.name, x: marker.x, y: marker.y, level: marker.level });
+        }
         return true;
     }
 
@@ -1037,6 +1087,7 @@
         if (!marker) return;
         addLogMessage(marker.name);
         if (marker.note) addLogMessage(marker.note);
+        recordGMEvent('marker_examined', { id: marker.id, name: marker.name, x: marker.x, y: marker.y, level: marker.level, note: marker.note });
     }
 
     function buildGMObjectVisual(shape, color) {
@@ -1127,7 +1178,10 @@
             hitBox
         });
 
-        if (!cmd.silent) addLogMessage(`Object created: ${name}.`);
+        if (!cmd.silent) {
+            addLogMessage(`Object created: ${name}.`);
+            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note });
+        }
         return true;
     }
 
@@ -1140,7 +1194,10 @@
         levelGroups[obj.level].remove(obj.group);
         disposeObject3D(obj.group);
         gmObjects.splice(index, 1);
-        if (!silent) addLogMessage(`Object removed: ${obj.name}.`);
+        if (!silent) {
+            addLogMessage(`Object removed: ${obj.name}.`);
+            recordGMEvent('object_removed', { id, name: obj.name, x: obj.x, y: obj.y, level: obj.level });
+        }
         return true;
     }
 
@@ -1154,12 +1211,14 @@
 
         addLogMessage(obj.name);
         if (obj.note) addLogMessage(obj.note);
+        recordGMEvent('object_interacted', { id: obj.id, name: obj.name, shape: obj.shape, x: obj.x, y: obj.y, level: obj.level, wasUsed: !!obj.used });
 
         let changed = false;
         if (!obj.used) {
             if (obj.setFlag && obj.setFlag.key) {
                 worldFlags[obj.setFlag.key] = obj.setFlag.value;
                 addLogMessage(`Flag set: ${obj.setFlag.key}`);
+                recordGMEvent('flag_set_by_object', { objectId: obj.id, key: obj.setFlag.key, value: obj.setFlag.value });
                 changed = true;
             }
             if (obj.giveItem) {
@@ -1168,6 +1227,7 @@
             if (obj.setFlag || obj.giveItem) obj.used = true;
             if (obj.removeOnInteract) {
                 removeGMObject(objectId, true);
+                recordGMEvent('object_removed_on_interact', { id: obj.id, name: obj.name });
                 changed = true;
             }
         } else if (obj.setFlag || obj.giveItem) {
@@ -1259,6 +1319,8 @@
         clearGMMarkers();
         clearGMObjects();
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+        gmEvents.length = 0;
+        markGMResponseResolved();
         addLogMessage('GM save reset.');
     }
 
@@ -1282,6 +1344,7 @@
         const commands = Array.isArray(payload) ? payload : payload.commands;
         if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
 
+        recordGMEvent('gm_response_started', { commandCount: commands.length, hasNarration: !!payload.narration });
         let shouldSave = false;
         commands.forEach(cmd => {
             if (!cmd || typeof cmd.op !== 'string') return;
@@ -1296,6 +1359,7 @@
                     worldFlags[cmd.key] = cmd.value;
                     shouldSave = true;
                     addLogMessage(`Flag set: ${cmd.key}`);
+                    recordGMEvent('flag_set_by_gm', { key: cmd.key, value: cmd.value });
                 }
             }
 
@@ -1310,6 +1374,7 @@
                 if (ITEM_DEFS[cmd.type] && isValidTile(x, y, level)) {
                     spawnGroundItem(cmd.type, x, y, level);
                     addLogMessage(`Something appears nearby: ${ITEM_DEFS[cmd.type].name}.`);
+                    recordGMEvent('item_spawned_by_gm', { type: cmd.type, name: ITEM_DEFS[cmd.type].name, x, y, level });
                 } else addLogMessage('Invalid spawn_item command.');
             }
 
@@ -1320,6 +1385,7 @@
                 if (isValidTile(x, y, level)) {
                     executeLevelChange(level, x, y);
                     addLogMessage('The world shifts around you.');
+                    recordGMEvent('player_moved_by_gm', { x, y, level });
                 } else addLogMessage('Invalid move_player command.');
             }
 
@@ -1349,13 +1415,16 @@
                 if (typeof cmd.id === 'string' && Array.isArray(cmd.lines)) {
                     DIALOGUES[cmd.id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
                     addLogMessage(`Dialogue updated: ${cmd.id}`);
+                    recordGMEvent('dialogue_updated_by_gm', { id: cmd.id, lineCount: DIALOGUES[cmd.id].length });
                 }
             }
 
             else addLogMessage(`Unsupported op: ${cmd.op}`);
         });
 
+        recordGMEvent('gm_response_applied', { commandCount: commands.length, saved: shouldSave });
         if (shouldSave) saveGMWorld(true);
+        markGMResponseResolved();
     }
 
     const devToggle = document.getElementById('dev-toggle');
@@ -1490,7 +1559,7 @@
         };
 
         if (def.type === 'food') {
-            ctxMenu.appendChild(createBtn(`Eat ${def.name}`, '', () => { inventory[index] = null; addLogMessage(`You eat the ${def.name}.`); renderInventory(); }));
+            ctxMenu.appendChild(createBtn(`Eat ${def.name}`, '', () => { inventory[index] = null; addLogMessage(`You eat the ${def.name}.`); renderInventory(); recordGMEvent('item_eaten', { type: itemType, name: def.name }); }));
         } else if (def.type === 'misc' && itemType === 'shell') {
             ctxMenu.appendChild(createBtn(`Listen to Shell`, '', () => { addLogMessage(`"You hear the gentle roar of the ocean..."`); }));
         } else if (def.type === 'tool') {
@@ -1501,6 +1570,7 @@
         ctxMenu.appendChild(createBtn(`Drop ${def.name}`, '', () => {
             inventory[index] = null; spawnGroundItem(itemType, playerGridX, playerGridY, currentLevel);
             addLogMessage(`You drop the ${def.name}.`); renderInventory();
+            recordGMEvent('item_dropped', { type: itemType, name: def.name, x: playerGridX, y: playerGridY, level: currentLevel });
         }));
         ctxMenu.appendChild(createBtn(`Cancel`, 'ctx-cancel', () => {}));
     }
@@ -1513,6 +1583,7 @@
         inventory[emptySlot] = type;
         addLogMessage(`You pick up ${ITEM_DEFS[type].name}.`);
         renderInventory();
+        recordGMEvent('item_picked_up', { type, name: ITEM_DEFS[type].name, x: hitBox.userData.interactX, y: hitBox.userData.interactY, level: hitBox.userData.sourceLevel });
 
         levelGroups[hitBox.userData.sourceLevel].remove(hitBox);
         levelGroups[hitBox.userData.sourceLevel].remove(linkedMesh);
@@ -1575,6 +1646,7 @@
         targetMovePos.copy(player.position); 
         pathQueue = []; 
         addLogMessage(newLevel === '2' ? "You arrive at the Island." : "You arrive at a new area.");
+        recordGMEvent('level_changed', { level: currentLevel, x: playerGridX, y: playerGridY });
     }
 
     function executeFishing() {
@@ -1583,9 +1655,9 @@
         setTimeout(() => {
             if (Math.random() > 0.4) {
                 const emptySlot = inventory.findIndex(i => i === null);
-                if (emptySlot !== -1) { inventory[emptySlot] = 'fish'; renderInventory(); addLogMessage("You caught a Raw Fish!"); } 
-                else { addLogMessage("You caught a fish, but your inventory is full!"); }
-            } else { addLogMessage("The fish got away."); }
+                if (emptySlot !== -1) { inventory[emptySlot] = 'fish'; renderInventory(); addLogMessage("You caught a Raw Fish!"); recordGMEvent('fish_caught', { type: 'fish', level: currentLevel, x: playerGridX, y: playerGridY }); } 
+                else { addLogMessage("You caught a fish, but your inventory is full!"); recordGMEvent('fish_caught_inventory_full', { level: currentLevel, x: playerGridX, y: playerGridY }); }
+            } else { addLogMessage("The fish got away."); recordGMEvent('fish_got_away', { level: currentLevel, x: playerGridX, y: playerGridY }); }
         }, 2000);
     }
 
@@ -1776,6 +1848,7 @@
                     door.isOpen = !door.isOpen;
                     door.group.rotation.y = door.baseRot + (door.isOpen ? Math.PI/2 : 0);
                     addLogMessage(door.isOpen ? "You opened the door." : "You closed the door.");
+                    recordGMEvent(door.isOpen ? 'door_opened' : 'door_closed', { x: door.x, y: door.y, level: door.level, dir: door.dir });
                 };
 
                 if (chosenPath.length > 0) { pathQueue = chosenPath; } 
@@ -1832,7 +1905,7 @@
                 } else {
                     // Standard walking
                     const newPath = findPath(playerGridX, playerGridY, targetGridX, targetGridY, currentLevel);
-                    if (newPath.length > 0) { pathQueue = newPath; pendingAction = null; } 
+                    if (newPath.length > 0) { pathQueue = newPath; pendingAction = null; recordGMEvent('walk_requested', { x: targetGridX, y: targetGridY, level: currentLevel, pathLength: newPath.length }); } 
                     else if (targetGridX === playerGridX && targetGridY === playerGridY) { pathQueue = []; pendingAction = null; }
                 }
             }
