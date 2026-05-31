@@ -109,7 +109,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · GM Rules v2.7</div>
+        <div id="dev-panel-title">LLM / GM Panel · GM Rules Hotfix v2.7.1</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -1639,7 +1639,7 @@
 
     function buildGMInstructions() {
         return {
-            version: 'gm_rules_v2_7',
+            version: 'gm_rules_v2_7_1',
             role: 'You are the GM in the chat interface. The HTML game is only a 3D canvas / state board that receives world-delta commands.',
             architecture: {
                 chat: 'All narration, dialogue, pushback, uncertainty, character intent, and roleplay happen in the LLM chat response.',
@@ -1764,7 +1764,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'gm_rules_v2_7',
+            build: 'gm_rules_v2_7_1',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1861,7 +1861,7 @@
     function buildGMTextPrompt() {
         const payload = buildGMPayload();
         return [
-            'You are the GM for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
+            'GM Rules Hotfix v2.7.1. You are the GM for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
             '',
             'Resolve the player action. Narrate, roleplay, dialogue, pushback, and any skill/logic checks in the JSON narration field. Use commands only to update the 3D canvas. Prefer referencing existing entities from payload.canvasEntities / payload.nearby.entities by id before creating duplicates.',
             'Return valid JSON only: {"narration":"...","commands":[...]}',
@@ -1887,8 +1887,7 @@
             '',
             'PAYLOAD:',
             JSON.stringify(payload, null, 2)
-        ].join('
-');
+        ].join('\n');
     }
 
     function copyGMPrompt() {
