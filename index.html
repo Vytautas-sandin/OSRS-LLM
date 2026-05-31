@@ -109,7 +109,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · GM Rules Hotfix v2.7.1</div>
+        <div id="dev-panel-title">LLM / GM Panel · JSON Extract v2.7.2</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -1639,7 +1639,7 @@
 
     function buildGMInstructions() {
         return {
-            version: 'gm_rules_v2_7_1',
+            version: 'json_extract_v2_7_2',
             role: 'You are the GM in the chat interface. The HTML game is only a 3D canvas / state board that receives world-delta commands.',
             architecture: {
                 chat: 'All narration, dialogue, pushback, uncertainty, character intent, and roleplay happen in the LLM chat response.',
@@ -1764,7 +1764,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'gm_rules_v2_7_1',
+            build: 'json_extract_v2_7_2',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1861,7 +1861,7 @@
     function buildGMTextPrompt() {
         const payload = buildGMPayload();
         return [
-            'GM Rules Hotfix v2.7.1. You are the GM for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
+            'JSON Extract v2.7.2. You are the GM for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
             '',
             'Resolve the player action. Narrate, roleplay, dialogue, pushback, and any skill/logic checks in the JSON narration field. Use commands only to update the 3D canvas. Prefer referencing existing entities from payload.canvasEntities / payload.nearby.entities by id before creating duplicates.',
             'Return valid JSON only: {"narration":"...","commands":[...]}',
@@ -4110,14 +4110,96 @@
         'set_door_state', 'update_entity', 'transform_entity', 'set_entity_state', 'hide_entity', 'reveal_entity', 'set_blocking', 'set_color', 'rename_entity', 'damage_entity', 'repair_entity', 'set_world_summary', 'set_summary', 'add_memory', 'add_fact', 'clear_memory', 'set_world_memory', 'set_quest', 'remove_quest', 'update_dialogue'
     ]);
 
-    function parseGMCommandPayload(raw) {
-        if (!raw || !raw.trim()) return { ok: false, error: 'Paste JSON commands first.' };
+    function getCommandsFromPayload(payload) {
+        if (Array.isArray(payload)) return payload;
+        if (payload && Array.isArray(payload.commands)) return payload.commands;
+        return null;
+    }
+
+    function tryParseGMCommandCandidate(text, source = 'json') {
+        if (!text || !String(text).trim()) return null;
         let payload;
-        try { payload = JSON.parse(raw); }
-        catch (err) { return { ok: false, error: `Invalid JSON: ${err.message}` }; }
-        const commands = Array.isArray(payload) ? payload : payload.commands;
-        if (!Array.isArray(commands)) return { ok: false, error: 'No commands array found.' };
-        return { ok: true, payload, commands };
+        try { payload = JSON.parse(String(text).trim()); }
+        catch (err) { return null; }
+        const commands = getCommandsFromPayload(payload);
+        if (!Array.isArray(commands)) return null;
+        return { ok: true, payload, commands, source, extracted: source !== 'direct' };
+    }
+
+    function findBalancedJSONEnd(text, startIndex) {
+        const open = text[startIndex];
+        const closeFor = open === '{' ? '}' : open === '[' ? ']' : null;
+        if (!closeFor) return -1;
+
+        const stack = [closeFor];
+        let inString = false;
+        let escapeNext = false;
+
+        for (let i = startIndex + 1; i < text.length; i++) {
+            const ch = text[i];
+
+            if (inString) {
+                if (escapeNext) { escapeNext = false; continue; }
+                if (ch === '\\') { escapeNext = true; continue; }
+                if (ch === '"') inString = false;
+                continue;
+            }
+
+            if (ch === '"') { inString = true; continue; }
+            if (ch === '{') stack.push('}');
+            else if (ch === '[') stack.push(']');
+            else if (ch === '}' || ch === ']') {
+                if (stack.length === 0 || stack[stack.length - 1] !== ch) return -1;
+                stack.pop();
+                if (stack.length === 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    function extractGMCommandPayload(raw) {
+        const text = String(raw || '').trim();
+        if (!text) return null;
+
+        const direct = tryParseGMCommandCandidate(text, 'direct');
+        if (direct) return direct;
+
+        // Prefer fenced JSON/code blocks when the LLM wraps the response in Markdown.
+        const fenceRegex = /```(?:json|javascript|js)?\s*([\s\S]*?)```/gi;
+        let fenceMatch;
+        while ((fenceMatch = fenceRegex.exec(text)) !== null) {
+            const fenced = fenceMatch[1].trim();
+            const parsedFence = tryParseGMCommandCandidate(fenced, 'markdown_code_block');
+            if (parsedFence) return parsedFence;
+            const nestedFence = scanTextForGMJSON(fenced, 'markdown_code_block_scan');
+            if (nestedFence) return nestedFence;
+        }
+
+        return scanTextForGMJSON(text, 'text_scan');
+    }
+
+    function scanTextForGMJSON(text, source = 'text_scan') {
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch !== '{' && ch !== '[') continue;
+            const end = findBalancedJSONEnd(text, i);
+            if (end < 0) continue;
+            const candidate = text.slice(i, end + 1);
+            const parsed = tryParseGMCommandCandidate(candidate, source);
+            if (parsed) {
+                parsed.extractedTextStart = i;
+                parsed.extractedTextEnd = end + 1;
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    function parseGMCommandPayload(raw) {
+        if (!raw || !raw.trim()) return { ok: false, error: 'Paste an LLM response or JSON commands first.' };
+        const parsed = extractGMCommandPayload(raw);
+        if (!parsed) return { ok: false, error: 'No valid JSON command payload found. Paste the whole LLM reply, including the JSON block.' };
+        return parsed;
     }
 
     function summarizeGMCommands(commands) {
@@ -4137,6 +4219,7 @@
         const raw = document.getElementById('llm-io').value.trim();
         const parsed = parseGMCommandPayload(raw);
         if (!parsed.ok) { addLogMessage(parsed.error); return false; }
+        if (parsed.extracted) addLogMessage(`Extracted JSON from ${parsed.source}.`);
         const summary = summarizeGMCommands(parsed.commands);
         const opList = Object.entries(summary.ops).map(([op, count]) => `${op}${count > 1 ? `×${count}` : ''}`).join(', ');
         if (summary.unsupported > 0) {
@@ -4251,6 +4334,7 @@
         const raw = document.getElementById('llm-io').value.trim();
         const parsed = parseGMCommandPayload(raw);
         if (!parsed.ok) { addLogMessage(parsed.error); return; }
+        if (parsed.extracted) addLogMessage(`Extracted JSON from ${parsed.source}.`);
 
         const payload = parsed.payload;
         const commands = parsed.commands;
