@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D</title>
+    <title>Retro Coastal Town 3D · Recovery v0.6</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -97,7 +97,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Action Payload v0.5</div>
+        <div id="dev-panel-title">LLM / GM Panel · Recovery v0.6</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
@@ -824,6 +824,11 @@
     const gmMarkers = [];
     const gmObjects = [];
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
+    try {
+        if (new URLSearchParams(window.location.search).has('resetgm')) {
+            localStorage.removeItem(GM_SAVE_KEY);
+        }
+    } catch (err) {}
 
     function getRecentLogLines() {
         return Array.from(document.querySelectorAll('#chat-box .log-msg')).map(el => el.innerText).slice(-8);
@@ -880,6 +885,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
+            build: 'recovery_v0_6',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -888,7 +894,7 @@
             },
             playerAction: {
                 raw: (document.getElementById('player-action')?.value || '').trim(),
-                note: 'This is the player's improvised action or question. Resolve it as GM, using nearby context and flags.'
+                note: "This is the player's improvised action or question. Resolve it as GM, using nearby context and flags."
             },
             nearby: {
                 npcs: getNearbyNPCs(),
@@ -1222,14 +1228,27 @@
 
         let save;
         try { save = JSON.parse(raw); }
-        catch (err) { if (!silent) addLogMessage('GM save is corrupted.'); return false; }
+        catch (err) {
+            try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
+            if (!silent) addLogMessage('GM save was corrupted and has been cleared.');
+            return false;
+        }
 
-        clearGMMarkers();
-        clearGMObjects();
-        Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
-        if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
-        if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
-        if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
+        try {
+            clearGMMarkers();
+            clearGMObjects();
+            Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+            if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
+            if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
+            if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
+        } catch (err) {
+            try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
+            clearGMMarkers();
+            clearGMObjects();
+            Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+            addLogMessage('GM save caused a load error and has been cleared.');
+            return false;
+        }
 
         if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
         return true;
@@ -1351,7 +1370,13 @@
     document.getElementById('save-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); saveGMWorld(false); });
     document.getElementById('load-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); loadGMWorld(false); });
     document.getElementById('reset-world-state').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resetGMWorldSave(); });
-    window.setTimeout(() => loadGMWorld(true), 0);
+    window.setTimeout(() => {
+        try { loadGMWorld(true); }
+        catch (err) {
+            try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
+            addLogMessage('GM auto-load failed and was cleared.');
+        }
+    }, 100);
 
     const ITEM_DEFS = { 
         'berries': { name: 'Berries', color: 0xff2a2a, cssClass: 'item-berries', type: 'food' },
