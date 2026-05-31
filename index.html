@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM EVENT DELTA V0.7 BUILD - adds recent event tracking to copied GM payload -->
+<!-- OSRS LLM WORLD MEMORY V0.8 BUILD - adds persistent summary, facts, and quest memory to GM payloads -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Event Delta v0.7</title>
+    <title>Retro Coastal Town 3D · World Memory v0.8</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -35,9 +35,12 @@
         #dev-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
         #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(360px, calc(100vw - 20px)); background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
         #dev-panel-title { color: #ffff00; font-weight: bold; text-shadow: 1px 1px 0 #000; }
-        #player-action { width: 100%; height: 52px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
+        #player-action { width: 100%; height: 48px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
         .dev-label { color: #d0c8b0; font-size: 11px; }
-        #llm-io { width: 100%; height: 160px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+
+        #world-summary { width: 100%; height: 54px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
+        #world-memory { width: 100%; height: 70px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+        #llm-io { width: 100%; height: 130px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
         .dev-row { display: flex; gap: 6px; }
         .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 6px; font-weight: bold; cursor: pointer; }
         .dev-btn:active { transform: translate(1px, 1px); }
@@ -97,7 +100,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Event Delta v0.7</div>
+        <div id="dev-panel-title">LLM / GM Panel · World Memory v0.8</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
@@ -109,6 +112,10 @@
         </div>
         <div class="dev-label">Player action / question for the GM</div>
         <textarea id="player-action" spellcheck="false" placeholder="Example: I pry open the salt-worn chest with the shovel."></textarea>
+        <div class="dev-label">World summary</div>
+        <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
+        <div class="dev-label">Memory facts / quest notes, one per line</div>
+        <textarea id="world-memory" spellcheck="false" placeholder="Example: The player found a hidden pressure stone near the temple entrance."></textarea>
         <div class="dev-label">LLM JSON / copied payload</div>
         <textarea id="llm-io" spellcheck="false" placeholder="Paste LLM JSON here, or tap Copy Payload to export the current game state."></textarea>
     </div>
@@ -823,11 +830,13 @@
 
     // --- 5B. DEV / LLM PANEL ---
     const worldFlags = {};
+    const worldMemory = { summary: '', facts: [], quests: {} };
     const gmMarkers = [];
     const gmObjects = [];
     const gmEvents = [];
     const GM_SAVE_KEY = 'osrs_llm_gm_save_v1';
     const GM_EVENT_LIMIT = 80;
+    const GM_MEMORY_LIMIT = 40;
     let lastGMResponseEventIndex = 0;
     try {
         if (new URLSearchParams(window.location.search).has('resetgm')) {
@@ -866,6 +875,114 @@
 
     function markGMResponseResolved() {
         lastGMResponseEventIndex = gmEvents.length;
+    }
+
+    function safeMemoryText(value, max = 2400) {
+        return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+    }
+
+    function normalizeMemoryFacts(value) {
+        const source = Array.isArray(value) ? value : String(value ?? '').split('\n');
+        const seen = new Set();
+        const facts = [];
+        source.forEach(item => {
+            const text = safeMemoryText(item, 300);
+            const key = text.toLowerCase();
+            if (text && !seen.has(key)) {
+                seen.add(key);
+                facts.push(text);
+            }
+        });
+        return facts.slice(0, GM_MEMORY_LIMIT);
+    }
+
+    function serializeWorldMemory() {
+        return {
+            summary: safeMemoryText(worldMemory.summary, 2400),
+            facts: normalizeMemoryFacts(worldMemory.facts),
+            quests: Object.values(worldMemory.quests || {}).map(quest => ({
+                id: safeMemoryText(quest.id, 80),
+                title: safeMemoryText(quest.title || quest.id, 160),
+                status: safeMemoryText(quest.status || 'active', 80),
+                note: safeMemoryText(quest.note || '', 600)
+            })).filter(quest => quest.id)
+        };
+    }
+
+    function renderWorldMemoryUI() {
+        const summaryEl = document.getElementById('world-summary');
+        const factsEl = document.getElementById('world-memory');
+        if (summaryEl) summaryEl.value = worldMemory.summary || '';
+        if (factsEl) factsEl.value = normalizeMemoryFacts(worldMemory.facts).join('\n');
+    }
+
+    function syncWorldMemoryFromUI() {
+        const summaryEl = document.getElementById('world-summary');
+        const factsEl = document.getElementById('world-memory');
+        if (summaryEl) worldMemory.summary = safeMemoryText(summaryEl.value, 2400);
+        if (factsEl) worldMemory.facts = normalizeMemoryFacts(factsEl.value);
+    }
+
+    function resetWorldMemory() {
+        worldMemory.summary = '';
+        worldMemory.facts = [];
+        worldMemory.quests = {};
+        renderWorldMemoryUI();
+    }
+
+    function setWorldSummary(summary) {
+        worldMemory.summary = safeMemoryText(summary, 2400);
+        renderWorldMemoryUI();
+        recordGMEvent('world_summary_updated', { summary: worldMemory.summary });
+        addLogMessage('World summary updated.');
+        return true;
+    }
+
+    function addWorldMemoryFact(text) {
+        const fact = safeMemoryText(text, 300);
+        if (!fact) return false;
+        const current = normalizeMemoryFacts(worldMemory.facts);
+        if (!current.some(item => item.toLowerCase() === fact.toLowerCase())) current.push(fact);
+        worldMemory.facts = current.slice(-GM_MEMORY_LIMIT);
+        renderWorldMemoryUI();
+        recordGMEvent('memory_fact_added', { text: fact });
+        addLogMessage('Memory added.');
+        return true;
+    }
+
+    function clearWorldMemoryFacts() {
+        worldMemory.facts = [];
+        renderWorldMemoryUI();
+        recordGMEvent('memory_facts_cleared', {});
+        addLogMessage('Memory facts cleared.');
+        return true;
+    }
+
+    function setWorldQuest(cmd) {
+        const id = safeMemoryText(cmd.id || cmd.key || cmd.title, 80).replace(/\s+/g, '_').toLowerCase();
+        if (!id) return false;
+        const quest = {
+            id,
+            title: safeMemoryText(cmd.title || id, 160),
+            status: safeMemoryText(cmd.status || 'active', 80),
+            note: safeMemoryText(cmd.note || cmd.text || '', 600)
+        };
+        worldMemory.quests[id] = quest;
+        if (!cmd.silent) {
+            recordGMEvent('quest_updated', quest);
+            addLogMessage(`Quest memory updated: ${quest.title}.`);
+        }
+        return true;
+    }
+
+    function removeWorldQuest(id) {
+        const key = safeMemoryText(id, 80).replace(/\s+/g, '_').toLowerCase();
+        if (!key || !worldMemory.quests[key]) return false;
+        const removed = worldMemory.quests[key];
+        delete worldMemory.quests[key];
+        recordGMEvent('quest_removed', { id: key, title: removed.title });
+        addLogMessage(`Quest memory removed: ${removed.title}.`);
+        return true;
     }
 
     function getRecentLogLines() {
@@ -920,10 +1037,12 @@
     }
 
     function buildGMPayload() {
+        syncWorldMemoryFromUI();
+        const memorySnapshot = serializeWorldMemory();
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'event_delta_v0_7',
+            build: 'world_memory_v0_8',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -941,10 +1060,13 @@
                 objects: getNearbyGMObjects()
             },
             flags: worldFlags,
+            worldMemory: memorySnapshot,
             gmSave: {
                 hasSavedWorld: hasSavedGMWorld(),
                 markerCount: gmMarkers.length,
-                objectCount: gmObjects.length
+                objectCount: gmObjects.length,
+                memoryFactCount: memorySnapshot.facts.length,
+                questCount: memorySnapshot.quests.length
             },
             eventDelta: {
                 since: 'last_applied_gm_response',
@@ -952,7 +1074,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, and eventDelta. Return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, and custom objects.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, flags, worldMemory, and eventDelta. Return JSON only: {"narration":"...","commands":[...]}. Supported ops: add_log, set_flag, give_item, spawn_item, move_player, update_dialogue, create_marker, remove_marker, create_object, remove_object, set_world_summary, add_memory, clear_memory, set_quest, remove_quest. Use underscores in op names; spaces/camelCase are tolerated. Persisted between refreshes: flags, markers, custom objects, and worldMemory.'
         };
     }
 
@@ -1239,9 +1361,10 @@
 
     function buildGMWorldSave() {
         return {
-            version: 1,
+            version: 2,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
+            memory: serializeWorldMemory(),
             markers: gmMarkers.map(marker => ({
                 id: marker.id,
                 name: marker.name,
@@ -1269,6 +1392,7 @@
     }
 
     function saveGMWorld(silent = false) {
+        syncWorldMemoryFromUI();
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
             if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects).`);
@@ -1298,7 +1422,16 @@
             clearGMMarkers();
             clearGMObjects();
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+            resetWorldMemory();
             if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
+            if (save.memory && typeof save.memory === 'object') {
+                worldMemory.summary = safeMemoryText(save.memory.summary, 2400);
+                worldMemory.facts = normalizeMemoryFacts(save.memory.facts);
+                worldMemory.quests = {};
+                const savedQuests = Array.isArray(save.memory.quests) ? save.memory.quests : Object.values(save.memory.quests || {});
+                savedQuests.forEach(quest => setWorldQuest({ ...quest, silent: true }));
+                renderWorldMemoryUI();
+            }
             if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
             if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
         } catch (err) {
@@ -1306,6 +1439,7 @@
             clearGMMarkers();
             clearGMObjects();
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+            resetWorldMemory();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
@@ -1319,6 +1453,7 @@
         clearGMMarkers();
         clearGMObjects();
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+        resetWorldMemory();
         gmEvents.length = 0;
         markGMResponseResolved();
         addLogMessage('GM save reset.');
@@ -1411,6 +1546,49 @@
                 else addLogMessage('Invalid remove_object command.');
             }
 
+            else if (cmd.op === 'set_world_summary' || cmd.op === 'set_summary') {
+                const text = cmd.summary ?? cmd.text ?? cmd.value;
+                if (typeof text === 'string') { setWorldSummary(text); shouldSave = true; }
+                else addLogMessage('Invalid set_world_summary command.');
+            }
+
+            else if (cmd.op === 'add_memory' || cmd.op === 'add_fact') {
+                const text = cmd.text ?? cmd.fact ?? cmd.value;
+                if (typeof text === 'string' && addWorldMemoryFact(text)) shouldSave = true;
+                else addLogMessage('Invalid add_memory command.');
+            }
+
+            else if (cmd.op === 'clear_memory') {
+                if (cmd.scope === 'summary') { worldMemory.summary = ''; renderWorldMemoryUI(); addLogMessage('World summary cleared.'); }
+                else if (cmd.scope === 'quests') { worldMemory.quests = {}; addLogMessage('Quest memory cleared.'); }
+                else clearWorldMemoryFacts();
+                recordGMEvent('world_memory_cleared', { scope: cmd.scope || 'facts' });
+                shouldSave = true;
+            }
+
+            else if (cmd.op === 'set_world_memory') {
+                if (typeof cmd.summary === 'string') worldMemory.summary = safeMemoryText(cmd.summary, 2400);
+                if (Array.isArray(cmd.facts)) worldMemory.facts = normalizeMemoryFacts(cmd.facts);
+                if (Array.isArray(cmd.quests)) {
+                    worldMemory.quests = {};
+                    cmd.quests.forEach(quest => setWorldQuest({ ...quest, silent: true }));
+                }
+                renderWorldMemoryUI();
+                recordGMEvent('world_memory_set', serializeWorldMemory());
+                addLogMessage('World memory updated.');
+                shouldSave = true;
+            }
+
+            else if (cmd.op === 'set_quest') {
+                if (setWorldQuest(cmd)) shouldSave = true;
+                else addLogMessage('Invalid set_quest command.');
+            }
+
+            else if (cmd.op === 'remove_quest') {
+                if (removeWorldQuest(cmd.id || cmd.key || cmd.title)) shouldSave = true;
+                else addLogMessage('Invalid remove_quest command.');
+            }
+
             else if (cmd.op === 'update_dialogue') {
                 if (typeof cmd.id === 'string' && Array.isArray(cmd.lines)) {
                     DIALOGUES[cmd.id] = cmd.lines.filter(line => line && typeof line.speaker === 'string' && typeof line.text === 'string');
@@ -1443,6 +1621,7 @@
         try { loadGMWorld(true); }
         catch (err) {
             try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
+            resetWorldMemory();
             addLogMessage('GM auto-load failed and was cleared.');
         }
     }, 100);
