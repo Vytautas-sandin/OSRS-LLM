@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Adventure Seed v1.4</title>
+    <title>Retro Coastal Town 3D · 3D Canvas Protocol v1.5</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -108,11 +108,11 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Adventure Seed v1.4</div>
+        <div id="dev-panel-title">LLM / GM Panel · 3D Canvas v1.5</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
-            <button id="copy-adventure-seed" class="dev-btn">Copy Seed</button>
+            <button id="copy-adventure-seed" class="dev-btn">Copy Scene Prompt</button>
             <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
         </div>
         <div class="dev-row">
@@ -143,7 +143,7 @@
     </div>
 
 <script>
-    // OSRS LLM ADVENTURE SEED V1.4 BUILD
+    // OSRS LLM 3D CANVAS PROTOCOL V1.5 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -466,6 +466,8 @@
         let wallColor = 0x808080;
         if (w.type === 'white') wallColor = 0xeae6df;
         if (w.type === 'stone') wallColor = 0xcac7bd;
+        if (typeof w.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(w.color)) wallColor = parseInt(w.color.slice(1), 16);
+        if (typeof w.color === 'number' && Number.isFinite(w.color)) wallColor = w.color;
         
         let actualHeight = height;
         let centerY = LEVELS[level].h + height/2;
@@ -494,7 +496,12 @@
         if (w.dir === 'W') posX -= TILE_SIZE/2;
 
         mesh.position.set(posX, centerY, posZ);
+        mesh.userData = { isWallMesh: true, wallLevel: level, wallRef: w };
         levelGroups[level].add(mesh);
+        w.mesh = mesh;
+        w.level = level;
+        w.height = height;
+        return mesh;
     }
 
     function createDoor(x, y, dir, level) {
@@ -879,6 +886,9 @@
     const gmMarkers = [];
     const gmObjects = [];
     const gmHotspots = [];
+    const gmWalls = [];
+    const gmFloors = [];
+    const gmRemovedWalls = [];
     const gmEvents = [];
     let lastInteractionTarget = null;
     let selectedUseItem = null;
@@ -1225,6 +1235,37 @@
             }));
     }
 
+
+    function getNearbyGMWalls(radius = 8) {
+        return gmWalls
+            .filter(wall => wall.level === currentLevel)
+            .filter(wall => Math.max(Math.abs(wall.x - playerGridX), Math.abs(wall.y - playerGridY)) <= radius)
+            .map(wall => ({
+                id: wall.id,
+                name: wall.name || 'Barrier',
+                x: wall.x,
+                y: wall.y,
+                dir: wall.dir,
+                type: wall.type || 'wall',
+                anchor: wall.anchor || null
+            }));
+    }
+
+    function getNearbyGMFloors(radius = 8) {
+        return gmFloors
+            .filter(floor => floor.level === currentLevel)
+            .filter(floor => Math.max(Math.abs(floor.x - playerGridX), Math.abs(floor.y - playerGridY)) <= radius)
+            .map(floor => ({
+                id: floor.id,
+                name: floor.name || 'Floor Tile',
+                x: floor.x,
+                y: floor.y,
+                height: floor.height,
+                walkable: floor.walkable !== false,
+                anchor: floor.anchor || null
+            }));
+    }
+
     function distanceToPlayerTile(x, y, level = currentLevel) {
         if (level !== currentLevel) return Infinity;
         return Math.max(Math.abs(x - playerGridX), Math.abs(y - playerGridY));
@@ -1306,47 +1347,58 @@
 
     function buildGMInstructions() {
         return {
-            role: 'You are the game master for a small OSRS-inspired 3D adventure engine.',
+            role: 'You are the GM in the chat interface. The HTML game is only a 3D canvas / state board that receives world-delta commands.',
             outputContract: {
                 format: 'Return valid JSON only. No markdown fences. No explanation outside JSON.',
-                shape: { narration: 'short atmospheric narration string', commands: 'array of command objects' }
+                shape: { narration: 'story narration for the chat interface; the engine treats this as debug context', commands: 'array of world-delta command objects for the 3D canvas' }
             },
             priorities: [
-                'Preserve continuity with worldMemory, flags, nearby context, inventory, and eventDelta.',
-                'Resolve the playerAction.raw fairly. If it includes a target or usedItem, treat it as a concrete in-world action.',
-                'Use a few meaningful commands rather than many tiny ones.',
-                'Prefer changing the world through diegetic objects, hotspots, dialogue, items, flags, and memory.',
-                'Prefer near/world anchor placement over raw x/y coordinates. Use anchors from payload.worldAnchors, such as temple_entrance or west_beach.',
-                'When creating a quest setup, manifest it in-world through NPC dialogue, hotspots, objects, flags, and memory. Do not merely list quest options.',
-                'Keep names and ids stable. Use lowercase snake_case ids.'
+                'Narrate, roleplay, dialogue, pushback, and skill checks in the chat response/narration field. Do not rely on the game UI for flavor text.',
+                'Use JSON commands only for visible or stateful changes to the 3D canvas: objects, items, walls, floors, terrain-like floor overlays, positions, flags, and memory.',
+                'Resolve the playerAction.raw fairly using inventory, target, nearby context, flags, worldMemory, eventDelta, and common sense.',
+                'If an action fails, you may return only narration plus a set_flag/add_memory/event-style command if the failed attempt matters.',
+                'Prefer named anchors from payload.worldAnchors over raw x/y coordinates. Use player_nearby for immediate consequences.',
+                'For environmental features such as cracks, seams, inscriptions, suspicious sand, or pressure stones, use create_hotspot only if the 3D canvas needs an interactable target.',
+                'For physical props, use create_prop/create_object. For blocked or opened movement, use create_wall/remove_wall/create_floor/remove_floor.',
+                'Keep ids stable, lowercase, and snake_case.'
             ],
             commandSchema: {
-                add_log: { text: 'string' },
+                add_log: { text: 'short debug/status text only; do not put important story here' },
                 set_flag: { key: 'string', value: 'boolean | string | number' },
                 give_item: { type: 'berries | shell | rod | fish | shovel' },
-                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id such as temple_entrance, west_beach, rowboat_dock, island_center, bob_house', radius: 'optional search radius around near' },
+                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', radius: 'optional search radius around near' },
                 move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
-                update_dialogue: { id: 'npc dialogue id', lines: [{ speaker: 'string', text: 'string' }] },
-                show_dialogue: { speaker: 'string', text: 'string; diegetic narration or object feedback shown in the dialogue UI' },
-                create_marker: { id: 'string', name: 'string', note: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id such as temple_entrance, west_beach, rowboat_dock, island_center, bob_house', radius: 'optional search radius around near', color: '#rrggbb' },
-                remove_marker: { id: 'string' },
-                create_hotspot: { id: 'string', name: 'string', note: 'string', surface: 'floor | wall | altar | sand | water | door', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id; prefer anchors over raw coordinates', nearPlayer: 'optional boolean', radius: 'optional search radius around near', visible: 'optional boolean; false creates an invisible tap area', color: '#rrggbb', setFlag: 'optional {key,value}', giveItem: 'optional item type', removeOnInteract: 'optional boolean' },
+                create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb' },
+                move_prop: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near' },
+                remove_prop: { id: 'string' },
+                create_object: { alias: 'create_prop' },
+                move_object: { alias: 'move_prop' },
+                remove_object: { alias: 'remove_prop' },
+                create_hotspot: { id: 'string', name: 'string', note: 'optional metadata', surface: 'floor | wall | altar | sand | water | door', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', visible: 'optional boolean', color: '#rrggbb' },
                 remove_hotspot: { id: 'string' },
-                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id; prefer anchors over raw coordinates', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
-                remove_object: { id: 'string' },
+                create_wall: { id: 'string', name: 'optional string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', dir: 'N | S | E | W', type: 'wood | stone | white | wall', color: '#rrggbb', height: 'optional number' },
+                remove_wall: { id: 'optional string; or provide x,y,level,dir to remove a wall segment' },
+                create_floor: { id: 'string', name: 'optional string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', color: '#rrggbb', height: 'optional number', walkable: 'optional boolean, default true' },
+                remove_floor: { id: 'string' },
+                set_tile_height: { alias: 'create_floor with height; safest way to create bridges, platforms, filled holes, or raised walkable tiles' },
+                set_door_state: { x: 'integer', y: 'integer', level: '-1 | 0 | 2', dir: 'N | S | E | W', open: 'boolean' },
+                create_marker: { id: 'string', name: 'string', note: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', color: '#rrggbb' },
+                remove_marker: { id: 'string' },
                 set_world_summary: { summary: 'short string' },
                 add_memory: { text: 'important persistent fact string' },
                 clear_memory: { scope: 'facts | quests | summary' },
                 set_quest: { id: 'string', title: 'string', status: 'active | completed | failed | hidden', note: 'string' },
-                remove_quest: { id: 'string' }
+                remove_quest: { id: 'string' },
+                update_dialogue: { id: 'npc dialogue id', lines: [{ speaker: 'string', text: 'string' }] },
+                show_dialogue: { speaker: 'string', text: 'short text; optional legacy UI command, not preferred for roleplay' }
             },
             exampleResponse: {
-                narration: 'You find a salt-worn seam in the stone. It clicks, but something deeper still holds shut.',
+                narration: 'You wedge the shovel into the loose seam. The stone resists, then shifts with a dull scrape. A small gap opens in the threshold.',
                 commands: [
-                    { op: 'show_dialogue', speaker: 'Temple Wall', text: 'A narrow seam in the wall clicks beneath your fingers.' },
-                    { op: 'set_flag', key: 'found_temple_seam', value: true },
-                    { op: 'create_hotspot', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', surface: 'wall', near: 'temple_entrance', color: '#9a9a8a' },
-                    { op: 'add_memory', text: 'The player found a hidden stone seam near the temple entrance.' }
+                    { op: 'set_flag', key: 'temple_threshold_opened', value: true },
+                    { op: 'create_floor', id: 'temple_threshold_gap_floor_01', name: 'Opened Threshold Gap', near: 'temple_entrance', color: '#6f665a', height: 0.08 },
+                    { op: 'create_hotspot', id: 'temple_threshold_gap_01', name: 'Opened Stone Gap', note: 'A narrow opening in the threshold.', surface: 'floor', near: 'temple_entrance', color: '#3a332b' },
+                    { op: 'add_memory', text: 'The player opened a narrow gap in the temple threshold using the shovel.' }
                 ]
             }
         };
@@ -1358,7 +1410,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'adventure_seed_v1_4',
+            build: 'canvas_protocol_v1_5',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1377,7 +1429,9 @@
                 items: getNearbyItems(),
                 markers: getNearbyMarkers(),
                 objects: getNearbyGMObjects(),
-                hotspots: getNearbyHotspots()
+                hotspots: getNearbyHotspots(),
+                walls: getNearbyGMWalls(),
+                floors: getNearbyGMFloors()
             },
             lastTarget: getLastInteractionTarget(),
             flags: worldFlags,
@@ -1389,6 +1443,9 @@
                 markerCount: gmMarkers.length,
                 objectCount: gmObjects.length,
                 hotspotCount: gmHotspots.length,
+                wallCount: gmWalls.length,
+                floorCount: gmFloors.length,
+                removedBaseWallCount: gmRemovedWalls.length,
                 memoryFactCount: memorySnapshot.facts.length,
                 questCount: memorySnapshot.quests.length
             },
@@ -1398,7 +1455,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. If asked to seed an adventure, create a small playable in-world setup rather than listing options. Update worldMemory when story facts or quest state change.'
+            request: 'Act as GM in chat. Resolve playerAction.raw using nearby context, lastTarget, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only with narration for chat plus commands for the 3D canvas. Use commands for stateful/visible changes only. Prefer create_prop/create_hotspot/create_wall/remove_wall/create_floor/remove_floor/spawn_item/set_flag/add_memory as needed.'
         };
     }
 
@@ -1429,11 +1486,19 @@
     function buildGMTextPrompt() {
         const payload = buildGMPayload();
         return [
-            'You are the GM for OSRS-LLM, a small OSRS-inspired 3D adventure engine.',
+            'You are the GM for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
             '',
-            'Resolve the player action using the payload below. Return valid JSON only: {"narration":"...","commands":[...]}.',
-            'Do not use markdown fences. Do not explain. Use only supported command ops from gmInstructions.commandSchema. Use show_dialogue and create_hotspot for environmental discoveries.',
-            'When important story context changes, update worldMemory using set_world_summary, add_memory, or set_quest.',
+            'Resolve the player action. Narrate, roleplay, dialogue, pushback, and any skill/logic checks in the JSON narration field. Use commands only to update the 3D canvas.',
+            'Return valid JSON only: {"narration":"...","commands":[...]}',
+            'Do not use markdown fences. Do not explain outside JSON. Use only supported command ops from payload.gmInstructions.commandSchema.',
+            '',
+            'CANVAS RULES:',
+            '- If nothing physical/stateful changes, commands may be empty or may only set a flag/memory fact.',
+            '- Use create_prop/create_object for visible physical props.',
+            '- Use create_hotspot for interactable target points such as seams, cracks, inscriptions, pressure stones, soft sand, or suspicious water.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for physical map changes such as blocked passages, broken walls, bridges, platforms, filled holes, or opened paths.',
+            '- Use spawn_item/give_item/remove_prop/set_flag/add_memory when inventory or story state changes.',
+            '- Prefer named anchors from payload.worldAnchors instead of raw coordinates.',
             '',
             'PAYLOAD:',
             JSON.stringify(payload, null, 2)
@@ -1450,28 +1515,26 @@
 
     function buildAdventureSeedPrompt() {
         const payload = buildGMPayload();
-        const brief = (document.getElementById('player-action')?.value || '').trim() || 'Create a small, self-contained opening quest for this coastal town. Make it feel discoverable through the 3D world, not like a checklist.';
+        const brief = (document.getElementById('player-action')?.value || '').trim() || 'Create a small, playable scene change or adventure opening for this 3D canvas.';
         return [
-            'You are the GM and scenario designer for OSRS-LLM, a small OSRS-inspired 3D adventure engine.',
+            'You are the GM and scene designer for OSRS-LLM. The chat is the roleplaying table; the HTML game is only a 3D canvas/state board.',
             '',
-            'Create a playable in-world quest setup. Do NOT list options or instructions for the player. Instead, make the adventure exist inside the game world through dialogue, hotspots, objects, items, flags, and memory.',
+            'Create a small playable scene setup. Do not present a menu of options. Narrate the setup in the JSON narration field, then use commands to make the 3D canvas match the new situation.',
             '',
             'Return valid JSON only: {"narration":"...","commands":[...]}',
             'Do not use markdown fences. Do not explain outside JSON.',
             '',
-            'ADVENTURE BRIEF:',
+            'SCENE BRIEF:',
             brief,
             '',
             'DESIGN RULES:',
-            '- Keep the setup small: 3 to 7 commands.',
+            '- Keep the setup small: 3 to 8 commands.',
             '- Use named anchors from payload.worldAnchors instead of raw coordinates whenever possible.',
-            '- Start near the player or at an obvious nearby anchor unless the setup clearly points elsewhere through dialogue or visible world state.',
-            '- Use show_dialogue for the opening moment or an NPC/object line.',
-            '- Use create_hotspot for environmental clues such as seams, pressure stones, inscriptions, soft sand, wall cracks, altar marks, loose floorboards, or strange water.',
-            '- Use create_object only for visible physical props such as chests, scrolls, signs, stones, crates, or orbs.',
-            '- Use update_dialogue when an existing NPC should become part of the setup.',
-            '- Use set_quest and add_memory to preserve the adventure state, but do not rely on the player reading a quest log.',
-            '- Do not solve the quest in the setup. Create a concrete first thing the player can notice and interact with.',
+            '- Use create_prop/create_object for physical visible props.',
+            '- Use create_hotspot for targetable environmental details.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor/set_tile_height for structural changes like opened gaps, barricades, platforms, bridges, or blocked paths.',
+            '- Use set_flag and add_memory for state that matters later.',
+            '- The narration is for the chat, not the game UI. The game canvas should only receive physical/state updates.',
             '',
             'CURRENT GAME PAYLOAD:',
             JSON.stringify(payload, null, 2)
@@ -1991,9 +2054,221 @@
         if (changed) saveGMWorld(true);
     }
 
+
+    function normalizeWallDir(dir) {
+        const raw = String(dir || '').trim().toUpperCase();
+        if (['N', 'S', 'E', 'W'].includes(raw)) return raw;
+        if (raw === 'NORTH') return 'N';
+        if (raw === 'SOUTH') return 'S';
+        if (raw === 'EAST') return 'E';
+        if (raw === 'WEST') return 'W';
+        return 'N';
+    }
+
+    function wallKey(level, x, y, dir) {
+        return `${level},${x},${y},${normalizeWallDir(dir)}`;
+    }
+
+    function removeWallRef(wall, level) {
+        const arr = allWalls[level] || [];
+        const idx = arr.indexOf(wall);
+        if (idx > -1) arr.splice(idx, 1);
+        if (wall.mesh) {
+            levelGroups[level].remove(wall.mesh);
+            disposeObject3D(wall.mesh);
+            wall.mesh = null;
+        }
+    }
+
+    function createGMWall(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `wall_${Date.now()}`;
+        if (gmWalls.some(w => w.id === id)) { if (!cmd.silent) addLogMessage(`Wall already exists: ${id}`); return false; }
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_wall command.'); return false; }
+        const dir = normalizeWallDir(cmd.dir || cmd.side || cmd.facing);
+        if ((allWalls[level] || []).some(w => w.x === x && w.y === y && normalizeWallDir(w.dir) === dir)) {
+            if (!cmd.silent) addLogMessage('A wall already blocks that edge.');
+            return false;
+        }
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Wall';
+        const type = ['white', 'stone', 'wood', 'wall'].includes(cmd.type) ? cmd.type : 'stone';
+        const height = Math.max(0.2, Math.min(4, Number(cmd.height) || 1.6));
+        const color = normalizeMarkerColor(cmd.color || (type === 'wood' ? '#6b4c3a' : '#8a8a8a'));
+        const wall = { x, y, dir, type, color, gmId: id };
+        allWalls[level].push(wall);
+        buildWall(wall, level, height);
+        const saved = { id, name, x, y, level, dir, type, color, height, anchor: placement.anchorId || null, wallRef: wall };
+        gmWalls.push(saved);
+        if (!cmd.silent) {
+            addLogMessage(`Wall created: ${name}.`);
+            recordGMEvent('wall_created', { id, name, x, y, level, dir, anchor: placement.anchorId || null });
+        }
+        return true;
+    }
+
+    function removeGMWall(cmdOrId, silent = false) {
+        const cmd = typeof cmdOrId === 'string' ? { id: cmdOrId } : (cmdOrId || {});
+        let idx = -1;
+        if (typeof cmd.id === 'string') idx = gmWalls.findIndex(w => w.id === cmd.id);
+        let level = (cmd.level ?? currentLevel).toString();
+        let x = Math.round(Number(cmd.x));
+        let y = Math.round(Number(cmd.y));
+        const dir = normalizeWallDir(cmd.dir || cmd.side || cmd.facing);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            const placement = resolveGMPlacement(cmd, currentLevel, 3);
+            level = placement.level;
+            x = placement.x;
+            y = placement.y;
+        }
+        if (idx === -1 && Number.isFinite(x) && Number.isFinite(y)) {
+            idx = gmWalls.findIndex(w => w.level === level && w.x === x && w.y === y && normalizeWallDir(w.dir) === dir);
+        }
+        if (idx > -1) {
+            const wall = gmWalls[idx];
+            removeWallRef(wall.wallRef, wall.level);
+            gmWalls.splice(idx, 1);
+            if (!silent) {
+                addLogMessage(`Wall removed: ${wall.name}.`);
+                recordGMEvent('wall_removed', { id: wall.id, name: wall.name, x: wall.x, y: wall.y, level: wall.level, dir: wall.dir });
+            }
+            return true;
+        }
+
+        if (Number.isFinite(x) && Number.isFinite(y) && LEVELS[level]) {
+            const wall = (allWalls[level] || []).find(w => w.x === x && w.y === y && normalizeWallDir(w.dir) === dir);
+            if (wall) {
+                removeWallRef(wall, level);
+                const key = wallKey(level, x, y, dir);
+                if (!gmRemovedWalls.some(r => r.key === key)) gmRemovedWalls.push({ key, x, y, level, dir, type: wall.type || 'wall' });
+                if (!silent) {
+                    addLogMessage('Base wall segment removed.');
+                    recordGMEvent('base_wall_removed', { x, y, level, dir });
+                }
+                return true;
+            }
+        }
+        if (!silent) addLogMessage('No matching wall found.');
+        return false;
+    }
+
+    function clearGMWalls() {
+        while (gmWalls.length > 0) removeGMWall(gmWalls[0].id, true);
+    }
+
+    function applySavedRemovedWall(saved) {
+        if (!saved) return false;
+        return removeGMWall({ x: saved.x, y: saved.y, level: saved.level, dir: saved.dir }, true);
+    }
+
+    function createGMFloor(cmd) {
+        const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `floor_${Date.now()}`;
+        if (gmFloors.some(f => f.id === id)) { if (!cmd.silent) addLogMessage(`Floor already exists: ${id}`); return false; }
+        const placement = resolveGMPlacement({ ...cmd, adjust: cmd.adjust ?? false }, currentLevel, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_floor command.'); return false; }
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Floor';
+        const colorHex = normalizeMarkerColor(cmd.color || '#8c8578');
+        const color = parseMarkerColor(colorHex);
+        const height = Number.isFinite(Number(cmd.height)) ? Number(cmd.height) : getWalkableHeight(x, y, level);
+        const walkable = cmd.walkable !== false;
+        const key = `${level},${x},${y}`;
+        const hadFloorHeight = Object.prototype.hasOwnProperty.call(floorHeights, key);
+        const oldFloorHeight = floorHeights[key];
+        const wasUnwalkable = !!(unwalkables[level] && unwalkables[level].some(t => t.x === x && t.y === y));
+
+        if (level !== '-1') floorHeights[key] = height;
+        if (walkable && unwalkables[level]) {
+            for (let i = unwalkables[level].length - 1; i >= 0; i--) {
+                if (unwalkables[level][i].x === x && unwalkables[level][i].y === y) unwalkables[level].splice(i, 1);
+            }
+        }
+
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE), new THREE.MeshLambertMaterial({ color, flatShading: true, side: THREE.DoubleSide }));
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(x * TILE_SIZE, height + 0.035, y * TILE_SIZE);
+        mesh.userData = { isGMFloor: true, floorId: id, sourceLevel: level };
+        levelGroups[level].add(mesh);
+        if (walkable) walkables[level].push(mesh);
+        const saved = { id, name, x, y, level, color: colorHex, height, walkable, anchor: placement.anchorId || null, mesh, hadFloorHeight, oldFloorHeight, wasUnwalkable };
+        gmFloors.push(saved);
+        if (!cmd.silent) {
+            addLogMessage(`Floor created: ${name}.`);
+            recordGMEvent('floor_created', { id, name, x, y, level, height, walkable, anchor: placement.anchorId || null });
+        }
+        return true;
+    }
+
+    function removeGMFloor(id, silent = false) {
+        const idx = gmFloors.findIndex(f => f.id === id);
+        if (idx === -1) { if (!silent) addLogMessage(`No floor found: ${id}`); return false; }
+        const floor = gmFloors[idx];
+        levelGroups[floor.level].remove(floor.mesh);
+        const walkIdx = walkables[floor.level].indexOf(floor.mesh);
+        if (walkIdx > -1) walkables[floor.level].splice(walkIdx, 1);
+        disposeObject3D(floor.mesh);
+        const key = `${floor.level},${floor.x},${floor.y}`;
+        if (floor.hadFloorHeight) floorHeights[key] = floor.oldFloorHeight;
+        else delete floorHeights[key];
+        if (floor.wasUnwalkable && unwalkables[floor.level] && !unwalkables[floor.level].some(t => t.x === floor.x && t.y === floor.y)) {
+            unwalkables[floor.level].push({ x: floor.x, y: floor.y });
+        }
+        gmFloors.splice(idx, 1);
+        if (!silent) {
+            addLogMessage(`Floor removed: ${floor.name}.`);
+            recordGMEvent('floor_removed', { id: floor.id, name: floor.name, x: floor.x, y: floor.y, level: floor.level });
+        }
+        return true;
+    }
+
+    function clearGMFloors() {
+        while (gmFloors.length > 0) removeGMFloor(gmFloors[0].id, true);
+    }
+
+    function moveGMObject(cmd) {
+        const id = cmd.id || cmd.objectId || cmd.target;
+        const obj = gmObjects.find(o => o.id === id);
+        if (!obj) { addLogMessage(`No object found: ${id}`); return false; }
+        const placement = resolveGMPlacement({ ...cmd, adjust: cmd.adjust ?? true }, obj.level, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
+        if (!isValidTile(x, y, level)) { addLogMessage('Invalid move_object command.'); return false; }
+        if (obj.level !== level) {
+            levelGroups[obj.level].remove(obj.group);
+            levelGroups[level].add(obj.group);
+            obj.hitBox.userData.sourceLevel = level;
+        }
+        const pos = getGridWorldPos(x, y, level);
+        obj.group.position.set(pos.x, pos.y + 0.02, pos.z);
+        obj.x = x; obj.y = y; obj.level = level; obj.anchor = placement.anchorId || obj.anchor || null;
+        addLogMessage(`Object moved: ${obj.name}.`);
+        recordGMEvent('object_moved', { id: obj.id, name: obj.name, x, y, level, anchor: placement.anchorId || null });
+        return true;
+    }
+
+    function setDoorStateFromGM(cmd) {
+        const level = (cmd.level ?? currentLevel).toString();
+        const x = Math.round(Number(cmd.x));
+        const y = Math.round(Number(cmd.y));
+        const dir = cmd.dir ? normalizeWallDir(cmd.dir) : null;
+        const door = doors.find(d => d.level === level && d.x === x && d.y === y && (!dir || normalizeWallDir(d.dir) === dir));
+        if (!door) { addLogMessage('No matching door found.'); return false; }
+        const shouldOpen = cmd.open !== false && cmd.state !== 'closed' && cmd.state !== 'shut';
+        door.isOpen = shouldOpen;
+        door.group.rotation.y = door.baseRot + (shouldOpen ? Math.PI / 2 : 0);
+        addLogMessage(shouldOpen ? 'Door opened by GM.' : 'Door closed by GM.');
+        recordGMEvent('door_state_set_by_gm', { x, y, level, dir: door.dir, open: shouldOpen });
+        return true;
+    }
+
     function buildGMWorldSave() {
         return {
-            version: 3,
+            version: 5,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
@@ -2037,7 +2312,31 @@
                 removeOnInteract: !!obj.removeOnInteract,
                 used: !!obj.used,
                 anchor: obj.anchor || null
-            }))
+            })),
+            walls: gmWalls.map(wall => ({
+                id: wall.id,
+                name: wall.name,
+                x: wall.x,
+                y: wall.y,
+                level: wall.level,
+                dir: wall.dir,
+                type: wall.type || 'stone',
+                color: wall.color || '#8a8a8a',
+                height: wall.height || 1.6,
+                anchor: wall.anchor || null
+            })),
+            floors: gmFloors.map(floor => ({
+                id: floor.id,
+                name: floor.name,
+                x: floor.x,
+                y: floor.y,
+                level: floor.level,
+                color: floor.color || '#8c8578',
+                height: floor.height,
+                walkable: floor.walkable !== false,
+                anchor: floor.anchor || null
+            })),
+            removedWalls: gmRemovedWalls.map(wall => ({ ...wall }))
         };
     }
 
@@ -2045,7 +2344,7 @@
         syncWorldMemoryFromUI();
         try {
             localStorage.setItem(GM_SAVE_KEY, JSON.stringify(buildGMWorldSave()));
-            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots).`);
+            if (!silent) addLogMessage(`GM world saved (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors).`);
             return true;
         } catch (err) {
             if (!silent) addLogMessage('Could not save GM world in this browser.');
@@ -2072,6 +2371,9 @@
             clearGMMarkers();
             clearGMObjects();
             clearGMHotspots();
+            clearGMWalls();
+            clearGMFloors();
+            gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
@@ -2083,21 +2385,27 @@
                 savedQuests.forEach(quest => setWorldQuest({ ...quest, silent: true }));
                 renderWorldMemoryUI();
             }
+            if (Array.isArray(save.removedWalls)) save.removedWalls.forEach(wall => applySavedRemovedWall(wall));
             if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
             if (Array.isArray(save.hotspots)) save.hotspots.forEach(hotspot => createGMHotspot({ ...hotspot, silent: true }));
             if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
+            if (Array.isArray(save.walls)) save.walls.forEach(wall => createGMWall({ ...wall, silent: true }));
+            if (Array.isArray(save.floors)) save.floors.forEach(floor => createGMFloor({ ...floor, silent: true }));
         } catch (err) {
             try { localStorage.removeItem(GM_SAVE_KEY); } catch (e) {}
             clearGMMarkers();
             clearGMObjects();
             clearGMHotspots();
+            clearGMWalls();
+            clearGMFloors();
+            gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
 
-        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots).`);
+        if (!silent) addLogMessage(`GM world loaded (${gmMarkers.length} markers, ${gmObjects.length} objects, ${gmHotspots.length} hotspots, ${gmWalls.length} walls, ${gmFloors.length} floors).`);
         return true;
     }
 
@@ -2106,6 +2414,9 @@
         clearGMMarkers();
         clearGMObjects();
         clearGMHotspots();
+        clearGMWalls();
+        clearGMFloors();
+        gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
         gmEvents.length = 0;
@@ -2130,8 +2441,8 @@
         catch (err) { addLogMessage('Invalid JSON.'); return; }
 
         if (payload.narration) {
-            addLogMessage(payload.narration);
-            showDialogueMessage('GM', payload.narration);
+            addLogMessage('GM narration received in chat.');
+            recordGMEvent('gm_narration_received', { text: String(payload.narration).slice(0, 500) });
         }
         const commands = Array.isArray(payload) ? payload : payload.commands;
         if (!Array.isArray(commands)) { addLogMessage('No commands array found.'); return; }
@@ -2213,15 +2524,42 @@
                 else addLogMessage('Invalid remove_hotspot command.');
             }
 
-            else if (cmd.op === 'create_object') {
+            else if (cmd.op === 'create_object' || cmd.op === 'create_prop') {
                 if (createGMObject(cmd)) shouldSave = true;
             }
 
-            else if (cmd.op === 'remove_object') {
+            else if (cmd.op === 'move_object' || cmd.op === 'move_prop' || cmd.op === 'set_object_position') {
+                if (moveGMObject(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_object' || cmd.op === 'remove_prop') {
                 if (typeof cmd.id === 'string') {
                     if (removeGMObject(cmd.id)) shouldSave = true;
                 }
                 else addLogMessage('Invalid remove_object command.');
+            }
+
+            else if (cmd.op === 'create_wall' || cmd.op === 'create_barrier') {
+                if (createGMWall(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_wall' || cmd.op === 'remove_barrier' || cmd.op === 'break_wall') {
+                if (removeGMWall(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'create_floor' || cmd.op === 'create_bridge' || cmd.op === 'set_tile_floor' || cmd.op === 'set_tile_height') {
+                if (createGMFloor(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'remove_floor' || cmd.op === 'remove_bridge') {
+                if (typeof cmd.id === 'string') {
+                    if (removeGMFloor(cmd.id)) shouldSave = true;
+                }
+                else addLogMessage('Invalid remove_floor command.');
+            }
+
+            else if (cmd.op === 'set_door_state') {
+                if (setDoorStateFromGM(cmd)) shouldSave = true;
             }
 
             else if (cmd.op === 'set_world_summary' || cmd.op === 'set_summary') {
