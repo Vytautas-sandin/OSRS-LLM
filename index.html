@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- OSRS LLM TARGETED ACTIONS V1.2 BUILD - adds inventory item use on GM objects/hotspots and target-aware GM payloads -->
+<!-- OSRS LLM SEMANTIC PLACEMENT V1.3 BUILD - adds named world anchors and safer near-location placement -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Retro Coastal Town 3D · Targeted Actions v1.2</title>
+    <title>Retro Coastal Town 3D · Semantic Placement v1.3</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; user-select: none; }
         canvas { display: block; image-rendering: pixelated; }
@@ -108,7 +108,7 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · Targeted Actions v1.2</div>
+        <div id="dev-panel-title">LLM / GM Panel · Semantic Placement v1.3</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -142,7 +142,7 @@
     </div>
 
 <script>
-    // OSRS LLM TARGETED ACTIONS V1.2 BUILD
+    // OSRS LLM SEMANTIC PLACEMENT V1.3 BUILD
     // --- 1. ENGINE CONFIGURATION & CONSTANTS ---
     const TILE_SIZE = 1;
     const GRID_SIZE = 40; 
@@ -155,6 +155,27 @@
     };
 
     let currentLevel = '0'; 
+
+
+    // Named places let the LLM place content using world language instead of raw coordinates.
+    // Example: { op:"create_hotspot", near:"temple_entrance", surface:"wall", ... }
+    const WORLD_ANCHORS = {
+        player_nearby: { id: 'player_nearby', name: 'Near the player', level: '0', x: null, y: null, radius: 3, note: 'Use this when the new thing should appear close to the current player position.' },
+        town_square: { id: 'town_square', name: 'Town square', level: '0', x: 14, y: 14, radius: 4, note: 'The main paved area near the starting position.' },
+        main_road: { id: 'main_road', name: 'Main road', level: '0', x: 18, y: 13, radius: 6, note: 'The long paved road through the coastal town.' },
+        temple_entrance: { id: 'temple_entrance', name: 'Temple entrance', level: '0', x: 15, y: 18, radius: 3, note: 'The southern entrance to the sea temple.' },
+        temple_interior: { id: 'temple_interior', name: 'Temple interior', level: '0', x: 15, y: 22, radius: 4, note: 'Inside the sea temple, near Sage.' },
+        sage: { id: 'sage', name: 'Sage', level: '0', x: 15, y: 22, radius: 2, note: 'The temple sage NPC.' },
+        bob_house: { id: 'bob_house', name: "Bob's house", level: '0', x: 11, y: 8, radius: 3, note: 'The house with the cellar trapdoor.' },
+        bob_cellar: { id: 'bob_cellar', name: "Bob's cellar", level: '-1', x: 10, y: 8, radius: 1, note: 'The small hidden cellar beneath Bob\'s house.' },
+        alice_house: { id: 'alice_house', name: "Alice's house", level: '0', x: 27, y: 8, radius: 3, note: 'Alice\'s white-clay house.' },
+        charlie_house: { id: 'charlie_house', name: "Charlie's house", level: '0', x: 27, y: 18, radius: 3, note: 'Charlie\'s house south-east of town.' },
+        west_beach: { id: 'west_beach', name: 'West beach', level: '0', x: 5, y: 20, radius: 5, note: 'The beach and shoreline west of town.' },
+        rowboat_dock: { id: 'rowboat_dock', name: 'Rowboat dock', level: '0', x: 5, y: 20, radius: 3, note: 'The boat that travels to the island.' },
+        island_landing: { id: 'island_landing', name: 'Island landing', level: '2', x: 15, y: 20, radius: 3, note: 'The island boat landing.' },
+        island_center: { id: 'island_center', name: 'Island center', level: '2', x: 20, y: 20, radius: 4, note: 'The small palm-covered island.' },
+        eastern_hills: { id: 'eastern_hills', name: 'Eastern hills', level: '0', x: 33, y: 16, radius: 5, note: 'The raised hills east of town.' }
+    };
 
     // --- 2. THREE.JS SETUP ---
     const scene = new THREE.Scene();
@@ -1165,7 +1186,8 @@
                 name: marker.name,
                 x: marker.x,
                 y: marker.y,
-                note: marker.note
+                note: marker.note,
+                anchor: marker.anchor || null
             }));
     }
 
@@ -1180,7 +1202,8 @@
                 y: obj.y,
                 shape: obj.shape,
                 note: obj.note,
-                used: !!obj.used
+                used: !!obj.used,
+                anchor: obj.anchor || null
             }));
     }
 
@@ -1196,7 +1219,8 @@
                 surface: hotspot.surface,
                 note: hotspot.note,
                 visible: hotspot.visible !== false,
-                used: !!hotspot.used
+                used: !!hotspot.used,
+                anchor: hotspot.anchor || null
             }));
     }
 
@@ -1224,23 +1248,7 @@
     }
 
     function findNearbyFreeTile(level = currentLevel, maxRadius = 3) {
-        const originX = playerGridX;
-        const originY = playerGridY;
-        for (let r = 0; r <= maxRadius; r++) {
-            for (let dx = -r; dx <= r; dx++) {
-                for (let dy = -r; dy <= r; dy++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-                    const x = originX + dx;
-                    const y = originY + dy;
-                    if (!isValidTile(x, y, level)) continue;
-                    if (gmObjects.some(obj => obj.level === level && obj.x === x && obj.y === y)) continue;
-                    if (gmMarkers.some(marker => marker.level === level && marker.x === x && marker.y === y)) continue;
-                    if (gmHotspots.some(hotspot => hotspot.level === level && hotspot.x === x && hotspot.y === y)) continue;
-                    return { x, y };
-                }
-            }
-        }
-        return { x: originX, y: originY };
+        return findNearbyFreeTileFrom(playerGridX, playerGridY, level, maxRadius, false);
     }
 
     function lookAround() {
@@ -1307,21 +1315,22 @@
                 'Resolve the playerAction.raw fairly. If it includes a target or usedItem, treat it as a concrete in-world action.',
                 'Use a few meaningful commands rather than many tiny ones.',
                 'Prefer changing the world through diegetic objects, hotspots, dialogue, items, flags, and memory.',
+                'Prefer near/world anchor placement over raw x/y coordinates. Use anchors from payload.worldAnchors, such as temple_entrance or west_beach.',
                 'Keep names and ids stable. Use lowercase snake_case ids.'
             ],
             commandSchema: {
                 add_log: { text: 'string' },
                 set_flag: { key: 'string', value: 'boolean | string | number' },
                 give_item: { type: 'berries | shell | rod | fish | shovel' },
-                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
+                spawn_item: { type: 'berries | shell | rod | fish | shovel', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id such as temple_entrance, west_beach, rowboat_dock, island_center, bob_house', radius: 'optional search radius around near' },
                 move_player: { x: 'integer', y: 'integer', level: '-1 | 0 | 2' },
                 update_dialogue: { id: 'npc dialogue id', lines: [{ speaker: 'string', text: 'string' }] },
                 show_dialogue: { speaker: 'string', text: 'string; diegetic narration or object feedback shown in the dialogue UI' },
-                create_marker: { id: 'string', name: 'string', note: 'string', x: 'integer', y: 'integer', level: '-1 | 0 | 2', color: '#rrggbb' },
+                create_marker: { id: 'string', name: 'string', note: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id such as temple_entrance, west_beach, rowboat_dock, island_center, bob_house', radius: 'optional search radius around near', color: '#rrggbb' },
                 remove_marker: { id: 'string' },
-                create_hotspot: { id: 'string', name: 'string', note: 'string', surface: 'floor | wall | altar | sand | water | door', x: 'optional integer; omit with nearPlayer:true to auto-place near the player', y: 'optional integer; omit with nearPlayer:true to auto-place near the player', level: '-1 | 0 | 2', nearPlayer: 'optional boolean', visible: 'optional boolean; false creates an invisible tap area', color: '#rrggbb', setFlag: 'optional {key,value}', giveItem: 'optional item type', removeOnInteract: 'optional boolean' },
+                create_hotspot: { id: 'string', name: 'string', note: 'string', surface: 'floor | wall | altar | sand | water | door', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id; prefer anchors over raw coordinates', nearPlayer: 'optional boolean', radius: 'optional search radius around near', visible: 'optional boolean; false creates an invisible tap area', color: '#rrggbb', setFlag: 'optional {key,value}', giveItem: 'optional item type', removeOnInteract: 'optional boolean' },
                 remove_hotspot: { id: 'string' },
-                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer; omit with nearPlayer:true to auto-place near the player', y: 'optional integer; omit with nearPlayer:true to auto-place near the player', level: '-1 | 0 | 2', nearPlayer: 'optional boolean', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
+                create_object: { id: 'string', name: 'string', note: 'string', shape: 'crate | stone | orb | scroll | sign | chest', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id; prefer anchors over raw coordinates', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb', giveItem: 'optional item type', setFlag: 'optional {key,value}', removeOnInteract: 'optional boolean' },
                 remove_object: { id: 'string' },
                 set_world_summary: { summary: 'short string' },
                 add_memory: { text: 'important persistent fact string' },
@@ -1334,7 +1343,7 @@
                 commands: [
                     { op: 'show_dialogue', speaker: 'Temple Wall', text: 'A narrow seam in the wall clicks beneath your fingers.' },
                     { op: 'set_flag', key: 'found_temple_seam', value: true },
-                    { op: 'create_hotspot', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', surface: 'wall', x: 15, y: 18, level: '0', color: '#9a9a8a' },
+                    { op: 'create_hotspot', id: 'temple_seam_01', name: 'Hidden Stone Seam', note: 'A narrow seam in the wall. It may respond to another mechanism.', surface: 'wall', near: 'temple_entrance', color: '#9a9a8a' },
                     { op: 'add_memory', text: 'The player found a hidden stone seam near the temple entrance.' }
                 ]
             }
@@ -1347,7 +1356,7 @@
         return {
             engine: 'OSRS-LLM',
             protocol: 'gm_payload_v0',
-            build: 'targeted_actions_v1_2',
+            build: 'semantic_placement_v1_3',
             player: {
                 level: currentLevel,
                 tile: { x: playerGridX, y: playerGridY },
@@ -1371,6 +1380,7 @@
             lastTarget: getLastInteractionTarget(),
             flags: worldFlags,
             worldMemory: memorySnapshot,
+            worldAnchors: getWorldAnchorList(),
             gmInstructions: buildGMInstructions(),
             gmSave: {
                 hasSavedWorld: hasSavedGMWorld(),
@@ -1386,7 +1396,7 @@
                 events: getEventsSinceLastGM()
             },
             recentLog: getRecentLogLines(),
-            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. Update worldMemory when story facts or quest state change.'
+            request: 'Act as GM. Resolve playerAction.raw using nearby context, lastTarget, playerAction.target, selectedUseItem, flags, worldMemory, worldAnchors, and eventDelta. Return JSON only. Follow gmInstructions.commandSchema. Use create_hotspot for environmental details such as pressure stones, cracks, loose boards, inscriptions, sand patches, and wall mechanisms. Use show_dialogue for diegetic feedback. If playerAction.target and usedItem/proposedAction are present, resolve that targeted action. Update worldMemory when story facts or quest state change.'
         };
     }
 
@@ -1440,6 +1450,98 @@
         return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && LEVELS[level];
     }
 
+
+    function normalizeAnchorId(value) {
+        if (typeof value !== 'string') return null;
+        const raw = value.trim().toLowerCase();
+        if (!raw) return null;
+        const key = raw.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (WORLD_ANCHORS[key]) return key;
+        const compact = key.replace(/_/g, '');
+        return Object.keys(WORLD_ANCHORS).find(id => id.replace(/_/g, '') === compact) || null;
+    }
+
+    function getWorldAnchorList() {
+        return Object.values(WORLD_ANCHORS).map(anchor => ({
+            id: anchor.id,
+            name: anchor.name,
+            level: anchor.id === 'player_nearby' ? currentLevel : anchor.level,
+            x: anchor.id === 'player_nearby' ? playerGridX : anchor.x,
+            y: anchor.id === 'player_nearby' ? playerGridY : anchor.y,
+            radius: anchor.radius,
+            note: anchor.note
+        }));
+    }
+
+    function isTileOccupiedByGM(x, y, level) {
+        return gmObjects.some(obj => obj.level === level && obj.x === x && obj.y === y)
+            || gmMarkers.some(marker => marker.level === level && marker.x === x && marker.y === y)
+            || gmHotspots.some(hotspot => hotspot.level === level && hotspot.x === x && hotspot.y === y);
+    }
+
+    function isTilePlaceableForGM(x, y, level, allowOccupied = false) {
+        if (!isValidTile(x, y, level)) return false;
+        if (level === '-1' && (x < 9 || x > 11 || y < 7 || y > 9)) return false;
+        if (unwalkables[level] && unwalkables[level].some(t => t.x === x && t.y === y)) return false;
+        if (!allowOccupied && isTileOccupiedByGM(x, y, level)) return false;
+        return true;
+    }
+
+    function findNearbyFreeTileFrom(originX, originY, level = currentLevel, maxRadius = 3, allowOccupied = false) {
+        const ox = Math.round(Number(originX));
+        const oy = Math.round(Number(originY));
+        const radius = Math.max(0, Math.round(Number(maxRadius) || 0));
+        if (!Number.isFinite(ox) || !Number.isFinite(oy)) return { x: playerGridX, y: playerGridY };
+        for (let r = 0; r <= radius; r++) {
+            for (let dx = -r; dx <= r; dx++) {
+                for (let dy = -r; dy <= r; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                    const x = ox + dx;
+                    const y = oy + dy;
+                    if (isTilePlaceableForGM(x, y, level, allowOccupied)) return { x, y };
+                }
+            }
+        }
+        return { x: ox, y: oy };
+    }
+
+    function resolveGMPlacement(cmd, fallbackLevel = currentLevel, defaultRadius = 3) {
+        const anchorId = normalizeAnchorId(cmd.near || cmd.anchor || cmd.location || cmd.place);
+        const anchor = anchorId ? WORLD_ANCHORS[anchorId] : null;
+        const anchorIsPlayer = anchorId === 'player_nearby';
+        const anchorX = anchorIsPlayer ? playerGridX : (anchor ? anchor.x : playerGridX);
+        const anchorY = anchorIsPlayer ? playerGridY : (anchor ? anchor.y : playerGridY);
+        const anchorLevel = anchorIsPlayer ? currentLevel : (anchor ? anchor.level : fallbackLevel);
+        const level = (cmd.level ?? anchorLevel ?? fallbackLevel).toString();
+        let x = Math.round(Number(cmd.x));
+        let y = Math.round(Number(cmd.y));
+        const hasExplicitXY = Number.isFinite(x) && Number.isFinite(y);
+        const wantsAuto = cmd.nearPlayer === true || cmd.place === 'near_player' || cmd.place === 'player_nearby' || (!!anchor && !hasExplicitXY);
+
+        if (!hasExplicitXY || wantsAuto) {
+            const radius = Math.round(Number(cmd.radius ?? anchor?.radius ?? defaultRadius));
+            const tile = findNearbyFreeTileFrom(anchorX, anchorY, level, radius || defaultRadius, false);
+            x = tile.x;
+            y = tile.y;
+        }
+
+        if (!isTilePlaceableForGM(x, y, level, false) && cmd.adjust !== false) {
+            const tile = findNearbyFreeTileFrom(x, y, level, Math.max(2, Math.round(Number(cmd.radius ?? defaultRadius))), false);
+            x = tile.x;
+            y = tile.y;
+        }
+
+        return {
+            x,
+            y,
+            level,
+            anchorId,
+            anchorName: anchor ? anchor.name : null,
+            usedAnchor: !!anchor,
+            valid: isValidTile(x, y, level)
+        };
+    }
+
     function giveInventoryItem(type) {
         if (!ITEM_DEFS[type]) { addLogMessage(`Unknown item: ${type}`); return false; }
         const emptySlot = inventory.findIndex(i => i === null);
@@ -1476,9 +1578,10 @@
         const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `marker_${Date.now()}`;
         if (gmMarkers.some(marker => marker.id === id)) { if (!cmd.silent) addLogMessage(`Marker already exists: ${id}`); return false; }
 
-        const level = (cmd.level ?? currentLevel).toString();
-        const x = Math.round(Number(cmd.x));
-        const y = Math.round(Number(cmd.y));
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        const x = placement.x;
+        const y = placement.y;
         if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_marker command.'); return false; }
 
         const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Marker';
@@ -1510,7 +1613,7 @@
         group.userData = { markerId: id };
         levelGroups[level].add(group);
         interactables.push(hitBox);
-        gmMarkers.push({ id, name, note, x, y, level, color: colorHex, group, hitBox });
+        gmMarkers.push({ id, name, note, x, y, level, color: colorHex, anchor: placement.anchorId || null, group, hitBox });
         if (!cmd.silent) {
             addLogMessage(`Marker placed: ${name}.`);
             recordGMEvent('marker_created', { id, name, x, y, level, note });
@@ -1587,14 +1690,10 @@
         const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `hotspot_${Date.now()}`;
         if (gmHotspots.some(h => h.id === id)) { if (!cmd.silent) addLogMessage(`Hotspot already exists: ${id}`); return false; }
 
-        const level = (cmd.level ?? currentLevel).toString();
-        let x = Math.round(Number(cmd.x));
-        let y = Math.round(Number(cmd.y));
-        if (!Number.isFinite(x) || !Number.isFinite(y) || cmd.nearPlayer === true || cmd.place === 'near_player') {
-            const tile = findNearbyFreeTile(level, 3);
-            x = tile.x;
-            y = tile.y;
-        }
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        let x = placement.x;
+        let y = placement.y;
         if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_hotspot command.'); return false; }
 
         const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'Interesting Spot';
@@ -1623,13 +1722,13 @@
 
         gmHotspots.push({
             id, name, note, x, y, level, surface, visible,
-            color: colorHex, giveItem, setFlag, removeOnInteract: !!cmd.removeOnInteract, used: !!cmd.used,
+            color: colorHex, anchor: placement.anchorId || null, giveItem, setFlag, removeOnInteract: !!cmd.removeOnInteract, used: !!cmd.used,
             group, hitBox
         });
 
         if (!cmd.silent) {
             addLogMessage(`Hotspot created: ${name}.`);
-            recordGMEvent('hotspot_created', { id, name, surface, x, y, level, note, visible });
+            recordGMEvent('hotspot_created', { id, name, surface, x, y, level, note, visible, anchor: placement.anchorId || null, direction: formatDistanceDirection(x, y, level) });
         }
         return true;
     }
@@ -1747,14 +1846,10 @@
         const id = typeof cmd.id === 'string' && cmd.id.trim() ? cmd.id.trim() : `object_${Date.now()}`;
         if (gmObjects.some(obj => obj.id === id)) { if (!cmd.silent) addLogMessage(`Object already exists: ${id}`); return false; }
 
-        const level = (cmd.level ?? currentLevel).toString();
-        let x = Math.round(Number(cmd.x));
-        let y = Math.round(Number(cmd.y));
-        if (!Number.isFinite(x) || !Number.isFinite(y) || cmd.nearPlayer === true || cmd.place === 'near_player') {
-            const tile = findNearbyFreeTile(level, 3);
-            x = tile.x;
-            y = tile.y;
-        }
+        const placement = resolveGMPlacement(cmd, currentLevel, 3);
+        const level = placement.level;
+        let x = placement.x;
+        let y = placement.y;
         if (!isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid create_object command.'); return false; }
 
         const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : 'GM Object';
@@ -1784,6 +1879,7 @@
         gmObjects.push({
             id, name, note, x, y, level,
             color: colorHex,
+            anchor: placement.anchorId || null,
             shape: visual.shape,
             giveItem,
             setFlag,
@@ -1795,7 +1891,7 @@
 
         if (!cmd.silent) {
             addLogMessage(`Object created: ${name} (${formatDistanceDirection(x, y, level)}).`);
-            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note, direction: formatDistanceDirection(x, y, level) });
+            recordGMEvent('object_created', { id, name, shape: visual.shape, x, y, level, note, anchor: placement.anchorId || null, direction: formatDistanceDirection(x, y, level) });
         }
         return true;
     }
@@ -1868,7 +1964,8 @@
                 x: marker.x,
                 y: marker.y,
                 level: marker.level,
-                color: marker.color || '#ffd34d'
+                color: marker.color || '#ffd34d',
+                anchor: marker.anchor || null
             })),
             hotspots: gmHotspots.map(hotspot => ({
                 id: hotspot.id,
@@ -2030,13 +2127,14 @@
             }
 
             else if (cmd.op === 'spawn_item') {
-                const level = (cmd.level ?? currentLevel).toString();
-                const x = Math.round(Number(cmd.x));
-                const y = Math.round(Number(cmd.y));
+                const placement = resolveGMPlacement(cmd, currentLevel, 3);
+                const level = placement.level;
+                const x = placement.x;
+                const y = placement.y;
                 if (ITEM_DEFS[cmd.type] && isValidTile(x, y, level)) {
                     spawnGroundItem(cmd.type, x, y, level);
                     addLogMessage(`Something appears nearby: ${ITEM_DEFS[cmd.type].name}.`);
-                    recordGMEvent('item_spawned_by_gm', { type: cmd.type, name: ITEM_DEFS[cmd.type].name, x, y, level });
+                    recordGMEvent('item_spawned_by_gm', { type: cmd.type, name: ITEM_DEFS[cmd.type].name, x, y, level, anchor: placement.anchorId || null });
                 } else addLogMessage('Invalid spawn_item command.');
             }
 
