@@ -164,6 +164,95 @@
 
     let currentLevel = '0'; 
 
+    // --- 1B. CANONICAL GAME ACTION PROTOCOL ---
+    // GameAction is the planned common interface between deterministic UI actions
+    // and improvised actions that may later be resolved by an AI GM. Nothing routes
+    // or executes these actions yet; the existing gameplay paths remain authoritative.
+    const GAME_ACTION_SOURCES = new Set(['ui', 'text', 'system']);
+    const GAME_ACTION_ROUTING_MODES = new Set(['local', 'gm', 'hybrid', 'unknown']);
+
+    function normalizeGameActionId(value) {
+        if (value === null || value === undefined) return null;
+        const normalized = String(value).trim();
+        return normalized || null;
+    }
+
+    function normalizeGameAction(input = {}) {
+        const source = normalizeGameActionId(input.source)?.toLowerCase() || 'system';
+        const verb = normalizeGameActionId(input.verb)?.toLowerCase().replace(/[\s-]+/g, '_') || 'unknown';
+        const routingInput = input.routing && typeof input.routing === 'object' && !Array.isArray(input.routing)
+            ? input.routing
+            : {};
+        const routingMode = normalizeGameActionId(routingInput.mode)?.toLowerCase() || 'unknown';
+        const parameters = input.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters)
+            ? { ...input.parameters }
+            : {};
+
+        return {
+            id: normalizeGameActionId(input.id),
+            source,
+            actorId: normalizeGameActionId(input.actorId) || 'player',
+            verb,
+            targetId: normalizeGameActionId(input.targetId),
+            toolId: normalizeGameActionId(input.toolId),
+            intent: normalizeGameActionId(input.intent),
+            parameters,
+            routing: {
+                mode: routingMode,
+                reason: normalizeGameActionId(routingInput.reason)
+            },
+            createdAt: normalizeGameActionId(input.createdAt)
+        };
+    }
+
+    function createGameAction(input = {}, createdAt = new Date().toISOString()) {
+        const timestamp = normalizeGameActionId(input.createdAt) || String(createdAt);
+        const normalized = normalizeGameAction({ ...input, createdAt: timestamp });
+        if (!normalized.id) {
+            const timestampId = timestamp.replace(/[^0-9a-z]/gi, '').toLowerCase() || 'undated';
+            const targetPart = normalized.targetId ? `_${normalized.targetId.replace(/[^0-9a-z_-]/gi, '_')}` : '';
+            normalized.id = `action_${normalized.verb}${targetPart}_${timestampId}`;
+        }
+        return normalized;
+    }
+
+    function validateGameAction(input) {
+        const errors = [];
+        const warnings = [];
+        const isObject = !!input && typeof input === 'object' && !Array.isArray(input);
+        const action = normalizeGameAction(isObject ? input : {});
+
+        if (!isObject) errors.push('Action must be a plain object.');
+        if (!action.id) errors.push('Action id is required.');
+        if (!GAME_ACTION_SOURCES.has(action.source)) errors.push(`Unsupported action source: ${action.source}.`);
+        if (!action.actorId) errors.push('Action actorId is required.');
+        if (!action.verb || action.verb === 'unknown') errors.push('Action verb is required.');
+        if (isObject && input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters))) {
+            errors.push('Action parameters must be an object.');
+        }
+        if (isObject && input.routing !== undefined && (!input.routing || typeof input.routing !== 'object' || Array.isArray(input.routing))) {
+            errors.push('Action routing must be an object.');
+        }
+        if (!GAME_ACTION_ROUTING_MODES.has(action.routing.mode)) errors.push(`Unsupported routing mode: ${action.routing.mode}.`);
+        if (!action.createdAt || Number.isNaN(Date.parse(action.createdAt))) errors.push('Action createdAt must be a valid date string.');
+        if (action.source === 'text' && !action.intent) warnings.push('Text actions should normally include free-text intent.');
+        if (action.routing.mode === 'unknown') warnings.push('Action routing has not been decided yet.');
+
+        return { valid: errors.length === 0, errors, warnings, action };
+    }
+
+    // Developer-console diagnostic only. These examples are deliberately not routed
+    // or executed, so invoking this function cannot change the game world.
+    function runGameActionProtocolSelfTest() {
+        const createdAt = '2026-01-01T00:00:00.000Z';
+        const examples = [
+            createGameAction({ id: 'example_pickup_shell', source: 'ui', actorId: 'player', verb: 'pickup', targetId: 'base_shell_01', routing: { mode: 'local', reason: 'Existing deterministic pickup.' } }, createdAt),
+            createGameAction({ id: 'example_open_door', source: 'ui', actorId: 'player', verb: 'open', targetId: 'door:0:11:10:S', routing: { mode: 'local', reason: 'Existing deterministic door interaction.' } }, createdAt),
+            createGameAction({ id: 'example_improvise_door', source: 'text', actorId: 'player', verb: 'improvise', targetId: 'door:0:11:10:S', toolId: 'base_shovel_01', intent: 'I wedge the shovel into the crack and try to lever the door open.', routing: { mode: 'gm', reason: 'Improvised physical action requires GM resolution.' } }, createdAt)
+        ];
+        return examples.map(action => validateGameAction(action));
+    }
+
 
     // Named places let the LLM place content using world language instead of raw coordinates.
     // Example: { op:"create_hotspot", near:"temple_entrance", surface:"wall", ... }
@@ -1509,6 +1598,1489 @@
             }))
             .filter(entity => entity.dist <= radius)
             .sort((a, b) => a.dist - b.dist || String(a.kind).localeCompare(String(b.kind)));
+    }
+
+    // --- 5C. ACTION CONTEXT V1 ---
+    // ActionContext is a compact, renderer-independent resolution packet. It adapts
+    // the current legacy world stores without mutating them and deliberately excludes
+    // meshes, DOM nodes, materials, functions, and the global canvas-entity dump.
+    const ACTION_CONTEXT_PROTOCOL = 'action_context_v1';
+    const ACTION_CONTEXT_NEARBY_RADIUS = 8;
+    const ACTION_CONTEXT_EVENT_LIMIT = 20;
+
+    function copyActionContextValue(value, seen = new WeakSet(), depth = 0) {
+        if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+        if (value === undefined || typeof value === 'function' || typeof value === 'symbol' || depth > 8) return null;
+        if (typeof value !== 'object') return String(value);
+        if (seen.has(value)) return null;
+        const prototype = Object.getPrototypeOf(value);
+        if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return null;
+        seen.add(value);
+        const copy = Array.isArray(value)
+            ? value.map(item => copyActionContextValue(item, seen, depth + 1))
+            : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyActionContextValue(item, seen, depth + 1)]));
+        seen.delete(value);
+        return copy;
+    }
+
+    function makeLegacyDoorActionId(door) {
+        if (!door) return null;
+        return `door:${door.level}:${door.x}:${door.y}:${String(door.dir || '').toUpperCase()}`;
+    }
+
+    function makeWaterActionId(level, x, y) {
+        const normalizedLevel = normalizeGameActionId(level);
+        const tileX = Math.round(Number(x));
+        const tileY = Math.round(Number(y));
+        return normalizedLevel && Number.isFinite(tileX) && Number.isFinite(tileY)
+            ? `water:${normalizedLevel}:${tileX}:${tileY}`
+            : null;
+    }
+
+    function resolveWaterActionReference(id) {
+        const match = /^water:([^:]+):(-?\d+):(-?\d+)$/.exec(normalizeGameActionId(id) || '');
+        if (!match) return null;
+        const level = match[1];
+        const x = Number(match[2]);
+        const y = Number(match[3]);
+        const waterHeight = -0.2;
+        if (!isValidTile(x, y, level)
+            || !waterMeshes.some(mesh => mesh.userData?.sourceLevel === level)
+            || getWalkableHeight(x, y, level) > waterHeight) return null;
+        return {
+            id: makeWaterActionId(level, x, y),
+            kind: 'water',
+            name: 'Fishing Water',
+            level,
+            tile: { x, y },
+            state: {},
+            blocking: true,
+            metadata: { compatibilityId: true, waterHeight }
+        };
+    }
+
+    function getLegacyDoorActionSnapshot(door) {
+        const id = makeLegacyDoorActionId(door);
+        if (!id) return null;
+        return {
+            id,
+            kind: 'door',
+            name: 'Door',
+            level: door.level,
+            tile: { x: door.x, y: door.y },
+            state: { open: !!door.isOpen, ...copyActionContextValue(door.state || {}) },
+            blocking: !door.isOpen,
+            metadata: { direction: door.dir, compatibilityId: true }
+        };
+    }
+
+    function toActionContextEntity(snapshot) {
+        if (!snapshot) return null;
+        const reserved = new Set(['id', 'kind', 'name', 'level', 'x', 'y', 'gridX', 'gridY', 'state', 'blocksMovement', 'walkable']);
+        const metadata = {};
+        Object.entries(snapshot).forEach(([key, value]) => {
+            if (!reserved.has(key)) metadata[key] = value;
+        });
+        return copyActionContextValue({
+            id: snapshot.id || null,
+            kind: snapshot.kind || 'entity',
+            name: snapshot.name || snapshot.id || snapshot.kind || 'Entity',
+            level: snapshot.level ?? null,
+            tile: Number.isFinite(Number(snapshot.x ?? snapshot.gridX)) && Number.isFinite(Number(snapshot.y ?? snapshot.gridY))
+                ? { x: Number(snapshot.x ?? snapshot.gridX), y: Number(snapshot.y ?? snapshot.gridY) }
+                : null,
+            state: snapshot.state && typeof snapshot.state === 'object' ? snapshot.state : {},
+            blocking: snapshot.blocksMovement !== undefined
+                ? !!snapshot.blocksMovement
+                : (snapshot.walkable !== undefined ? !snapshot.walkable : null),
+            metadata
+        });
+    }
+
+    // Compatibility adapter: dynamic entities retain their stable IDs, while legacy
+    // base doors use deterministic door:<level>:<x>:<y>:<dir> references until a
+    // future canonical world-state model gives every base entity a native ID.
+    function resolveActionEntityReference(id) {
+        const referenceId = normalizeGameActionId(id);
+        if (!referenceId) return null;
+
+        const water = resolveWaterActionReference(referenceId);
+        if (water) return water;
+
+        const canvasEntity = getAllCanvasEntities().find(entity => entity.id === referenceId || entity.itemId === referenceId);
+        if (canvasEntity) {
+            if (canvasEntity.kind === 'item') {
+                return toActionContextEntity({
+                    ...canvasEntity,
+                    id: referenceId,
+                    groundItemId: canvasEntity.id,
+                    metadataLocation: 'ground'
+                });
+            }
+            return toActionContextEntity(canvasEntity);
+        }
+
+        const inventoryItem = getInventorySnapshot().find(item => item.id === referenceId);
+        if (inventoryItem) return toActionContextEntity({
+            ...inventoryItem,
+            kind: 'item',
+            metadataLocation: 'inventory'
+        });
+
+        const npc = npcs.find(entity => entity.id === referenceId);
+        if (npc) return toActionContextEntity(getCanvasEntitySnapshot('npc', npc));
+
+        const door = doors.find(entity => makeLegacyDoorActionId(entity) === referenceId);
+        if (door) return getLegacyDoorActionSnapshot(door);
+
+        return null;
+    }
+
+    function resolveActionToolReference(id) {
+        const referenceId = normalizeGameActionId(id);
+        if (!referenceId) return null;
+        const inventoryItem = getInventorySnapshot().find(item => item.id === referenceId || item.type === referenceId || item.baseType === referenceId);
+        const worldItem = getGroundItemEntitySnapshots().find(item => item.id === referenceId || item.itemId === referenceId || item.type === referenceId);
+        const item = inventoryItem || worldItem;
+        if (!item) return null;
+        return copyActionContextValue({
+            id: item.id || item.itemId,
+            type: item.type || item.baseType || 'item',
+            name: item.name || item.id || item.itemId,
+            state: item.state || {},
+            metadata: {
+                location: inventoryItem ? 'inventory' : 'world',
+                itemId: item.itemId || item.id,
+                tags: item.tags || [],
+                description: item.description || '',
+                level: item.level ?? null,
+                tile: Number.isFinite(Number(item.x)) && Number.isFinite(Number(item.y)) ? { x: Number(item.x), y: Number(item.y) } : null
+            }
+        });
+    }
+
+    function getNearbyActionContextEntities(radius = ACTION_CONTEXT_NEARBY_RADIUS) {
+        const dynamic = getNearbyCanvasEntities(radius).map(toActionContextEntity);
+        const nearbyNPCs = getNearbyNPCs(radius).map(npc => toActionContextEntity({ ...npc, kind: 'npc', level: currentLevel }));
+        const nearbyDoors = doors
+            .filter(door => door.level === currentLevel && distanceToPlayerTile(door.x, door.y, door.level) <= radius)
+            .map(getLegacyDoorActionSnapshot);
+        const deduplicated = new Map();
+        [...dynamic, ...nearbyNPCs, ...nearbyDoors].filter(Boolean).forEach(entity => {
+            deduplicated.set(`${entity.kind}:${entity.id}`, entity);
+        });
+        return Array.from(deduplicated.values());
+    }
+
+    function getRelevantActionAnchors(action, target) {
+        const levels = new Set([currentLevel, target?.level].filter(level => level !== null && level !== undefined).map(String));
+        const requestedAnchor = normalizeAnchorId(action.parameters?.near || action.parameters?.anchor || action.parameters?.location);
+        return getWorldAnchorList()
+            .filter(anchor => levels.has(String(anchor.level)) || anchor.id === requestedAnchor)
+            .map(anchor => copyActionContextValue(anchor));
+    }
+
+    function buildActionContext(gameAction) {
+        const actionValidation = validateGameAction(gameAction);
+        const action = copyActionContextValue(actionValidation.action);
+        const target = resolveActionEntityReference(action.targetId);
+        const tool = resolveActionToolReference(action.toolId);
+        const memory = serializeWorldMemory();
+        return {
+            protocol: ACTION_CONTEXT_PROTOCOL,
+            action,
+            actor: {
+                id: action.actorId,
+                level: currentLevel,
+                tile: { x: playerGridX, y: playerGridY },
+                inventory: copyActionContextValue(getInventoryCompactSnapshot()),
+                activeTool,
+                selectedUseItem: copyActionContextValue(getSelectedUseItemSnapshot())
+            },
+            target,
+            tool,
+            nearby: { entities: getNearbyActionContextEntities() },
+            relevantState: {
+                flags: copyActionContextValue(worldFlags),
+                memory: copyActionContextValue(memory),
+                recentEvents: copyActionContextValue(getEventsSinceLastGM().slice(-ACTION_CONTEXT_EVENT_LIMIT))
+            },
+            anchors: getRelevantActionAnchors(action, target)
+        };
+    }
+
+    function validateActionContext(context) {
+        const errors = [];
+        const warnings = [];
+        if (!context || typeof context !== 'object' || Array.isArray(context)) errors.push('ActionContext must be an object.');
+        if (context?.protocol !== ACTION_CONTEXT_PROTOCOL) errors.push(`ActionContext protocol must be ${ACTION_CONTEXT_PROTOCOL}.`);
+        const actionResult = validateGameAction(context?.action);
+        if (!actionResult.valid) errors.push(...actionResult.errors.map(error => `Action: ${error}`));
+        if (!context?.actor || context.actor.id !== actionResult.action.actorId) errors.push('ActionContext actor must match the action actorId.');
+        if (!Array.isArray(context?.nearby?.entities)) errors.push('ActionContext nearby.entities must be an array.');
+        if (!context?.relevantState || typeof context.relevantState !== 'object') errors.push('ActionContext relevantState is required.');
+        if (!Array.isArray(context?.anchors)) errors.push('ActionContext anchors must be an array.');
+        if (actionResult.action.targetId && !context?.target) warnings.push(`Target did not resolve: ${actionResult.action.targetId}.`);
+        if (actionResult.action.toolId && !context?.tool) warnings.push(`Tool did not resolve: ${actionResult.action.toolId}.`);
+        try { JSON.stringify(context); }
+        catch (error) { errors.push(`ActionContext is not serializable: ${error.message}`); }
+        return { valid: errors.length === 0, errors, warnings };
+    }
+
+    function getActionContextDiagnostics(context) {
+        const serialized = JSON.stringify(context);
+        const byteSize = typeof TextEncoder !== 'undefined'
+            ? new TextEncoder().encode(serialized).length
+            : unescape(encodeURIComponent(serialized)).length;
+        return {
+            characterSize: serialized.length,
+            byteSize,
+            nearbyEntityCount: context?.nearby?.entities?.length || 0,
+            targetResolved: !!context?.target,
+            toolResolved: !!context?.tool,
+            validation: validateActionContext(context)
+        };
+    }
+
+    // Developer-console diagnostic only; construction and validation do not route or
+    // execute these actions and do not mutate the world.
+    function runActionContextSelfTest() {
+        return runGameActionProtocolSelfTest().map(result => {
+            const context = buildActionContext(result.action);
+            return { action: result.action, context, diagnostics: getActionContextDiagnostics(context) };
+        });
+    }
+
+    // --- 5D. ACTION ROUTER V1 ---
+    // The router describes which existing deterministic capability could eventually
+    // resolve an action. It does not call those mechanics, mutate state, or trust an
+    // action's routing hint without checking the action and its context.
+    const ACTION_ROUTE_MODES = new Set(['local', 'gm', 'hybrid', 'reject']);
+    const ACTION_ROUTE_RESOLVERS = new Set(['movement', 'door', 'pickup', 'drop', 'fishing', 'terrain', 'transition']);
+    const DETERMINISTIC_ACTION_CAPABILITIES = Object.freeze([
+        { verb: 'walk', targetKinds: [], resolver: 'movement', requiresTile: true },
+        { verb: 'move', targetKinds: [], resolver: 'movement', requiresTile: true },
+        { verb: 'open', targetKinds: ['door'], resolver: 'door', requiresTarget: true },
+        { verb: 'close', targetKinds: ['door'], resolver: 'door', requiresTarget: true },
+        { verb: 'pickup', targetKinds: ['item'], resolver: 'pickup', requiresTarget: true },
+        { verb: 'drop', targetKinds: ['item'], resolver: 'drop', requiresTarget: true, requiresInventoryTarget: true },
+        { verb: 'fish', targetKinds: ['water'], resolver: 'fishing', requiresTarget: true },
+        { verb: 'fishing', targetKinds: ['water'], resolver: 'fishing', requiresTarget: true },
+        { verb: 'dig', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+        { verb: 'raise', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+        { verb: 'use_transition', targetKinds: ['transition'], resolver: 'transition', requiresTarget: true }
+    ]);
+
+    function normalizeActionRouteIntent(intent) {
+        const normalized = normalizeGameActionId(intent);
+        return normalized ? normalized.replace(/\s+/g, ' ') : null;
+    }
+
+    function actionHasTileParameter(action, key = 'tile') {
+        const tile = action.parameters?.[key];
+        return !!tile && Number.isInteger(Number(tile.x)) && Number.isInteger(Number(tile.y));
+    }
+
+    function actionContextHasInventoryType(context, requiredTypes) {
+        const required = new Set(requiredTypes || []);
+        return (context.actor?.inventory || []).some(item => {
+            const types = [item.id, item.type, item.baseType, ...(item.tags || [])].filter(Boolean);
+            return types.some(type => required.has(String(type).toLowerCase()));
+        }) || (context.tool && [context.tool.type, ...(context.tool.metadata?.tags || [])]
+            .filter(Boolean)
+            .some(type => required.has(String(type).toLowerCase()) && context.tool.metadata?.location === 'inventory'));
+    }
+
+    function addActionRouteHintWarning(action, route) {
+        const hint = action.routing?.mode || 'unknown';
+        if (hint !== 'unknown' && hint !== route.mode) {
+            route.warnings.push(`Incoming routing hint "${hint}" disagrees with derived route "${route.mode}"; the derived route wins.`);
+        }
+        return route;
+    }
+
+    function createActionRouteDecision(action, mode, resolver, reason, confidence, warnings = []) {
+        return addActionRouteHintWarning(action, {
+            mode,
+            resolver,
+            reason,
+            confidence,
+            normalizedIntent: normalizeActionRouteIntent(action.intent),
+            warnings: [...warnings]
+        });
+    }
+
+    function routeGameAction(gameAction, actionContext) {
+        const actionValidation = validateGameAction(gameAction);
+        const action = actionValidation.action;
+        const contextValidation = validateActionContext(actionContext);
+
+        if (!actionValidation.valid) {
+            return createActionRouteDecision(action, 'reject', null, `Invalid GameAction: ${actionValidation.errors.join(' ')}`, 1, actionValidation.warnings);
+        }
+        if (!contextValidation.valid) {
+            return createActionRouteDecision(action, 'reject', null, `Invalid ActionContext: ${contextValidation.errors.join(' ')}`, 1, contextValidation.warnings);
+        }
+        if (actionContext.action?.id !== action.id) {
+            return createActionRouteDecision(action, 'reject', null, 'ActionContext does not describe the supplied GameAction.', 1);
+        }
+        if (action.targetId && !actionContext.target) {
+            return createActionRouteDecision(action, 'reject', null, `Target "${action.targetId}" could not be resolved.`, 1, contextValidation.warnings);
+        }
+        if (action.toolId && !actionContext.tool) {
+            return createActionRouteDecision(action, 'reject', null, `Tool "${action.toolId}" could not be resolved.`, 1, contextValidation.warnings);
+        }
+
+        if (action.verb === 'improvise') {
+            return createActionRouteDecision(
+                action,
+                'gm',
+                null,
+                'The requested improvised physical manipulation exceeds the deterministic mechanics represented by the engine.',
+                0.9
+            );
+        }
+
+        const capability = DETERMINISTIC_ACTION_CAPABILITIES.find(entry => entry.verb === action.verb);
+        if (!capability) {
+            return createActionRouteDecision(
+                action,
+                'gm',
+                null,
+                `The valid "${action.verb}" intention has no deterministic engine capability and requires interpretation.`,
+                0.75
+            );
+        }
+
+        if (capability.requiresTarget && !actionContext.target) {
+            return createActionRouteDecision(action, 'reject', null, `The deterministic "${action.verb}" capability requires a resolvable target.`, 1);
+        }
+        if (capability.targetKinds.length > 0 && !capability.targetKinds.includes(actionContext.target?.kind)) {
+            return createActionRouteDecision(
+                action,
+                'reject',
+                null,
+                `The deterministic "${action.verb}" capability cannot target kind "${actionContext.target?.kind || 'unknown'}".`,
+                1
+            );
+        }
+        if (capability.requiresInventoryTarget && actionContext.target?.metadata?.metadataLocation !== 'inventory') {
+            return createActionRouteDecision(action, 'reject', null, 'The deterministic drop capability requires an inventory item target.', 1);
+        }
+        if (capability.requiresTile && !actionHasTileParameter(action)) {
+            return createActionRouteDecision(action, 'reject', null, `The deterministic "${action.verb}" capability requires parameters.tile coordinates.`, 1);
+        }
+        if (capability.requiredItemTypes && !actionContextHasInventoryType(actionContext, capability.requiredItemTypes)) {
+            return createActionRouteDecision(
+                action,
+                'reject',
+                null,
+                `The deterministic "${action.verb}" capability requires an inventory item matching: ${capability.requiredItemTypes.join(', ')}.`,
+                1
+            );
+        }
+
+        return createActionRouteDecision(
+            action,
+            'local',
+            capability.resolver,
+            `The engine has a deterministic "${capability.resolver}" capability for verb "${action.verb}" and target kind "${actionContext.target?.kind || 'none'}".`,
+            0.98
+        );
+    }
+
+    function validateActionRoute(route) {
+        const errors = [];
+        const warnings = [];
+        if (!route || typeof route !== 'object' || Array.isArray(route)) errors.push('Action route must be an object.');
+        if (!ACTION_ROUTE_MODES.has(route?.mode)) errors.push(`Unsupported action route mode: ${route?.mode ?? 'missing'}.`);
+        if (route?.resolver !== null && !ACTION_ROUTE_RESOLVERS.has(route?.resolver)) errors.push(`Unsupported action resolver: ${route?.resolver}.`);
+        if (typeof route?.reason !== 'string' || !route.reason.trim()) errors.push('Action route reason is required.');
+        if (!Number.isFinite(route?.confidence) || route.confidence < 0 || route.confidence > 1) errors.push('Action route confidence must be between 0 and 1.');
+        if (route?.mode === 'local' && !ACTION_ROUTE_RESOLVERS.has(route?.resolver)) errors.push('A local action route must name a deterministic resolver.');
+        if ((route?.mode === 'gm' || route?.mode === 'reject') && route?.resolver !== null) errors.push(`${route.mode} action routes must not name a local resolver.`);
+        if (!Array.isArray(route?.warnings)) errors.push('Action route warnings must be an array.');
+        try { JSON.stringify(route); }
+        catch (error) { errors.push(`Action route is not serializable: ${error.message}`); }
+        return { valid: errors.length === 0, errors, warnings };
+    }
+
+    function getActionRouterSelfTestCases() {
+        const createdAt = '2026-01-01T00:00:00.000Z';
+        return [
+            createGameAction({ id: 'route_pickup_shell', source: 'ui', verb: 'pickup', targetId: 'base_shell_01' }, createdAt),
+            createGameAction({ id: 'route_ui_open_door', source: 'ui', verb: 'open', targetId: 'door:0:11:10:S' }, createdAt),
+            createGameAction({ id: 'route_text_open_door', source: 'text', verb: 'open', targetId: 'door:0:11:10:S', intent: 'Open the door.' }, createdAt),
+            createGameAction({ id: 'route_improvise_door', source: 'text', verb: 'improvise', targetId: 'door:0:11:10:S', toolId: 'base_shovel_01', intent: 'I wedge the shovel into the crack and try to lever the door open.' }, createdAt),
+            createGameAction({ id: 'route_persuade_bob', source: 'text', verb: 'persuade', targetId: 'bob', intent: 'Persuade Bob to reveal what he knows.' }, createdAt),
+            createGameAction({ id: 'route_missing_pickup', source: 'ui', verb: 'pickup', targetId: 'missing_ground_item' }, createdAt),
+            createGameAction({ id: 'route_unsupported_dance', source: 'text', verb: 'dance', intent: 'Dance a cheerful coastal jig.' }, createdAt),
+            createGameAction({ id: 'route_wrong_hint', source: 'ui', verb: 'open', targetId: 'door:0:11:10:S', routing: { mode: 'gm', reason: 'Deliberately incorrect test hint.' } }, createdAt)
+        ];
+    }
+
+    // Developer-console diagnostic only. No route produced here is executed.
+    function runActionRouterSelfTest() {
+        return getActionRouterSelfTestCases().map(action => {
+            const actionValidation = validateGameAction(action);
+            const context = buildActionContext(actionValidation.action);
+            const contextValidation = validateActionContext(context);
+            const route = routeGameAction(actionValidation.action, context);
+            const routeValidation = validateActionRoute(route);
+            let serialization;
+            try {
+                const serialized = JSON.stringify({ action: actionValidation.action, context, route });
+                serialization = { valid: true, characterSize: serialized.length, error: null };
+            } catch (error) {
+                serialization = { valid: false, characterSize: 0, error: error.message };
+            }
+            return { action: actionValidation.action, actionValidation, context, contextValidation, route, routeValidation, serialization };
+        });
+    }
+
+    function getActionRouteDiagnosticRows(results = runActionRouterSelfTest()) {
+        return results.map(result => ({
+            verb: result.action.verb,
+            source: result.action.source,
+            target: result.context.target?.kind || null,
+            tool: result.context.tool?.type || null,
+            hint: result.action.routing.mode,
+            mode: result.route.mode,
+            resolver: result.route.resolver,
+            reason: result.route.reason
+        }));
+    }
+
+    function printActionRouteDiagnostics(results = runActionRouterSelfTest()) {
+        const rows = getActionRouteDiagnosticRows(results);
+        console.table(rows);
+        return rows;
+    }
+
+    // --- 5E. ACTION-SCOPED GM PROTOCOL ---
+    // GMRequest/GMOutcome sit beside the legacy dev payload and reuse a conservative
+    // subset of its command vocabulary. They never apply effects or mutate the world.
+    const GM_REQUEST_PROTOCOL = 'gm_request_v1';
+    const GM_OUTCOME_PROTOCOL = 'gm_outcome_v1';
+    const GM_OUTCOME_MAX_EFFECTS = 6;
+    const GM_RESOLUTION_RESULTS = new Set(['success', 'failure', 'partial', 'blocked', 'uncertain']);
+    const GM_ACTION_EFFECT_DEFINITIONS = Object.freeze([
+        { op: 'update_entity', purpose: 'Update the state or presentation of an existing entity.', required: ['id'] },
+        { op: 'transform_entity', purpose: 'Transform an existing entity while retaining its stable id.', required: ['id'] },
+        { op: 'set_entity_state', purpose: 'Merge persistent state into an existing entity.', required: ['id', 'state'] },
+        { op: 'move_npc', purpose: 'Move an existing NPC.', required: ['id'] },
+        { op: 'move_prop', purpose: 'Move an existing prop.', required: ['id'] },
+        { op: 'create_prop', purpose: 'Create one small visible prop.', required: ['id', 'name'] },
+        { op: 'remove_prop', purpose: 'Remove an existing prop.', required: ['id'] },
+        { op: 'give_item', purpose: 'Give one stable item instance to the player.', required: ['item'] },
+        { op: 'remove_item', purpose: 'Remove an inventory item by stable id.', required: ['id'] },
+        { op: 'consume_item', purpose: 'Consume an inventory item by stable id.', required: ['id'] },
+        { op: 'spawn_item', purpose: 'Place one stable item instance in the world.', required: ['item'] },
+        { op: 'remove_ground_item', purpose: 'Remove a ground item by stable id.', required: ['id'] },
+        { op: 'set_flag', purpose: 'Set a persistent world flag.', required: ['key', 'value'] },
+        { op: 'add_memory', purpose: 'Add one persistent world-memory fact.', required: ['text'] },
+        { op: 'create_transition', purpose: 'Create one small passage or transition.', required: ['id', 'name', 'targetLevel'] },
+        { op: 'remove_transition', purpose: 'Remove an existing transition.', required: ['id'] },
+        { op: 'set_terrain', purpose: 'Apply one limited terrain patch.', required: ['id', 'mode'] }
+    ]);
+    const GM_ACTION_EFFECT_OPS = new Set(GM_ACTION_EFFECT_DEFINITIONS.map(definition => definition.op));
+
+    function validatePlainProtocolValue(value, path, errors, seen = new WeakSet(), depth = 0) {
+        if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) errors.push(`${path} contains a non-finite number.`);
+            return;
+        }
+        if (value === undefined || typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+            errors.push(`${path} contains a non-JSON value.`);
+            return;
+        }
+        if (typeof value !== 'object') return;
+        if (depth > 12) { errors.push(`${path} exceeds the protocol nesting limit.`); return; }
+        if (seen.has(value)) { errors.push(`${path} contains a circular reference.`); return; }
+        const prototype = Object.getPrototypeOf(value);
+        if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+            errors.push(`${path} must contain only plain objects and arrays.`);
+            return;
+        }
+        seen.add(value);
+        if (Array.isArray(value)) value.forEach((item, index) => validatePlainProtocolValue(item, `${path}[${index}]`, errors, seen, depth + 1));
+        else Object.entries(value).forEach(([key, item]) => validatePlainProtocolValue(item, `${path}.${key}`, errors, seen, depth + 1));
+        seen.delete(value);
+    }
+
+    function getSerializedProtocolSize(value) {
+        try {
+            const serialized = JSON.stringify(value);
+            const bytes = typeof TextEncoder !== 'undefined'
+                ? new TextEncoder().encode(serialized).length
+                : unescape(encodeURIComponent(serialized)).length;
+            return { characters: serialized.length, bytes, error: null };
+        } catch (error) {
+            return { characters: 0, bytes: 0, error: error.message };
+        }
+    }
+
+    function buildGMRequest(gameAction, actionContext, actionRoute) {
+        const actionValidation = validateGameAction(gameAction);
+        const contextValidation = validateActionContext(actionContext);
+        const routeValidation = validateActionRoute(actionRoute);
+        const errors = [];
+        if (!actionValidation.valid) errors.push(...actionValidation.errors.map(error => `Action: ${error}`));
+        if (!contextValidation.valid) errors.push(...contextValidation.errors.map(error => `Context: ${error}`));
+        if (!routeValidation.valid) errors.push(...routeValidation.errors.map(error => `Route: ${error}`));
+        if (actionRoute?.mode !== 'gm') errors.push(`GMRequest is unnecessary for route "${actionRoute?.mode || 'unknown'}".`);
+        if (actionContext?.action?.id !== actionValidation.action.id) errors.push('ActionContext does not match the supplied action.');
+        if (errors.length > 0) return { ok: false, request: null, errors };
+
+        const request = copyActionContextValue({
+            protocol: GM_REQUEST_PROTOCOL,
+            action: actionValidation.action,
+            context: actionContext,
+            route: actionRoute,
+            task: {
+                type: 'resolve_action',
+                instruction: "Resolve the player's intended action fairly using only the supplied action-scoped context."
+            },
+            rules: {
+                narrationRole: 'Put narration, dialogue, interpretation, uncertainty, and pushback in narration.',
+                worldChangePolicy: 'Use effects only for persistent, physical, positional, inventory, flag, or memory consequences. Failed attempts may have no effects.',
+                existingEntityPolicy: 'Prefer updating stable existing entity ids over creating replacements or duplicates.',
+                maxEffects: GM_OUTCOME_MAX_EFFECTS
+            },
+            allowedEffects: GM_ACTION_EFFECT_DEFINITIONS
+        });
+        const validation = validateGMRequest(request);
+        return { ok: validation.valid, request: validation.valid ? request : null, errors: validation.errors };
+    }
+
+    function validateGMRequest(request) {
+        const errors = [];
+        const warnings = [];
+        if (!request || typeof request !== 'object' || Array.isArray(request)) errors.push('GMRequest must be an object.');
+        if (request?.protocol !== GM_REQUEST_PROTOCOL) errors.push(`GMRequest protocol must be ${GM_REQUEST_PROTOCOL}.`);
+        const actionValidation = validateGameAction(request?.action);
+        if (!actionValidation.valid) errors.push(...actionValidation.errors.map(error => `Action: ${error}`));
+        const contextValidation = validateActionContext(request?.context);
+        if (!contextValidation.valid) errors.push(...contextValidation.errors.map(error => `Context: ${error}`));
+        const routeValidation = validateActionRoute(request?.route);
+        if (!routeValidation.valid) errors.push(...routeValidation.errors.map(error => `Route: ${error}`));
+        if (request?.route?.mode !== 'gm') errors.push('GMRequest route must be gm.');
+        if (request?.context?.action?.id !== request?.action?.id) errors.push('GMRequest action and context action IDs must match.');
+        if (request?.task?.type !== 'resolve_action' || typeof request?.task?.instruction !== 'string') errors.push('GMRequest task must describe resolve_action.');
+        if (request?.rules?.maxEffects !== GM_OUTCOME_MAX_EFFECTS) errors.push(`GMRequest maxEffects must be ${GM_OUTCOME_MAX_EFFECTS}.`);
+        if (!Array.isArray(request?.allowedEffects) || request.allowedEffects.some(effect => !GM_ACTION_EFFECT_OPS.has(effect?.op))) errors.push('GMRequest allowedEffects contains an unsupported definition.');
+        if (request?.context?.canvasEntities?.all || request?.context?.nearby?.all) errors.push('GMRequest must not contain a global canvas-entity dump.');
+        validatePlainProtocolValue(request, 'GMRequest', errors);
+        const size = getSerializedProtocolSize(request);
+        if (size.error) errors.push(`GMRequest is not serializable: ${size.error}`);
+        return { valid: errors.length === 0, errors, warnings };
+    }
+
+    function validateGMEffect(effect, index, errors) {
+        const path = `effects[${index}]`;
+        if (!effect || typeof effect !== 'object' || Array.isArray(effect)) { errors.push(`${path} must be an object.`); return; }
+        if (!GM_ACTION_EFFECT_OPS.has(effect.op)) { errors.push(`${path}.op is unsupported: ${effect.op ?? 'missing'}.`); return; }
+        const definition = GM_ACTION_EFFECT_DEFINITIONS.find(entry => entry.op === effect.op);
+        definition.required.forEach(field => {
+            if (!(field in effect) || effect[field] === null || effect[field] === '') errors.push(`${path}.${field} is required for ${effect.op}.`);
+        });
+        const idFields = ['id', 'key', 'targetId'];
+        idFields.forEach(field => {
+            if (field in effect && (typeof effect[field] !== 'string' || !effect[field].trim())) errors.push(`${path}.${field} must be a non-empty string.`);
+        });
+        if (['give_item', 'spawn_item'].includes(effect.op)) {
+            if (!effect.item || typeof effect.item !== 'object' || Array.isArray(effect.item)) errors.push(`${path}.item must be an object.`);
+            else if (typeof effect.item.id !== 'string' || !effect.item.id.trim()) errors.push(`${path}.item.id must be a stable non-empty string.`);
+        }
+        if (effect.op === 'set_entity_state' && (!effect.state || typeof effect.state !== 'object' || Array.isArray(effect.state))) errors.push(`${path}.state must be an object.`);
+        if (effect.op === 'add_memory' && (typeof effect.text !== 'string' || !effect.text.trim())) errors.push(`${path}.text must be a non-empty string.`);
+        validatePlainProtocolValue(effect, path, errors);
+    }
+
+    function validateGMOutcome(outcome, expectedActionId = null) {
+        const errors = [];
+        const warnings = [];
+        if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) errors.push('GMOutcome must be an object.');
+        if (outcome?.protocol !== GM_OUTCOME_PROTOCOL) errors.push(`GMOutcome protocol must be ${GM_OUTCOME_PROTOCOL}.`);
+        if (typeof outcome?.actionId !== 'string' || !outcome.actionId.trim()) errors.push('GMOutcome actionId must be a non-empty string.');
+        if (expectedActionId && outcome?.actionId !== expectedActionId) errors.push(`GMOutcome actionId does not match expected action: ${expectedActionId}.`);
+        if (typeof outcome?.narration !== 'string') errors.push('GMOutcome narration must be a string.');
+        if (!GM_RESOLUTION_RESULTS.has(outcome?.resolution?.result)) errors.push(`GMOutcome resolution.result is unsupported: ${outcome?.resolution?.result ?? 'missing'}.`);
+        if (typeof outcome?.resolution?.reason !== 'string' || !outcome.resolution.reason.trim()) errors.push('GMOutcome resolution.reason is required.');
+        if (!Array.isArray(outcome?.effects)) errors.push('GMOutcome effects must be an array.');
+        else {
+            if (outcome.effects.length > GM_OUTCOME_MAX_EFFECTS) errors.push(`GMOutcome effects exceeds the limit of ${GM_OUTCOME_MAX_EFFECTS}.`);
+            outcome.effects.forEach((effect, index) => validateGMEffect(effect, index, errors));
+        }
+        if (!Array.isArray(outcome?.memory)) errors.push('GMOutcome memory must be an array.');
+        else {
+            if (outcome.memory.length > GM_OUTCOME_MAX_EFFECTS) errors.push(`GMOutcome memory exceeds the limit of ${GM_OUTCOME_MAX_EFFECTS}.`);
+            outcome.memory.forEach((fact, index) => {
+                if (typeof fact !== 'string' || !fact.trim()) errors.push(`memory[${index}] must be a non-empty string.`);
+            });
+        }
+        validatePlainProtocolValue(outcome, 'GMOutcome', errors);
+        const size = getSerializedProtocolSize(outcome);
+        if (size.error) errors.push(`GMOutcome is not serializable: ${size.error}`);
+        return { valid: errors.length === 0, errors, warnings };
+    }
+
+    function getGMRequestDiagnostics(request, outcome = null, includeLegacyPayload = false) {
+        const requestSize = getSerializedProtocolSize(request);
+        const contextSize = getSerializedProtocolSize(request?.context);
+        let legacyPayloadSize = null;
+        if (includeLegacyPayload) {
+            try { legacyPayloadSize = getSerializedProtocolSize(buildGMPayload()); }
+            catch (error) { legacyPayloadSize = { characters: 0, bytes: 0, error: error.message }; }
+        }
+        return {
+            actionId: request?.action?.id || null,
+            route: request?.route?.mode || null,
+            requestSize,
+            contextSize,
+            legacyPayloadSize,
+            targetResolved: !!request?.context?.target,
+            toolResolved: !!request?.context?.tool,
+            allowedEffectDefinitionCount: request?.allowedEffects?.length || 0,
+            requestValidation: validateGMRequest(request),
+            outcomeValidation: outcome ? validateGMOutcome(outcome, request?.action?.id || null) : null,
+            returnedEffectCount: outcome?.effects?.length || 0
+        };
+    }
+
+    function createGMProtocolSelfTestCase(action, outcome) {
+        const actionValidation = validateGameAction(action);
+        const context = buildActionContext(actionValidation.action);
+        const route = routeGameAction(actionValidation.action, context);
+        const build = buildGMRequest(actionValidation.action, context, route);
+        const outcomeValidation = outcome ? validateGMOutcome(outcome, actionValidation.action.id) : null;
+        return { action: actionValidation.action, context, route, build, outcome, outcomeValidation };
+    }
+
+    // Developer-console protocol diagnostic only. No outcome is applied.
+    function runGMProtocolSelfTest(includeLegacyPayloadSize = false) {
+        const createdAt = '2026-01-01T00:00:00.000Z';
+        const shovelDoor = createGameAction({ id: 'gm_test_shovel_door', source: 'text', verb: 'improvise', targetId: 'door:0:11:10:S', toolId: 'base_shovel_01', intent: 'I wedge the shovel into the crack and try to lever the door open.' }, createdAt);
+        const persuadeBob = createGameAction({ id: 'gm_test_persuade_bob', source: 'text', verb: 'persuade', targetId: 'bob', intent: 'Persuade Bob to reveal what he knows.' }, createdAt);
+        const dance = createGameAction({ id: 'gm_test_dance', source: 'text', verb: 'dance', intent: 'Dance a cheerful coastal jig.' }, createdAt);
+        const localDoor = createGameAction({ id: 'gm_test_local_door', source: 'ui', verb: 'open', targetId: 'door:0:11:10:S' }, createdAt);
+        const validCases = [
+            createGMProtocolSelfTestCase(shovelDoor, { protocol: GM_OUTCOME_PROTOCOL, actionId: shovelDoor.id, narration: 'The frame groans and the latch shifts, but the door remains partly jammed.', resolution: { result: 'partial', reason: 'The shovel creates leverage but does not fully free the latch.' }, effects: [{ op: 'set_entity_state', id: shovelDoor.targetId, state: { latchShifted: true, jammed: true } }, { op: 'set_flag', key: 'door_latch_shifted', value: true }], memory: ['The player shifted the door latch with the shovel.'] }),
+            createGMProtocolSelfTestCase(persuadeBob, { protocol: GM_OUTCOME_PROTOCOL, actionId: persuadeBob.id, narration: 'Bob lowers his voice and admits that the cellar was sealed for a reason.', resolution: { result: 'success', reason: 'Bob is persuaded to share a guarded fact.' }, effects: [{ op: 'set_flag', key: 'bob_shared_cellar_warning', value: true }], memory: ['Bob warned the player about the sealed cellar.'] }),
+            createGMProtocolSelfTestCase(dance, { protocol: GM_OUTCOME_PROTOCOL, actionId: dance.id, narration: 'You dance a bright little jig in the sea air.', resolution: { result: 'success', reason: 'The playful action succeeds without a persistent world change.' }, effects: [], memory: [] })
+        ];
+        const localContext = buildActionContext(localDoor);
+        const localRoute = routeGameAction(localDoor, localContext);
+        const localBuild = buildGMRequest(localDoor, localContext, localRoute);
+        const baseOutcome = validCases[0].outcome;
+        const invalidOutcomes = [
+            { name: 'wrong_action_id', validation: validateGMOutcome({ ...baseOutcome, actionId: 'wrong_action' }, shovelDoor.id) },
+            { name: 'unsupported_effect', validation: validateGMOutcome({ ...baseOutcome, effects: [{ op: 'delete_everything', id: 'town' }] }, shovelDoor.id) },
+            { name: 'too_many_effects', validation: validateGMOutcome({ ...baseOutcome, effects: Array.from({ length: GM_OUTCOME_MAX_EFFECTS + 1 }, (_, index) => ({ op: 'set_flag', key: `flag_${index}`, value: true })) }, shovelDoor.id) },
+            { name: 'malformed_target', validation: validateGMOutcome({ ...baseOutcome, effects: [{ op: 'set_entity_state', id: { runtime: true }, state: {} }] }, shovelDoor.id) }
+        ];
+        return {
+            validCases: validCases.map(entry => ({ ...entry, diagnostics: entry.build.ok ? getGMRequestDiagnostics(entry.build.request, entry.outcome, includeLegacyPayloadSize) : null })),
+            invalidOutcomes,
+            localAction: { action: localDoor, route: localRoute, build: localBuild }
+        };
+    }
+
+    // --- 5F. GM OUTCOME APPLICATION BOUNDARY ---
+    // This is deliberately separate from model transport. A complete outcome is
+    // validated and preflighted before any trusted legacy mutation helper runs.
+    const GM_OUTCOME_APPLICATION_PROTOCOL = 'gm_outcome_application_v1';
+    const GM_APPLICATION_FLAG_KEY = /^[A-Za-z0-9_-]{1,80}$/;
+    let lastGMOutcomeApplicationDiagnostic = null;
+
+    function getBaseDoorSemanticStatesSnapshot() {
+        return doors.map(door => ({ id: makeLegacyDoorActionId(door), state: copyActionContextValue(door.state || {}) }))
+            .filter(entry => entry.id && Object.keys(entry.state).length > 0);
+    }
+
+    function restoreBaseDoorSemanticStates(entries = []) {
+        doors.forEach(door => { delete door.state; });
+        entries.forEach(entry => {
+            const door = resolveLegacyDoorObject(entry?.id);
+            if (door && entry.state && typeof entry.state === 'object' && !Array.isArray(entry.state)) {
+                door.state = copyActionContextValue(entry.state);
+            }
+        });
+    }
+
+    function isSafeGMFlag(effect) {
+        return GM_APPLICATION_FLAG_KEY.test(effect.key)
+            && !['__proto__', 'prototype', 'constructor'].includes(effect.key)
+            && (effect.value === null || ['string', 'boolean'].includes(typeof effect.value)
+                || (typeof effect.value === 'number' && Number.isFinite(effect.value)));
+    }
+
+    function gmItemIdExists(id) {
+        return inventory.some(item => item?.id === id)
+            || groundItems.some(entry => entry?.hitBox?.userData?.item?.id === id);
+    }
+
+    function preflightGMPlacement(effect, fallbackLevel = currentLevel) {
+        const placement = resolveGMPlacement(effect, fallbackLevel, 3);
+        return isValidTile(placement.x, placement.y, placement.level) ? placement : null;
+    }
+
+    function normalizeGMOutcomeMemory(outcome) {
+        const inputs = [
+            ...(Array.isArray(outcome.memory) ? outcome.memory : []),
+            ...outcome.effects.filter(effect => effect.op === 'add_memory').map(effect => effect.text)
+        ];
+        const seen = new Set();
+        const facts = [];
+        inputs.forEach(value => {
+            const text = safeMemoryText(value, 300);
+            const key = text.toLocaleLowerCase();
+            if (text && !seen.has(key)) { seen.add(key); facts.push(text); }
+        });
+        return { facts, inputCount: inputs.length, deduplicatedCount: inputs.length - facts.length };
+    }
+
+    function translateGMOutcomeEffects(gmRequest, gmOutcome) {
+        const errors = [];
+        const warnings = [];
+        const translatedEffects = [];
+        const compatibilityIdsResolved = [];
+        const memory = normalizeGMOutcomeMemory(gmOutcome);
+        const reservedItemIds = new Set();
+        const reservedCreatedIds = new Set();
+        const reservedRemovedIds = new Set();
+        let availableInventorySlots = inventory.filter(item => item === null).length;
+        const fail = (index, message) => errors.push(`effects[${index}]: ${message}`);
+
+        gmOutcome.effects.forEach((effect, index) => {
+            if (effect.op === 'add_memory') return;
+            const command = copyActionContextValue(effect);
+            if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) {
+                if (effect.op !== 'set_entity_state' && !Object.keys(effect).some(key => !['op', 'id', 'kind'].includes(key))) return fail(index, `${effect.op} has no requested change.`);
+                const baseDoor = resolveLegacyDoorObject(effect.id);
+                if (baseDoor) {
+                    if (effect.op !== 'set_entity_state') return fail(index, 'base doors only support set_entity_state semantic updates.');
+                    translatedEffects.push({ op: 'set_base_door_state', id: effect.id, state: copyActionContextValue(effect.state) });
+                    compatibilityIdsResolved.push(effect.id);
+                    return;
+                }
+                if (!findCanvasEntityRef(effect.id, effect.kind || '')) return fail(index, `entity is not resolvable: ${effect.id}.`);
+                translatedEffects.push(command);
+                return;
+            }
+            if (effect.op === 'set_flag') {
+                if (!isSafeGMFlag(effect)) return fail(index, 'flag key/value is unsafe or unsupported.');
+                translatedEffects.push(command); return;
+            }
+            if (effect.op === 'move_npc') {
+                const npc = gmNPCs.find(entry => entry.id === effect.id);
+                const placement = npc && preflightGMPlacement(effect, npc.level);
+                if (!npc || !placement) return fail(index, `GM NPC or destination is not resolvable: ${effect.id}.`);
+                translatedEffects.push({ ...command, ...placement }); return;
+            }
+            if (effect.op === 'move_prop') {
+                const prop = gmObjects.find(entry => entry.id === effect.id);
+                const placement = prop && preflightGMPlacement(effect, prop.level);
+                if (!prop || !placement) return fail(index, `GM prop or destination is not resolvable: ${effect.id}.`);
+                translatedEffects.push({ ...command, ...placement }); return;
+            }
+            if (effect.op === 'create_prop') {
+                const placement = preflightGMPlacement(effect);
+                if (findCanvasEntityRef(effect.id) || resolveLegacyDoorObject(effect.id) || resolveWaterActionReference(effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, `prop id already exists or placement is invalid: ${effect.id}.`);
+                reservedCreatedIds.add(effect.id);
+                translatedEffects.push({ ...command, ...placement }); return;
+            }
+            if (effect.op === 'remove_prop') {
+                if (!gmObjects.some(entry => entry.id === effect.id)) return fail(index, `GM prop is not resolvable: ${effect.id}.`);
+                translatedEffects.push(command); return;
+            }
+            if (effect.op === 'give_item') {
+                const itemId = sanitizeItemInstanceId(effect.item?.id);
+                if (!itemId || itemId !== effect.item.id || gmItemIdExists(itemId) || reservedItemIds.has(itemId) || availableInventorySlots < 1) return fail(index, 'item is invalid, duplicated, or inventory is full.');
+                reservedItemIds.add(itemId); availableInventorySlots--;
+                translatedEffects.push({ ...command, item: copyActionContextValue(effect.item) }); return;
+            }
+            if (effect.op === 'remove_item' || effect.op === 'consume_item') {
+                if (!inventory.some(item => item?.id === effect.id) || reservedRemovedIds.has(`inventory:${effect.id}`)) return fail(index, `inventory item is not uniquely resolvable: ${effect.id}.`);
+                reservedRemovedIds.add(`inventory:${effect.id}`); availableInventorySlots++;
+                translatedEffects.push({ ...command, count: 1 }); return;
+            }
+            if (effect.op === 'spawn_item') {
+                const itemId = sanitizeItemInstanceId(effect.item?.id);
+                const placement = preflightGMPlacement(effect);
+                if (!itemId || itemId !== effect.item.id || gmItemIdExists(itemId) || reservedItemIds.has(itemId) || !placement) return fail(index, 'item is invalid, duplicated, or placement is invalid.');
+                reservedItemIds.add(itemId);
+                translatedEffects.push({ ...command, item: copyActionContextValue(effect.item), ...placement }); return;
+            }
+            if (effect.op === 'remove_ground_item') {
+                const entry = groundItems.find(item => groundItemMatches(item, effect.id));
+                if (!entry || reservedRemovedIds.has(`ground:${effect.id}`)) return fail(index, `ground item is not uniquely resolvable: ${effect.id}.`);
+                reservedRemovedIds.add(`ground:${effect.id}`);
+                translatedEffects.push(command); return;
+            }
+            if (effect.op === 'create_transition') {
+                const placement = preflightGMPlacement(effect);
+                const targetLevel = String(effect.targetLevel);
+                if (gmTransitions.some(entry => entry.id === effect.id) || reservedCreatedIds.has(effect.id) || !placement || !levelGroups[targetLevel]) return fail(index, 'transition id, placement, or target level is invalid.');
+                reservedCreatedIds.add(effect.id);
+                translatedEffects.push({ ...command, ...placement, targetLevel }); return;
+            }
+            if (effect.op === 'remove_transition') {
+                if (!gmTransitions.some(entry => entry.id === effect.id)) return fail(index, `transition is not resolvable: ${effect.id}.`);
+                translatedEffects.push(command); return;
+            }
+            if (effect.op === 'set_terrain') {
+                const placement = preflightGMPlacement(effect);
+                if (gmTerrain.some(entry => entry.id === effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, 'terrain id already exists or placement is invalid.');
+                reservedCreatedIds.add(effect.id);
+                translatedEffects.push({ ...command, ...placement }); return;
+            }
+            fail(index, `operation is validation-only and unsupported at application: ${effect.op}.`);
+        });
+        return { valid: errors.length === 0, errors, warnings, translatedEffects, memory, compatibilityIdsResolved };
+    }
+
+    function validateGMOutcomeApplication(gmRequest, gmOutcome) {
+        const errors = [];
+        const warnings = [];
+        const requestValidation = validateGMRequest(gmRequest);
+        if (!requestValidation.valid) errors.push(...requestValidation.errors.map(error => `GMRequest: ${error}`));
+        const outcomeValidation = validateGMOutcome(gmOutcome, gmRequest?.action?.id || null);
+        if (!outcomeValidation.valid) errors.push(...outcomeValidation.errors.map(error => `GMOutcome: ${error}`));
+        if (gmRequest?.route?.mode !== 'gm') errors.push('Application requires an originating GM route.');
+        let translation = null;
+        if (errors.length === 0) {
+            translation = translateGMOutcomeEffects(gmRequest, gmOutcome);
+            if (!translation.valid) errors.push(...translation.errors.map(error => `Preflight: ${error}`));
+            warnings.push(...translation.warnings);
+        }
+        return { valid: errors.length === 0, errors, warnings, requestValidation, outcomeValidation, translation };
+    }
+
+    function applyTranslatedGMOutcomeEffect(effect) {
+        if (effect.op === 'set_base_door_state') {
+            const door = resolveLegacyDoorObject(effect.id);
+            if (!door) return false;
+            door.state = { ...(door.state || {}), ...copyActionContextValue(effect.state) };
+            return true;
+        }
+        if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
+        if (effect.op === 'move_npc') return moveGMNPC({ ...effect, silent: true });
+        if (effect.op === 'move_prop') return moveGMObject({ ...effect, silent: true });
+        if (effect.op === 'create_prop') return createGMObject({ ...effect, silent: true });
+        if (effect.op === 'remove_prop') return removeGMObject(effect.id, true);
+        if (effect.op === 'give_item') return giveInventoryItem(effect.item, { ...effect, silent: true });
+        if (effect.op === 'remove_item' || effect.op === 'consume_item') return removeInventoryItem(effect.id, 1);
+        if (effect.op === 'spawn_item') return !!spawnGroundItem(effect.item, effect.x, effect.y, effect.level, { id: effect.groundItemId || `ground_${effect.item.id}`, sourceKind: 'gm', gmCreated: true, persistent: true, preserveInstance: true, silent: true });
+        if (effect.op === 'remove_ground_item') return removeGroundItemByIdentifier(effect.id, 1);
+        if (effect.op === 'set_flag') { worldFlags[effect.key] = effect.value; return true; }
+        if (effect.op === 'create_transition') return createGMTransition({ ...effect, silent: true });
+        if (effect.op === 'remove_transition') return removeGMTransition(effect.id, true);
+        if (effect.op === 'set_terrain') return createGMTerrainPatch({ ...effect, silent: true });
+        return false;
+    }
+
+    function restoreGMOutcomeRollback(save) {
+        try {
+            localStorage.setItem(GM_SAVE_KEY, JSON.stringify(save));
+            return loadGMWorld(true);
+        } catch (error) { return false; }
+    }
+
+    function applyGMOutcome(gmRequest, gmOutcome) {
+        const preflight = validateGMOutcomeApplication(gmRequest, gmOutcome);
+        const baseResult = {
+            protocol: GM_OUTCOME_APPLICATION_PROTOCOL,
+            actionId: gmOutcome?.actionId || gmRequest?.action?.id || null,
+            outcomeProtocol: gmOutcome?.protocol || null,
+            resolution: copyActionContextValue(gmOutcome?.resolution || {}),
+            narration: typeof gmOutcome?.narration === 'string' ? gmOutcome.narration : '',
+            appliedEffects: [], appliedMemory: [], diagnostics: [...preflight.errors, ...preflight.warnings],
+            undoAvailable: hasGMUndoSnapshot(), rollback: { attempted: false, succeeded: null }
+        };
+        if (!preflight.valid) {
+            const result = { ...baseResult, status: 'rejected', preflight: false };
+            lastGMOutcomeApplicationDiagnostic = getGMOutcomeApplicationDiagnostics(gmRequest, gmOutcome, preflight, result);
+            return result;
+        }
+        const translation = preflight.translation;
+        const existingMemory = new Set(worldMemory.facts.map(fact => safeMemoryText(fact, 300).toLocaleLowerCase()));
+        const memoryToApply = translation.memory.facts.filter(fact => !existingMemory.has(fact.toLocaleLowerCase()));
+        const needsMutation = translation.translatedEffects.length > 0 || memoryToApply.length > 0;
+        const rollbackSave = needsMutation ? buildGMWorldSave() : null;
+        let previousUndoRaw = null;
+        if (needsMutation) { try { previousUndoRaw = localStorage.getItem(GM_UNDO_KEY); } catch (error) {} }
+        const undoCaptured = needsMutation ? storeGMUndoSnapshot(`before_gm_outcome:${gmOutcome.actionId}`) : false;
+        if (needsMutation && !undoCaptured) {
+            const result = { ...baseResult, status: 'rejected', preflight: true, diagnostics: [...baseResult.diagnostics, 'Could not capture the required undo snapshot.'] };
+            lastGMOutcomeApplicationDiagnostic = getGMOutcomeApplicationDiagnostics(gmRequest, gmOutcome, preflight, result);
+            return result;
+        }
+        try {
+            for (const effect of translation.translatedEffects) {
+                if (!applyTranslatedGMOutcomeEffect(effect)) throw new Error(`Application helper failed for ${effect.op}.`);
+                baseResult.appliedEffects.push(copyActionContextValue(effect));
+            }
+            for (const fact of memoryToApply) {
+                if (!addWorldMemoryFact(fact)) throw new Error('World memory application failed.');
+                baseResult.appliedMemory.push(fact);
+            }
+            if (needsMutation && !saveGMWorld(true)) throw new Error('Persistence failed after mutation.');
+            recordGMCommandHistory(JSON.stringify(gmOutcome), { protocol: gmOutcome.protocol, narration: gmOutcome.narration }, translation.translatedEffects, needsMutation);
+            const result = { ...baseResult, status: 'applied', preflight: true, undoAvailable: hasGMUndoSnapshot(), undoCaptured,
+                memoryDeduplicated: translation.memory.deduplicatedCount + (translation.memory.facts.length - memoryToApply.length), compatibilityIdsResolved: translation.compatibilityIdsResolved };
+            lastGMOutcomeApplicationDiagnostic = getGMOutcomeApplicationDiagnostics(gmRequest, gmOutcome, preflight, result);
+            return result;
+        } catch (error) {
+            const rollbackSucceeded = rollbackSave ? restoreGMOutcomeRollback(rollbackSave) : true;
+            try {
+                if (previousUndoRaw === null) localStorage.removeItem(GM_UNDO_KEY);
+                else localStorage.setItem(GM_UNDO_KEY, previousUndoRaw);
+            } catch (undoError) {}
+            const result = { ...baseResult, status: 'failed', preflight: true, diagnostics: [...baseResult.diagnostics, error.message], rollback: { attempted: !!rollbackSave, succeeded: rollbackSucceeded }, undoAvailable: hasGMUndoSnapshot() };
+            lastGMOutcomeApplicationDiagnostic = getGMOutcomeApplicationDiagnostics(gmRequest, gmOutcome, preflight, result);
+            return result;
+        }
+    }
+
+    function getGMOutcomeApplicationDiagnostics(gmRequest, gmOutcome, preflight = validateGMOutcomeApplication(gmRequest, gmOutcome), result = null) {
+        return { actionId: gmRequest?.action?.id || null, requestProtocol: gmRequest?.protocol || null, outcomeProtocol: gmOutcome?.protocol || null,
+            outcomeValid: preflight.outcomeValidation?.valid || false, preflightSuccess: preflight.valid,
+            effectsReceived: gmOutcome?.effects?.length || 0, effectsTranslated: preflight.translation?.translatedEffects?.length || 0,
+            effectsApplied: result?.appliedEffects?.length || 0, memoryDeduplicated: result?.memoryDeduplicated ?? preflight.translation?.memory?.deduplicatedCount ?? 0,
+            compatibilityIdsResolved: preflight.translation?.compatibilityIdsResolved || [], status: result?.status || 'not_applied',
+            undoAvailable: result?.undoAvailable ?? hasGMUndoSnapshot(), rollback: result?.rollback || null };
+    }
+
+    function getLastGMOutcomeApplicationDiagnostic() { return copyActionContextValue(lastGMOutcomeApplicationDiagnostic); }
+
+    // Manual console workflow; it performs no model call and still requires a GM route.
+    function applyManualGMOutcomeForAction(gameAction, gmOutcome) {
+        const action = validateGameAction(gameAction).action;
+        const context = buildActionContext(action);
+        const route = routeGameAction(action, context);
+        const built = buildGMRequest(action, context, route);
+        return built.ok ? applyGMOutcome(built.request, gmOutcome) : { status: 'rejected', diagnostics: built.errors };
+    }
+
+    // Console diagnostic. With apply=true it applies the door transaction, captures
+    // the post-apply context, and immediately exercises the existing one-step undo.
+    function runGMOutcomeApplicationSelfTest({ apply = false } = {}) {
+        const protocolCases = runGMProtocolSelfTest(false);
+        const doorCase = protocolCases.validCases[0];
+        const persuasionCase = protocolCases.validCases[1];
+        const danceCase = protocolCases.validCases[2];
+        const duplicateMemoryOutcome = {
+            ...doorCase.outcome,
+            effects: [...doorCase.outcome.effects, { op: 'add_memory', text: doorCase.outcome.memory[0] }]
+        };
+        const invalidBatchOutcome = {
+            ...doorCase.outcome,
+            effects: [{ op: 'set_flag', key: 'gm_atomicity_probe', value: true }, { op: 'remove_prop', id: 'missing_prop_for_atomicity_test' }],
+            memory: []
+        };
+        const tests = {
+            shovelDoor: validateGMOutcomeApplication(doorCase.build.request, doorCase.outcome),
+            narrationOnlyPersuasion: validateGMOutcomeApplication(persuasionCase.build.request, persuasionCase.outcome),
+            narrationOnlyDance: validateGMOutcomeApplication(danceCase.build.request, danceCase.outcome),
+            duplicateMemory: validateGMOutcomeApplication(doorCase.build.request, duplicateMemoryOutcome),
+            invalidBatch: validateGMOutcomeApplication(doorCase.build.request, invalidBatchOutcome),
+            wrongCorrelation: validateGMOutcomeApplication(doorCase.build.request, { ...doorCase.outcome, actionId: 'wrong_action' }),
+            deterministicMisuse: protocolCases.localAction.build
+        };
+        if (!apply || !tests.shovelDoor.valid) return { applied: false, tests };
+        const beforeFlag = worldFlags.gm_atomicity_probe;
+        const invalidResult = applyGMOutcome(doorCase.build.request, invalidBatchOutcome);
+        const doorResult = applyGMOutcome(doorCase.build.request, duplicateMemoryOutcome);
+        const futureContext = buildActionContext(doorCase.action);
+        const undoResult = doorResult.status === 'applied' ? undoLastGMApply() : false;
+        return {
+            applied: true,
+            tests,
+            invalidBatch: { result: invalidResult, flagUnchanged: worldFlags.gm_atomicity_probe === beforeFlag },
+            shovelDoor: { result: doorResult, futureDoorState: futureContext.target?.state || null, undoResult }
+        };
+    }
+
+    // --- 5G. LIVE ACTION EXECUTION ---
+    // Mechanics are migrated as narrow vertical slices. Unmigrated local routes
+    // remain on their legacy paths until their resolver is added here explicitly.
+    const GAME_ACTION_EXECUTION_STATUSES = new Set(['pending', 'executed', 'needs_gm', 'rejected', 'not_migrated']);
+    let lastDoorActionExecutionDiagnostic = null;
+    let lastItemTransferExecutionDiagnostic = null;
+    let lastFishingExecutionDiagnostic = null;
+    const FISHING_DELAY_MS = 2000;
+
+    function createDoorInteractionAction(doorObj, desiredOperation = null, source = 'ui') {
+        const verb = desiredOperation || (doorObj?.isOpen ? 'close' : 'open');
+        return createGameAction({
+            source,
+            actorId: 'player',
+            verb,
+            targetId: makeLegacyDoorActionId(doorObj),
+            routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
+        });
+    }
+
+    function createGameActionExecutionResult(status, action, route, diagnostics = [], effects = []) {
+        return {
+            ok: status === 'executed' || status === 'pending',
+            status,
+            actionId: action?.id || null,
+            targetId: action?.targetId || null,
+            route: route ? copyActionContextValue(route) : null,
+            resolver: route?.resolver || null,
+            effects: copyActionContextValue(effects),
+            diagnostics: diagnostics.map(message => String(message))
+        };
+    }
+
+    function resolveLegacyDoorObject(id) {
+        const referenceId = normalizeGameActionId(id);
+        return referenceId ? doors.find(door => makeLegacyDoorActionId(door) === referenceId) || null : null;
+    }
+
+    function getGroundItemInstanceId(entry) {
+        const data = entry?.hitBox?.userData || {};
+        return normalizeGameActionId(data.item?.id || data.groundItemId);
+    }
+
+    function resolveGroundItemEntryForAction(id) {
+        const referenceId = normalizeGameActionId(id);
+        if (!referenceId) return null;
+        return groundItems.find(entry => {
+            const data = entry?.hitBox?.userData || {};
+            return data.groundItemId === referenceId || getGroundItemInstanceId(entry) === referenceId;
+        }) || null;
+    }
+
+    function resolveInventoryItemSlotForAction(id) {
+        const referenceId = normalizeGameActionId(id);
+        if (!referenceId) return -1;
+        return inventory.findIndex(item => item?.id === referenceId);
+    }
+
+    function createPickupAction(itemReference, source = 'ui') {
+        const data = itemReference?.hitBox?.userData || itemReference?.userData || itemReference || {};
+        const targetId = normalizeGameActionId(data.item?.id || data.itemId || data.groundItemId || data.id);
+        return createGameAction({
+            source,
+            actorId: 'player',
+            verb: 'pickup',
+            targetId,
+            routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
+        });
+    }
+
+    function createDropAction(itemReference, source = 'ui') {
+        const item = getItemSnapshot(itemReference);
+        return createGameAction({
+            source,
+            actorId: 'player',
+            verb: 'drop',
+            targetId: item?.id || null,
+            routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
+        });
+    }
+
+    function createFishingAction(waterReference, source = 'ui') {
+        const level = waterReference?.level ?? waterReference?.sourceLevel ?? currentLevel;
+        const x = waterReference?.x ?? waterReference?.tile?.x;
+        const y = waterReference?.y ?? waterReference?.tile?.y;
+        return createGameAction({
+            source,
+            actorId: 'player',
+            verb: 'fish',
+            targetId: makeWaterActionId(level, x, y),
+            routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
+        });
+    }
+
+    function resolveLocalDoorAction(action, context, route, options = {}) {
+        const diagnostics = [];
+        if (route?.mode !== 'local' || route?.resolver !== 'door') {
+            diagnostics.push('Door resolver requires a local route naming the door resolver.');
+            return createGameActionExecutionResult('rejected', action, route, diagnostics);
+        }
+        if (!context?.target || context.target.id !== action.targetId || context.target.kind !== 'door') {
+            diagnostics.push('Door resolver requires a matching resolved door target.');
+            return createGameActionExecutionResult('rejected', action, route, diagnostics);
+        }
+        if (action.verb !== 'open' && action.verb !== 'close') {
+            diagnostics.push(`Door resolver does not support verb "${action.verb}".`);
+            return createGameActionExecutionResult('rejected', action, route, diagnostics);
+        }
+
+        const door = options.doorOverride || resolveLegacyDoorObject(action.targetId);
+        if (!door || makeLegacyDoorActionId(door) !== action.targetId) {
+            diagnostics.push(`Runtime door "${action.targetId}" could not be resolved.`);
+            return createGameActionExecutionResult('rejected', action, route, diagnostics);
+        }
+
+        const desiredOpenState = action.verb === 'open';
+        door.isOpen = desiredOpenState;
+        door.group.rotation.y = door.baseRot + (door.isOpen ? Math.PI / 2 : 0);
+
+        if (!options.suppressFeedback) {
+            addLogMessage(door.isOpen ? 'You opened the door.' : 'You closed the door.');
+            recordGMEvent(door.isOpen ? 'door_opened' : 'door_closed', { x: door.x, y: door.y, level: door.level, dir: door.dir });
+        }
+
+        return createGameActionExecutionResult('executed', action, route, diagnostics, [{
+            type: 'door_state_changed',
+            targetId: action.targetId,
+            isOpen: door.isOpen
+        }]);
+    }
+
+    function resolveLocalPickupAction(action, context, route) {
+        const diagnostics = [];
+        if (route?.mode !== 'local' || route?.resolver !== 'pickup') {
+            return createGameActionExecutionResult('rejected', action, route, ['Pickup resolver requires a local pickup route.']);
+        }
+        if (!context?.target || context.target.kind !== 'item' || context.target.metadata?.metadataLocation !== 'ground') {
+            return createGameActionExecutionResult('rejected', action, route, ['Pickup resolver requires a resolved ground-item target.']);
+        }
+
+        const entry = resolveGroundItemEntryForAction(action.targetId);
+        if (!entry) return createGameActionExecutionResult('rejected', action, route, [`Ground item "${action.targetId}" is no longer present.`]);
+        const data = entry.hitBox?.userData || {};
+        const item = data.item;
+        if (!item || item.id !== getGroundItemInstanceId(entry)) {
+            addLogMessage('Unknown item.');
+            return createGameActionExecutionResult('rejected', action, route, ['Ground item has no valid stable item instance.']);
+        }
+
+        const emptySlot = inventory.findIndex(value => value === null);
+        if (emptySlot === -1) {
+            addLogMessage('Your inventory is full!');
+            return createGameActionExecutionResult('rejected', action, route, ['Inventory is full; the ground item was not moved.']);
+        }
+
+        const from = { location: 'ground', level: data.sourceLevel, tile: { x: data.interactX, y: data.interactY } };
+        if (!removeGroundItemEntry(entry)) {
+            return createGameActionExecutionResult('rejected', action, route, ['Ground item could not be removed safely; inventory was not changed.']);
+        }
+        inventory[emptySlot] = item;
+        renderInventory();
+        addLogMessage(`You pick up ${item.name}.`);
+        recordGMEvent('item_picked_up', { item: getItemSnapshot(item), x: from.tile.x, y: from.tile.y, level: from.level });
+        saveGMWorld(true);
+
+        return createGameActionExecutionResult('executed', action, route, diagnostics, [{
+            type: 'item_moved',
+            itemId: item.id,
+            from,
+            to: { location: 'inventory', slot: emptySlot },
+            identityPreserved: inventory[emptySlot]?.id === item.id
+        }]);
+    }
+
+    function resolveLocalDropAction(action, context, route) {
+        if (route?.mode !== 'local' || route?.resolver !== 'drop') {
+            return createGameActionExecutionResult('rejected', action, route, ['Drop resolver requires a local drop route.']);
+        }
+        if (!context?.target || context.target.kind !== 'item' || context.target.metadata?.metadataLocation !== 'inventory') {
+            return createGameActionExecutionResult('rejected', action, route, ['Drop resolver requires a resolved inventory-item target.']);
+        }
+
+        const slot = resolveInventoryItemSlotForAction(action.targetId);
+        if (slot < 0) return createGameActionExecutionResult('rejected', action, route, [`Inventory item "${action.targetId}" is no longer present.`]);
+        const item = inventory[slot];
+        if (!item || item.id !== action.targetId) {
+            return createGameActionExecutionResult('rejected', action, route, ['Inventory item identity changed before drop execution.']);
+        }
+        if (groundItems.some(entry => getGroundItemInstanceId(entry) === item.id)) {
+            return createGameActionExecutionResult('rejected', action, route, [`Item "${item.id}" already exists on the ground.`]);
+        }
+
+        const x = context.actor.tile.x;
+        const y = context.actor.tile.y;
+        const level = context.actor.level;
+        if (!isValidTile(x, y, level)) {
+            return createGameActionExecutionResult('rejected', action, route, ['The current player tile is not a valid drop location.']);
+        }
+
+        const groundItemId = `ground_${item.id}`;
+        if (groundItemExists(groundItemId)) {
+            return createGameActionExecutionResult('rejected', action, route, [`Ground container "${groundItemId}" is already occupied.`]);
+        }
+        const droppedHitBox = spawnGroundItem(item, x, y, level, {
+            id: groundItemId,
+            sourceKind: 'dropped',
+            persistent: true,
+            preserveInstance: true
+        });
+        if (!droppedHitBox) return createGameActionExecutionResult('rejected', action, route, ['The item could not be placed in the world; inventory was not changed.']);
+
+        inventory[slot] = null;
+        renderInventory();
+        addLogMessage(`You drop the ${item.name}.`);
+        const snapshot = getItemSnapshot(item);
+        recordGMEvent('item_dropped', { groundItemId: droppedHitBox.userData.groundItemId, item: snapshot, x, y, level });
+        saveGMWorld(true);
+
+        return createGameActionExecutionResult('executed', action, route, [], [{
+            type: 'item_moved',
+            itemId: item.id,
+            from: { location: 'inventory', slot },
+            to: { location: 'ground', level, tile: { x, y }, groundItemId: droppedHitBox.userData.groundItemId },
+            identityPreserved: droppedHitBox.userData.item?.id === item.id
+        }]);
+    }
+
+    function resolveLocalFishingAction(action, context, route, options = {}) {
+        if (route?.mode !== 'local' || route?.resolver !== 'fishing') {
+            return createGameActionExecutionResult('rejected', action, route, ['Fishing resolver requires a local fishing route.']);
+        }
+        if (!context?.target || context.target.kind !== 'water' || context.target.id !== action.targetId) {
+            return createGameActionExecutionResult('rejected', action, route, ['Fishing resolver requires a matching resolved water target.']);
+        }
+        const water = resolveWaterActionReference(action.targetId);
+        if (!water) return createGameActionExecutionResult('rejected', action, route, [`Fishing water "${action.targetId}" is no longer valid.`]);
+
+        const rodAvailable = inventoryHasItem('rod');
+        const capacityAvailable = inventory.some(item => item === null);
+        if (!rodAvailable) {
+            addLogMessage('You need a Fishing Rod to fish.');
+            return createGameActionExecutionResult('rejected', action, route, ['A Fishing Rod is required; fishing was not started.']);
+        }
+
+        const schedule = options.schedule || ((callback, delay) => setTimeout(callback, delay));
+        const random = options.random || Math.random;
+        const now = options.now || (() => Date.now());
+        const startedAt = now();
+        addLogMessage('You cast your line into the water...');
+        player.rotation.y = Math.PI / 2;
+
+        const pendingOutcome = createGameActionExecutionResult('pending', action, route, [], [{
+            type: 'fishing_started',
+            targetId: action.targetId,
+            delayMs: FISHING_DELAY_MS,
+            rodAvailable,
+            capacityAvailable
+        }]);
+
+        schedule(() => {
+            const rollSucceeded = random() > 0.4;
+            const capacityAvailableAtCompletion = inventory.some(item => item === null);
+            let finalOutcome;
+            if (rollSucceeded) {
+                const emptySlot = inventory.findIndex(item => item === null);
+                if (emptySlot !== -1) {
+                    const fish = makeItemInstance('fish');
+                    inventory[emptySlot] = fish;
+                    renderInventory();
+                    addLogMessage('You caught a Raw Fish!');
+                    recordGMEvent('fish_caught', { item: getItemSnapshot(fish), level: currentLevel, x: playerGridX, y: playerGridY });
+                    finalOutcome = createGameActionExecutionResult('executed', action, route, [], [{
+                        type: 'fishing_completed',
+                        result: 'success',
+                        success: true,
+                        rewardItemId: fish.id,
+                        inventorySlot: emptySlot,
+                        rodAvailable,
+                        capacityAvailable: capacityAvailableAtCompletion,
+                        elapsedMs: Math.max(0, now() - startedAt),
+                        delayMs: FISHING_DELAY_MS
+                    }]);
+                } else {
+                    addLogMessage('You caught a fish, but your inventory is full!');
+                    recordGMEvent('fish_caught_inventory_full', { level: currentLevel, x: playerGridX, y: playerGridY });
+                    finalOutcome = createGameActionExecutionResult('executed', action, route, ['The successful catch could not be stored because inventory was full.'], [{
+                        type: 'fishing_completed',
+                        result: 'inventory_full',
+                        success: false,
+                        rewardItemId: null,
+                        rodAvailable,
+                        capacityAvailable: capacityAvailableAtCompletion,
+                        elapsedMs: Math.max(0, now() - startedAt),
+                        delayMs: FISHING_DELAY_MS
+                    }]);
+                }
+            } else {
+                addLogMessage('The fish got away.');
+                recordGMEvent('fish_got_away', { level: currentLevel, x: playerGridX, y: playerGridY });
+                finalOutcome = createGameActionExecutionResult('executed', action, route, [], [{
+                    type: 'fishing_completed',
+                    result: 'failed_roll',
+                    success: false,
+                    rewardItemId: null,
+                    rodAvailable,
+                    capacityAvailable: capacityAvailableAtCompletion,
+                    elapsedMs: Math.max(0, now() - startedAt),
+                    delayMs: FISHING_DELAY_MS
+                }]);
+            }
+            lastFishingExecutionDiagnostic = getFishingExecutionDiagnostic(action, finalOutcome);
+            if (typeof options.onComplete === 'function') options.onComplete(finalOutcome);
+        }, FISHING_DELAY_MS);
+
+        return pendingOutcome;
+    }
+
+    function executeGameAction(gameAction, options = {}) {
+        const actionValidation = validateGameAction(gameAction);
+        const action = actionValidation.action;
+        if (!actionValidation.valid) {
+            return createGameActionExecutionResult('rejected', action, null, actionValidation.errors);
+        }
+
+        const context = buildActionContext(action);
+        const contextValidation = validateActionContext(context);
+        if (!contextValidation.valid) {
+            return createGameActionExecutionResult('rejected', action, null, contextValidation.errors);
+        }
+
+        const route = routeGameAction(action, context);
+        const routeValidation = validateActionRoute(route);
+        if (!routeValidation.valid) {
+            return createGameActionExecutionResult('rejected', action, route, routeValidation.errors);
+        }
+        if (route.mode === 'reject') {
+            return createGameActionExecutionResult('rejected', action, route, [route.reason, ...route.warnings]);
+        }
+        if (route.mode === 'gm' || route.mode === 'hybrid') {
+            return createGameActionExecutionResult('needs_gm', action, route, [route.reason, ...route.warnings]);
+        }
+        if (route.mode === 'local' && route.resolver === 'door') {
+            return resolveLocalDoorAction(action, context, route, options.doorResolverOptions || {});
+        }
+        if (route.mode === 'local' && route.resolver === 'pickup') {
+            return resolveLocalPickupAction(action, context, route);
+        }
+        if (route.mode === 'local' && route.resolver === 'drop') {
+            return resolveLocalDropAction(action, context, route);
+        }
+        if (route.mode === 'local' && route.resolver === 'fishing') {
+            return resolveLocalFishingAction(action, context, route, options.fishingResolverOptions || {});
+        }
+        return createGameActionExecutionResult(
+            'not_migrated',
+            action,
+            route,
+            [`Local resolver "${route.resolver || 'unknown'}" has not been migrated to executeGameAction yet.`]
+        );
+    }
+
+    function getDoorActionExecutionDiagnostic(result) {
+        const effect = result?.effects?.find(entry => entry.type === 'door_state_changed') || null;
+        return {
+            actionId: result?.actionId || null,
+            targetId: result?.targetId || null,
+            mode: result?.route?.mode || null,
+            resolver: result?.resolver || null,
+            status: result?.status || 'rejected',
+            isOpen: effect ? !!effect.isOpen : null,
+            diagnostics: [...(result?.diagnostics || [])]
+        };
+    }
+
+    function getLastDoorActionExecutionDiagnostic() {
+        return lastDoorActionExecutionDiagnostic ? copyActionContextValue(lastDoorActionExecutionDiagnostic) : null;
+    }
+
+    function getItemTransferExecutionDiagnostic(action, result) {
+        const effect = result?.effects?.find(entry => entry.type === 'item_moved') || null;
+        return {
+            actionId: result?.actionId || null,
+            verb: action?.verb || null,
+            itemId: effect?.itemId || action?.targetId || null,
+            from: effect?.from?.location || null,
+            to: effect?.to?.location || null,
+            inventorySlot: effect?.to?.slot ?? effect?.from?.slot ?? null,
+            mode: result?.route?.mode || null,
+            resolver: result?.resolver || null,
+            status: result?.status || 'rejected',
+            identityPreserved: effect ? !!effect.identityPreserved : false,
+            diagnostics: [...(result?.diagnostics || [])]
+        };
+    }
+
+    function getLastItemTransferExecutionDiagnostic() {
+        return lastItemTransferExecutionDiagnostic ? copyActionContextValue(lastItemTransferExecutionDiagnostic) : null;
+    }
+
+    function getFishingExecutionDiagnostic(action, result) {
+        const started = result?.effects?.find(entry => entry.type === 'fishing_started') || null;
+        const completed = result?.effects?.find(entry => entry.type === 'fishing_completed') || null;
+        return {
+            actionId: result?.actionId || null,
+            waterId: action?.targetId || null,
+            mode: result?.route?.mode || null,
+            resolver: result?.resolver || null,
+            status: result?.status || 'rejected',
+            phase: started ? 'pending' : (completed ? 'completed' : 'not_started'),
+            rodAvailable: started?.rodAvailable ?? completed?.rodAvailable ?? (result?.diagnostics || []).every(message => !message.includes('Fishing Rod')),
+            capacityAvailable: started?.capacityAvailable ?? completed?.capacityAvailable ?? null,
+            success: completed?.success ?? null,
+            result: completed?.result || null,
+            rewardItemId: completed?.rewardItemId || null,
+            delayMs: started?.delayMs ?? completed?.delayMs ?? null,
+            elapsedMs: completed?.elapsedMs ?? null,
+            diagnostics: [...(result?.diagnostics || [])]
+        };
+    }
+
+    function getLastFishingExecutionDiagnostic() {
+        return lastFishingExecutionDiagnostic ? copyActionContextValue(lastFishingExecutionDiagnostic) : null;
+    }
+
+    // Developer-console/non-browser diagnostic. A detached door fixture receives the
+    // mutations, so running this test does not toggle the live base door.
+    function runDoorActionExecutionSelfTest() {
+        const liveDoor = doors[0];
+        if (!liveDoor) return { valid: false, error: 'No base door is available for the execution self-test.', cases: [] };
+        const makeFixture = isOpen => ({
+            x: liveDoor.x,
+            y: liveDoor.y,
+            dir: liveDoor.dir,
+            level: liveDoor.level,
+            isOpen,
+            baseRot: liveDoor.baseRot,
+            group: { rotation: { y: liveDoor.baseRot + (isOpen ? Math.PI / 2 : 0) } }
+        });
+
+        const closedFixture = makeFixture(false);
+        const openAction = createDoorInteractionAction(closedFixture, 'open', 'system');
+        const openOutcome = executeGameAction(openAction, { doorResolverOptions: { doorOverride: closedFixture, suppressFeedback: true } });
+
+        const openFixture = makeFixture(true);
+        const closeAction = createDoorInteractionAction(openFixture, 'close', 'system');
+        const closeOutcome = executeGameAction(closeAction, { doorResolverOptions: { doorOverride: openFixture, suppressFeedback: true } });
+
+        const improvisedAction = createGameAction({
+            source: 'text',
+            verb: 'improvise',
+            targetId: makeLegacyDoorActionId(liveDoor),
+            toolId: 'base_shovel_01',
+            intent: 'I wedge the shovel into the crack and try to lever the door open.'
+        });
+        const liveStateBeforeImprovised = liveDoor.isOpen;
+        const improvisedOutcome = executeGameAction(improvisedAction);
+
+        const missingOutcome = executeGameAction(createGameAction({ source: 'system', verb: 'open', targetId: 'door:0:999:999:N' }));
+        const notMigratedOutcome = executeGameAction(createGameAction({ source: 'system', verb: 'walk', parameters: { tile: { x: playerGridX, y: playerGridY } } }));
+        const cases = [
+            { name: 'closed_to_open', outcome: openOutcome, state: closedFixture.isOpen, rotation: closedFixture.group.rotation.y },
+            { name: 'open_to_closed', outcome: closeOutcome, state: openFixture.isOpen, rotation: openFixture.group.rotation.y },
+            { name: 'improvised_needs_gm', outcome: improvisedOutcome, stateUnchanged: liveDoor.isOpen === liveStateBeforeImprovised },
+            { name: 'missing_door_rejected', outcome: missingOutcome },
+            { name: 'movement_not_migrated', outcome: notMigratedOutcome }
+        ];
+        let serializable = true;
+        try { JSON.stringify(cases); }
+        catch (error) { serializable = false; }
+        const valid = serializable
+            && openOutcome.status === 'executed' && closedFixture.isOpen === true && closedFixture.group.rotation.y === closedFixture.baseRot + Math.PI / 2
+            && closeOutcome.status === 'executed' && openFixture.isOpen === false && openFixture.group.rotation.y === openFixture.baseRot
+            && improvisedOutcome.status === 'needs_gm' && liveDoor.isOpen === liveStateBeforeImprovised
+            && missingOutcome.status === 'rejected'
+            && notMigratedOutcome.status === 'not_migrated'
+            && cases.every(entry => GAME_ACTION_EXECUTION_STATUSES.has(entry.outcome.status));
+        return { valid, serializable, error: valid ? null : 'One or more door execution expectations failed.', cases };
     }
 
     function selectCanvasEntity(target, eventType = 'canvas_entity_selected') {
@@ -3810,10 +5382,11 @@
 
     function buildGMWorldSave() {
         return {
-            version: 9,
+            version: 10,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
+            baseDoorStates: getBaseDoorSemanticStatesSnapshot(),
             itemDefs: getItemDefsSnapshot(),
             inventory: getInventorySnapshot(),
             groundItems: getPersistentGroundItemsSnapshot(),
@@ -3984,6 +5557,7 @@
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
+            restoreBaseDoorSemanticStates(save.baseDoorStates);
             if (Array.isArray(save.itemDefs)) save.itemDefs.forEach(def => registerGMItemDef({ ...def, silent: true }));
             if (Array.isArray(save.inventory)) {
                 inventory.fill(null);
@@ -4056,6 +5630,7 @@
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
+            restoreBaseDoorSemanticStates();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
@@ -4080,6 +5655,7 @@
         gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
+        restoreBaseDoorSemanticStates();
         gmEvents.length = 0;
         markGMResponseResolved();
         if (typeof spawnBaseGroundItems === 'function') spawnBaseGroundItems();
@@ -4852,7 +6428,7 @@
     }
 
     function spawnGroundItem(itemSpec, x, y, level, options = {}) {
-        const item = makeItemInstance(itemSpec);
+        const item = options.preserveInstance && isItemInstance(itemSpec) ? itemSpec : makeItemInstance(itemSpec);
         if (!item) { if (!options.silent) addLogMessage('Unknown item.'); return null; }
         const mesh = buildGroundItemMesh(item);
         if (!mesh) { if (!options.silent) addLogMessage('Could not create item visual.'); return null; }
@@ -4934,35 +6510,18 @@
         }));
 
         ctxMenu.appendChild(createBtn(`Drop ${item.name}`, '', () => {
-            const dropped = inventory[index];
-            const snap = getItemSnapshot(dropped);
-            inventory[index] = null;
-            const droppedHitBox = spawnGroundItem(dropped, playerGridX, playerGridY, currentLevel, {
-                id: `ground_${snap?.id || Date.now()}`,
-                sourceKind: 'dropped',
-                persistent: true
-            });
-            addLogMessage(`You drop the ${item.name}.`); renderInventory();
-            recordGMEvent('item_dropped', { groundItemId: droppedHitBox?.userData?.groundItemId || null, item: snap, x: playerGridX, y: playerGridY, level: currentLevel });
-            saveGMWorld(true);
+            const action = createDropAction(inventory[index]);
+            const outcome = executeGameAction(action);
+            lastItemTransferExecutionDiagnostic = getItemTransferExecutionDiagnostic(action, outcome);
         }));
         ctxMenu.appendChild(createBtn(`Cancel`, 'ctx-cancel', () => {}));
     }
 
     function executePickupItem(hitBox) {
-        const emptySlot = inventory.findIndex(i => i === null);
-        if (emptySlot === -1) { addLogMessage('Your inventory is full!'); return; }
-        const item = makeItemInstance(hitBox.userData.item || hitBox.userData.type);
-        if (!item) { addLogMessage('Unknown item.'); return; }
-        const linkedMesh = hitBox.userData.linkedMesh;
-        inventory[emptySlot] = item;
-        addLogMessage(`You pick up ${item.name}.`);
-        renderInventory();
-        recordGMEvent('item_picked_up', { item: getItemSnapshot(item), x: hitBox.userData.interactX, y: hitBox.userData.interactY, level: hitBox.userData.sourceLevel });
-
-        const entry = groundItems.find(g => g.hitBox === hitBox);
-        if (entry) removeGroundItemEntry(entry);
-        saveGMWorld(true);
+        const action = createPickupAction(hitBox);
+        const outcome = executeGameAction(action);
+        lastItemTransferExecutionDiagnostic = getItemTransferExecutionDiagnostic(action, outcome);
+        return outcome;
     }
 
     const BASE_GROUND_ITEMS = [
@@ -4975,7 +6534,7 @@
     function spawnBaseGroundItems() {
         BASE_GROUND_ITEMS.forEach(def => {
             if (removedBaseGroundItemIds.has(def.id) || groundItemExists(def.id)) return;
-            spawnGroundItem(def.item, def.x, def.y, def.level, {
+            spawnGroundItem({ type: def.item, id: def.id }, def.x, def.y, def.level, {
                 id: def.id,
                 sourceKind: 'base',
                 gmCreated: false,
@@ -5035,18 +6594,6 @@
         pathQueue = []; 
         addLogMessage(newLevel === '2' ? "You arrive at the Island." : "You arrive at a new area.");
         recordGMEvent('level_changed', { level: currentLevel, x: playerGridX, y: playerGridY });
-    }
-
-    function executeFishing() {
-        addLogMessage("You cast your line into the water...");
-        player.rotation.y = Math.PI / 2; // Face water
-        setTimeout(() => {
-            if (Math.random() > 0.4) {
-                const emptySlot = inventory.findIndex(i => i === null);
-                if (emptySlot !== -1) { inventory[emptySlot] = makeItemInstance('fish'); renderInventory(); addLogMessage("You caught a Raw Fish!"); recordGMEvent('fish_caught', { item: getItemSnapshot(inventory[emptySlot]), level: currentLevel, x: playerGridX, y: playerGridY }); } 
-                else { addLogMessage("You caught a fish, but your inventory is full!"); recordGMEvent('fish_caught_inventory_full', { level: currentLevel, x: playerGridX, y: playerGridY }); }
-            } else { addLogMessage("The fish got away."); recordGMEvent('fish_got_away', { level: currentLevel, x: playerGridX, y: playerGridY }); }
-        }, 2000);
     }
 
     let cameraYaw = Math.PI / 4; 
@@ -5276,14 +6823,16 @@
             const data = hit.object.userData;
 
             if (data && data.isWater) {
-                if (!inventoryHasItem('rod')) { addLogMessage("You need a Fishing Rod to fish."); return; }
-                
                 // Target the specific walkable tile the user clicked the water from
                 const clickX = Math.round(hit.point.x / TILE_SIZE);
                 const clickY = Math.round(hit.point.z / TILE_SIZE);
                 
                 let newPath = findPath(playerGridX, playerGridY, clickX, clickY, currentLevel, true);
-                pendingAction = () => executeFishing();
+                pendingAction = () => {
+                    const action = createFishingAction({ level: data.sourceLevel, x: clickX, y: clickY });
+                    const outcome = executeGameAction(action);
+                    lastFishingExecutionDiagnostic = getFishingExecutionDiagnostic(action, outcome);
+                };
                 
                 if (newPath.length > 0) pathQueue = newPath;
                 else if (Math.max(Math.abs(playerGridX - clickX), Math.abs(playerGridY - clickY)) <= 1) pathQueue = []; 
@@ -5313,10 +6862,9 @@
 
                 pendingAction = () => {
                     const door = data.doorObj;
-                    door.isOpen = !door.isOpen;
-                    door.group.rotation.y = door.baseRot + (door.isOpen ? Math.PI/2 : 0);
-                    addLogMessage(door.isOpen ? "You opened the door." : "You closed the door.");
-                    recordGMEvent(door.isOpen ? 'door_opened' : 'door_closed', { x: door.x, y: door.y, level: door.level, dir: door.dir });
+                    const action = createDoorInteractionAction(door);
+                    const outcome = executeGameAction(action);
+                    lastDoorActionExecutionDiagnostic = getDoorActionExecutionDiagnostic(outcome);
                 };
 
                 if (chosenPath.length > 0) { pathQueue = chosenPath; } 
