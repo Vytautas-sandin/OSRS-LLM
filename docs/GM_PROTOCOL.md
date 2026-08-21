@@ -16,6 +16,25 @@ The Dev panel has a separately labelled **Action-scoped GM** workflow. **Copy Ac
 
 Paste the correlated `gm_outcome_v1` into the Action-GM textarea and choose **Validate / Apply GM Outcome**. The bridge correlates against only its most recently generated request, validates the outcome, and delegates all preflight and mutation to `applyGMOutcome(...)`. Narration is displayed separately from the physical effects and application diagnostics. Invalid JSON, invalid outcomes, and mismatched action IDs never reach the mutation boundary.
 
+## Late resolution bindings
+
+An outcome may resolve an ambiguous request with optional, explicit bindings:
+
+```json
+"bindings": {
+  "targetId": "base_prop:temple_pillar:0:18:20",
+  "toolId": "base_shovel_01"
+}
+```
+
+Each bound target must occur as the resolved target or in the originating bounded nearby set, and each bound tool must occur in the originating inventory `toolCandidates`. Arbitrary, distant, or non-inventory IDs are rejected. A binding may fill a `null` action reference but may not contradict an explicit `GameAction.targetId` or `GameAction.toolId`. The application result exposes the effective IDs as `resolved.targetId` and `resolved.toolId` without mutating the original action.
+
+## Outcome semantics
+
+- **Narration-only success:** `effects: []` and `memory: []` is valid and performs no mutation or undo capture.
+- **Mutating outcome:** every binding and effect is completely preflighted before the first mutation; an invalid later effect rejects the whole batch.
+- **Failed or impossible action:** `failure` or `blocked` with narration and no effects is valid. A persistent flag or memory fact should be returned only when the failed attempt itself creates a lasting fact.
+
 This bridge does not call `buildGMPayload()`, emit `gm_payload_v0`, include `canvasEntities.all`, embed the legacy command schema, or invoke the legacy Apply JSON controls. Those controls remain available under the clearly marked **Legacy GM / world-building controls** section.
 
 ## GMRequest v1
@@ -72,13 +91,13 @@ Top-level `memory` is canonical. During preflight, `add_memory` effects are norm
 
 `give_item` and `spawn_item` require a stable item instance ID, reject duplicate live IDs, and use the existing item instance, inventory, ground-item, rendering, and save helpers. Items therefore interoperate with the migrated drop/pickup pipeline. Remove/consume operations require the exact authoritative stable ID at preflight.
 
-The current application subset supports all listed v1 effects subject to conservative target constraints. Dynamic entity transforms require a resolvable legacy canvas entity; base doors only accept semantic `set_entity_state`; NPC movement is limited to GM-created NPCs; creation effects require unused IDs and valid tiles. Unsafe or unrepresentable requests reject the complete batch rather than inventing a duplicate entity.
+The current application subset supports all listed v1 effects subject to conservative target constraints. Dynamic entity transforms require a resolvable legacy canvas entity; base doors only accept semantic `set_entity_state`; authored base temple pillars accept context-bound semantic state and damage updates without a duplicate GM prop; NPC movement is limited to GM-created NPCs; creation effects require unused IDs and valid tiles. Unsafe or unrepresentable requests reject the complete batch rather than inventing a duplicate entity.
 
 ## Conservative effect subset
 
 Effects reuse existing legacy GM command operation names rather than defining a second mutation language:
 
-- Existing entity changes: `update_entity`, `transform_entity`, `set_entity_state`.
+- Existing entity changes: `update_entity`, `transform_entity`, `set_entity_state`, `damage_entity`.
 - Movement: `move_npc`, `move_prop`.
 - Small props: `create_prop`, `remove_prop`.
 - Inventory: `give_item`, `remove_item`, `consume_item`.
