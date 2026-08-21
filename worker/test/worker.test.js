@@ -93,6 +93,27 @@ test('structured object and JSON string output forms are accepted', async () => 
   }
 });
 
+test('outcome schema exposes optional nested resolution bindings only', () => {
+  assert.equal(GM_OUTCOME_SCHEMA.required.includes('bindings'), false);
+  assert.equal('targetId' in GM_OUTCOME_SCHEMA.properties, false);
+  assert.equal('toolId' in GM_OUTCOME_SCHEMA.properties, false);
+  assert.deepEqual(GM_OUTCOME_SCHEMA.properties.bindings, {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      targetId: { type: 'string', minLength: 1 },
+      toolId: { type: 'string', minLength: 1 }
+    }
+  });
+});
+
+test('structured output with nested target and tool bindings is preserved', async () => {
+  const boundOutcome = { ...outcome, bindings: { targetId: 'base_prop:temple_pillar:0:18:22', toolId: 'base_shovel_01' } };
+  const response = await handleRequest(browserRequest({ request: validRequest() }), makeEnv({ AI: makeAI({ response: boundOutcome }) }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).outcome, boundOutcome);
+});
+
 test('missing model output returns a safe error', async () => {
   const response = await handleRequest(browserRequest({ request: validRequest() }), makeEnv({ AI: makeAI({}) }));
   assert.equal(response.status, 502);
