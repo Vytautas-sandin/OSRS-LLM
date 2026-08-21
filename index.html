@@ -2610,6 +2610,10 @@
             if (pillar && ['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
                 const originatingTargets = new Set([gmRequest.context?.target?.id, ...(gmRequest.context?.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
                 if (!originatingTargets.has(effect.id)) return fail(index, `base pillar is not present in the originating context: ${effect.id}.`);
+                if (!gmRequest.action?.targetId) {
+                    if (!gmOutcome.bindings?.targetId) return fail(index, `unresolved base pillar mutation requires an explicit bindings.targetId: ${effect.id}.`);
+                    if (gmOutcome.bindings.targetId !== effect.id) return fail(index, `base pillar does not agree with late-bound targetId ${gmOutcome.bindings.targetId}.`);
+                }
                 if (resolvedBindings.targetId && resolvedBindings.targetId !== effect.id) return fail(index, `base pillar does not agree with resolved targetId ${resolvedBindings.targetId}.`);
                 if (effect.op !== 'damage_entity' && !effect.state) return fail(index, 'base pillars only support semantic state or damage updates.');
                 const state = { ...(effect.state || {}) };
