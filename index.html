@@ -38,7 +38,7 @@
         #dev-toggle { position: absolute; right: 10px; bottom: 110px; width: 140px; height: 40px; background: #1f2d24; border: 2px solid #5c4e3c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 25; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
         #dev-toggle:hover { background: #2c3d32; }
         #dev-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
-        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(360px, calc(100vw - 20px)); background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
+        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(380px, calc(100vw - 20px)); max-height: calc(100dvh - 180px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; box-sizing: border-box; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
         #dev-panel-title { color: #ffff00; font-weight: bold; text-shadow: 1px 1px 0 #000; }
         #player-action { width: 100%; height: 48px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
         .dev-label { color: #d0c8b0; font-size: 11px; }
@@ -49,6 +49,10 @@
         .dev-row { display: flex; gap: 6px; }
         .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 5px; font-weight: bold; cursor: pointer; font-size: 11px; }
         .dev-btn:active { transform: translate(1px, 1px); }
+        .dev-section { border-top: 1px solid #8a765b; margin-top: 4px; padding-top: 7px; color: #ffff00; font-weight: bold; }
+        #action-gm-io { width: 100%; height: 110px; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+        #action-gm-diagnostics { margin: 0; padding: 6px; min-height: 34px; white-space: pre-wrap; overflow-wrap: anywhere; background: #171f19; border: 1px solid #506557; color: #d9eadc; font-size: 10px; line-height: 1.35; }
+        #action-gm-narration { min-height: 22px; padding: 6px; background: #2b2419; border-left: 3px solid #d0c8b0; color: #fff; white-space: pre-wrap; }
         #use-indicator { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); max-width: calc(100vw - 30px); background: rgba(31, 45, 36, 0.95); border: 2px solid #d0c8b0; color: #fff; display: none; align-items: center; justify-content: center; padding: 8px 12px; z-index: 28; font-size: 13px; font-weight: bold; text-shadow: 1px 1px 0 #000; box-shadow: 2px 2px 6px rgba(0,0,0,0.5); pointer-events: none; }
 
         /* Inventory System */
@@ -85,6 +89,10 @@
 
         @media (max-width: 600px) {
             #dialogue-box { width: 90%; bottom: 120px; } 
+            #dev-panel { inset: 58px 8px 8px 8px; width: auto; max-height: none; }
+            #dev-toggle { bottom: 108px; }
+            .dev-row { flex-wrap: wrap; }
+            .dev-btn { min-width: 42%; }
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -110,6 +118,20 @@
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
         <div id="dev-panel-title">LLM / GM Panel · JSON Extract v2.7.2</div>
+        <div class="dev-section">Action-scoped GM · gm_request_v1 / gm_outcome_v1</div>
+        <div class="dev-label">Uses the current action text and explicit selection. Paste the correlated outcome below.</div>
+        <div class="dev-label">Player action / question for the GM</div>
+        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
+        <div class="dev-row">
+            <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
+            <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
+        </div>
+        <textarea id="action-gm-io" spellcheck="false" placeholder="A generated gm_request_v1 appears here. Replace it with the correlated gm_outcome_v1 JSON, then validate/apply."></textarea>
+        <div class="dev-label">Action-GM diagnostics</div>
+        <pre id="action-gm-diagnostics">No Action GM request generated.</pre>
+        <div class="dev-label">GM narration (separate from physical effects)</div>
+        <div id="action-gm-narration">—</div>
+        <div class="dev-section">Legacy GM / world-building controls</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -128,8 +150,6 @@
             <button id="export-world-save" class="dev-btn">Export Save</button>
             <button id="import-world-save" class="dev-btn">Import Save</button>
         </div>
-        <div class="dev-label">Player action / question for the GM</div>
-        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
         <div class="dev-label">World summary</div>
         <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
         <div class="dev-label">Memory facts / quest notes, one per line</div>
@@ -195,7 +215,9 @@
             verb,
             targetId: normalizeGameActionId(input.targetId),
             toolId: normalizeGameActionId(input.toolId),
-            intent: normalizeGameActionId(input.intent),
+            // Free-text intent is protocol data, not an identifier. Preserve it byte
+            // for byte so a manual bridge cannot silently rewrite the player's text.
+            intent: typeof input.intent === 'string' ? input.intent : null,
             parameters,
             routing: {
                 mode: routingMode,
@@ -3524,6 +3546,126 @@
         return Promise.resolve();
     }
 
+    // --- ACTION-SCOPED DEV-PANEL BRIDGE ---
+    // This state deliberately holds only the latest bounded request. It never calls
+    // the legacy payload/command path and is replaced whenever Copy is invoked.
+    let latestManualActionGMRequest = null;
+
+    function getManualActionGMSelection() {
+        const target = getLastInteractionTarget();
+        const tool = getSelectedUseItemSnapshot();
+        return {
+            targetId: normalizeGameActionId(target?.id),
+            toolId: normalizeGameActionId(tool?.id)
+        };
+    }
+
+    function setActionGMDiagnostics(details = {}) {
+        const output = document.getElementById('action-gm-diagnostics');
+        if (!output) return;
+        const value = value => value === null || value === undefined || value === '' ? '—' : String(value);
+        const lines = [
+            `Action ID: ${value(details.actionId)}`,
+            `intent: ${value(details.intent)}`,
+            `explicit target ID: ${value(details.targetId)}`,
+            `tool ID: ${value(details.toolId)}`,
+            `route: ${value(details.route)}`,
+            `ActionContext size: ${value(details.contextSize)}`,
+            `GMRequest size: ${value(details.requestSize)}`,
+            `GMOutcome validation: ${value(details.outcomeValidation)}`,
+            `application: ${value(details.application)}`
+        ];
+        if (details.errors?.length) lines.push(`errors: ${details.errors.join(' | ')}`);
+        output.textContent = lines.join('\n');
+    }
+
+    function serializedSizeLabel(value) {
+        const size = getSerializedProtocolSize(value);
+        return size.error ? `error: ${size.error}` : `${size.characters} chars / ${size.bytes} bytes`;
+    }
+
+    function buildManualActionGMRequest() {
+        const intent = document.getElementById('player-action')?.value ?? '';
+        const selection = getManualActionGMSelection();
+        const action = createGameAction({
+            source: 'text', actorId: 'player', verb: 'improvise', intent,
+            targetId: selection.targetId, toolId: selection.toolId,
+            routing: { mode: 'unknown', reason: null }
+        });
+        const context = buildActionContext(action);
+        const route = routeGameAction(action, context);
+        const built = route.mode === 'gm' ? buildGMRequest(action, context, route) : { ok: false, request: null, errors: [] };
+        return { action, context, route, built };
+    }
+
+    function copyManualActionGMRequest() {
+        const generated = buildManualActionGMRequest();
+        const { action, context, route, built } = generated;
+        latestManualActionGMRequest = built.ok ? built.request : null;
+        setActionGMDiagnostics({
+            actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId,
+            route: route.mode, contextSize: serializedSizeLabel(context),
+            requestSize: built.ok ? serializedSizeLabel(built.request) : 'not necessary',
+            outcomeValidation: 'not checked',
+            application: built.ok ? 'awaiting gm_outcome_v1' : `not applied (${route.mode} route)`,
+            errors: built.errors
+        });
+        if (!built.ok) {
+            document.getElementById('action-gm-io').value = '';
+            addLogMessage(route.mode === 'local'
+                ? 'Action routes locally; no GMRequest is necessary.'
+                : `Action GM request unavailable: ${built.errors.join(' ') || route.reason}`);
+            return generated;
+        }
+        const text = JSON.stringify(built.request, null, 2);
+        document.getElementById('action-gm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('Action-scoped GMRequest copied.'))
+            .catch(() => addLogMessage('Action GMRequest created in the panel. Copy it manually.'));
+        return generated;
+    }
+
+    function validateAndApplyManualActionGMOutcome() {
+        const narration = document.getElementById('action-gm-narration');
+        if (narration) narration.textContent = '—';
+        const request = latestManualActionGMRequest;
+        let outcome;
+        let parseError = null;
+        try { outcome = JSON.parse(document.getElementById('action-gm-io')?.value || ''); }
+        catch (error) { parseError = error.message; }
+        if (!request || parseError) {
+            const errors = [!request ? 'Generate a GMRequest before applying an outcome.' : null, parseError ? `Invalid JSON: ${parseError}` : null].filter(Boolean);
+            setActionGMDiagnostics({ outcomeValidation: 'invalid', application: 'not applied', errors });
+            addLogMessage(`GMOutcome not applied: ${errors.join(' ')}`);
+            return { status: 'rejected', diagnostics: errors };
+        }
+        const validation = validateGMOutcome(outcome, request.action.id);
+        if (!validation.valid) {
+            setActionGMDiagnostics({
+                actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
+                toolId: request.action.toolId, route: request.route.mode,
+                contextSize: serializedSizeLabel(request.context), requestSize: serializedSizeLabel(request),
+                outcomeValidation: 'invalid', application: 'not applied (no mutation)', errors: validation.errors
+            });
+            addLogMessage('Invalid GMOutcome rejected without mutation.');
+            return { status: 'rejected', diagnostics: validation.errors };
+        }
+        // applyGMOutcome owns full preflight, undo capture, mutation, rollback, save,
+        // and history. The legacy Apply JSON command system is not involved.
+        const result = applyGMOutcome(request, outcome);
+        if (narration) narration.textContent = result.narration || '—';
+        setActionGMDiagnostics({
+            actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
+            toolId: request.action.toolId, route: request.route.mode,
+            contextSize: serializedSizeLabel(request.context), requestSize: serializedSizeLabel(request),
+            outcomeValidation: 'valid',
+            application: `${result.status}; ${result.appliedEffects.length} physical effect(s), ${result.appliedMemory.length} memory fact(s)`,
+            errors: result.diagnostics
+        });
+        addLogMessage(`GMOutcome ${result.status}; narration shown in Action-GM panel.`);
+        return result;
+    }
+
     function copyGMPayload() {
         const text = JSON.stringify(buildGMPayload(), null, 2);
         document.getElementById('llm-io').value = text;
@@ -6292,6 +6434,8 @@
         ctxMenu.style.display = 'none';
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
+    document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
     document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
     document.getElementById('copy-adventure-seed').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyAdventureSeedPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });

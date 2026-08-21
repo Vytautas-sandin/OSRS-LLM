@@ -10,6 +10,14 @@ needs_gm -> buildGMRequest -> external model -> validateGMOutcome -> applyGMOutc
 
 There is still no model connection. A caller must explicitly pass a correlated request and outcome to `applyGMOutcome(...)`; validation or pasting JSON into the legacy tools does not implicitly invoke this path.
 
+## Manual browser bridge
+
+The Dev panel has a separately labelled **Action-scoped GM** workflow. **Copy Action GM Request** reads the Player action textarea at click time, creates a text-source `improvise` action, preserves an explicitly selected target/tool ID, builds the bounded `ActionContext`, routes it, and copies `gm_request_v1` only when the route needs a GM. An unselected target remains `null`; nearby stable candidates provide late target resolution context.
+
+Paste the correlated `gm_outcome_v1` into the Action-GM textarea and choose **Validate / Apply GM Outcome**. The bridge correlates against only its most recently generated request, validates the outcome, and delegates all preflight and mutation to `applyGMOutcome(...)`. Narration is displayed separately from the physical effects and application diagnostics. Invalid JSON, invalid outcomes, and mismatched action IDs never reach the mutation boundary.
+
+This bridge does not call `buildGMPayload()`, emit `gm_payload_v0`, include `canvasEntities.all`, embed the legacy command schema, or invoke the legacy Apply JSON controls. Those controls remain available under the clearly marked **Legacy GM / world-building controls** section.
+
 ## GMRequest v1
 
 `gm_request_v1` contains the normalized `GameAction`, its bounded `ActionContext`, the derived GM route, a short resolution task, minimal narration/world-change rules, and a conservative allowed-effect vocabulary.
