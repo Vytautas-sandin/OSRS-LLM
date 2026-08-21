@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GM_INSTRUCTIONS, handleRequest, validateRequestBoundary } from '../src/index.js';
+import { GM_INSTRUCTIONS, GM_OUTCOME_SCHEMA, handleRequest, validateRequestBoundary } from '../src/index.js';
 
 const origin = 'https://game.example';
 const outcome = { protocol: 'gm_outcome_v1', actionId: 'action-1', narration: 'Done.', resolution: { result: 'success', reason: 'Possible.' }, effects: [], memory: [] };
@@ -17,15 +17,19 @@ test('valid request calls Workers AI once with default model and preserves the t
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
   assert.equal(body.outcome.actionId, 'action-1');
-  assert.deepEqual(body.meta, { model: '@cf/zai-org/glm-4.7-flash', responseId: '', latencyMs: body.meta.latencyMs });
+  assert.deepEqual(body.meta, { model: '@cf/meta/llama-3.1-8b-instruct-fast', responseId: '', latencyMs: body.meta.latencyMs });
   assert.equal(env.AI.calls.length, 1);
   const [model, input] = env.AI.calls[0];
-  assert.equal(model, '@cf/zai-org/glm-4.7-flash');
+  assert.equal(model, '@cf/meta/llama-3.1-8b-instruct-fast');
   assert.deepEqual(input.messages[0], { role: 'system', content: GM_INSTRUCTIONS });
   assert.equal(input.messages[0].content.includes(validRequest().action.intent), false);
   assert.equal(input.messages[1].role, 'user');
+  assert.match(input.messages[1].content, /required actionId is exactly request\.action\.id/);
   assert.match(input.messages[1].content, /Untrusted game data/);
-  assert.deepEqual(JSON.parse(input.messages[1].content.split('\n')[1]), validRequest());
+  assert.deepEqual(JSON.parse(input.messages[1].content.split('\n')[2]), validRequest());
+  assert.deepEqual(input.response_format, { type: 'json_schema', json_schema: GM_OUTCOME_SCHEMA });
+  assert.equal(input.max_tokens, 512);
+  assert.equal(input.temperature, 0.2);
 });
 
 test('WORKERS_AI_MODEL overrides the default model', async () => {
@@ -81,8 +85,8 @@ test('invalid browser JSON and invalid model JSON have stable errors', async () 
   assert.equal((await invalidOutcome.json()).error.code, 'invalid_model_json');
 });
 
-test('object output forms are accepted', async () => {
-  for (const result of [outcome, { response: outcome }, { result: { response: outcome } }, { output_text: JSON.stringify(outcome) }]) {
+test('structured object and JSON string output forms are accepted', async () => {
+  for (const result of [outcome, { response: outcome }, { response: JSON.stringify(outcome) }, { result: { response: outcome } }, { output_text: JSON.stringify(outcome) }]) {
     const response = await handleRequest(browserRequest({ request: validRequest() }), makeEnv({ AI: makeAI(result) }));
     assert.equal(response.status, 200);
     assert.deepEqual((await response.json()).outcome, outcome);
