@@ -1999,10 +1999,11 @@
                 inventory[slot < 0 ? 1 : slot] = makeItemInstance({ id: 'base_rod_01', type: 'rod' });
             }
             currentLevel = '0'; playerGridX = 15; playerGridY = 20;
-            const pillarAction = createImprovisedGameAction('I hit the pillar with my shovel.');
+            const pillarAction = createImprovisedGameAction('I chip the pillar with my shovel.');
             const pillarContext = buildActionContext(pillarAction);
             const pillars = pillarContext.nearby.entities.filter(entity => entity.id.startsWith('base_prop:temple_pillar:'));
             check('unselectedPillar', pillarAction.targetId === null && pillarAction.toolId === null && pillars.length > 0, pillars.map(entity => entity.id));
+            check('nearbySageCandidate', pillarContext.nearby.entities.some(entity => entity.id === 'sage'), pillarContext.nearby.entities.map(entity => entity.id));
             check('ambiguityPreserved', pillars.length > 1, pillars.map(entity => entity.id));
             check('inventoryToolCandidates', ['base_shovel_01', 'base_rod_01'].every(id => pillarContext.toolCandidates.some(tool => tool.id === id)), pillarContext.toolCandidates);
 
@@ -3764,10 +3765,12 @@
     }
 
     function getManualActionGMSelection() {
-        const target = getLastInteractionTarget();
+        // Interaction history describes prior clicks; it is not a deliberate target
+        // selection for newly typed prose. The active use-item mode, however, is an
+        // explicit current interaction and may remain attached as the action's tool.
         const tool = getSelectedUseItemSnapshot();
         return {
-            targetId: normalizeGameActionId(target?.id),
+            targetId: null,
             toolId: normalizeGameActionId(tool?.id)
         };
     }

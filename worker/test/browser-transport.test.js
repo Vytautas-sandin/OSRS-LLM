@@ -96,3 +96,33 @@ test('live bridge reuses manual builder and keeps manual controls', () => {
   assert.match(html, /id="apply-action-gm-outcome"/);
   assert.match(html, /route\.mode === 'local'/);
 });
+
+test('fresh manual prose ignores stale interaction target but preserves active use-item selection', () => {
+  const selectionStart = html.indexOf('    function getManualActionGMSelection()');
+  const selectionEnd = html.indexOf('    function setActionGMDiagnostics', selectionStart);
+  const builderStart = html.indexOf('    function buildManualActionGMRequest()');
+  const builderEnd = html.indexOf('    function copyManualActionGMRequest', builderStart);
+  assert.ok(selectionStart > 0 && selectionEnd > selectionStart && builderStart > selectionEnd && builderEnd > builderStart);
+
+  const build = selectedUseItem => {
+    const context = {
+      document: { getElementById: id => id === 'player-action' ? { value: 'I chip the pillar with my shovel.' } : null },
+      getLastInteractionTarget: () => ({ id: 'sage', name: 'Sage' }),
+      getSelectedUseItemSnapshot: () => selectedUseItem,
+      normalizeGameActionId: value => typeof value === 'string' && value ? value : null,
+      createGameAction: action => ({ ...action, targetId: action.targetId ?? null, toolId: action.toolId ?? null }),
+      buildActionContext: action => ({ action }),
+      routeGameAction: () => ({ mode: 'gm' }),
+      buildGMRequest: (action, actionContext, route) => ({ ok: true, request: { action, context: actionContext, route }, errors: [] })
+    };
+    vm.createContext(context);
+    vm.runInContext(`${html.slice(selectionStart, selectionEnd)}\n${html.slice(builderStart, builderEnd)}\nthis.generated = buildManualActionGMRequest();`, context);
+    return JSON.parse(JSON.stringify(context.generated.action));
+  };
+
+  assert.deepEqual({ ...build(null) }, {
+    source: 'text', actorId: 'player', verb: 'improvise', intent: 'I chip the pillar with my shovel.',
+    targetId: null, toolId: null, routing: { mode: 'unknown', reason: null }
+  });
+  assert.equal(build({ id: 'base_shovel_01', name: 'Shovel' }).toolId, 'base_shovel_01');
+});
