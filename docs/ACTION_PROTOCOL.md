@@ -111,6 +111,22 @@ For example, `door:0:11:10:S` resolves the south-facing base door at ground-leve
 
 ActionContext includes the direct target/tool even when they require specific lookup, but nearby context is radius-bounded and no global entity dump is added automatically. This keeps future resolver input tied to the action rather than allowing it to grow linearly with the entire world.
 
+## Late GM target resolution
+
+Improvised text does not need a previously clicked target. `createImprovisedGameAction(...)` preserves the player's natural-language intent and leaves `targetId` as `null` when neither an explicit selected target nor a last target is supplied. It never extracts or guesses an entity from the text. An explicit selected target takes precedence over the optional last-target fallback.
+
+The GM instead receives the nearby candidates in `ActionContext.nearby.entities`. Candidate collection uses the player's current level, an 8-tile Chebyshev radius, deterministic distance/kind/id ordering, stable-ID deduplication, and a defensive maximum of 96 entries. Similar entities are not collapsed, so ambiguity is available to the GM. The bounded set includes base doors, explicitly authored temple pillars, structural base walls, placement-derived base transitions, ground items, NPCs, and nearby GM-created entities (including props, hotspots, walls, and transitions). It does not inspect Three.js meshes to invent semantic objects and does not add a whole-world entity dump.
+
+Base features without canonical IDs use deterministic compatibility IDs:
+
+```text
+base_prop:temple_pillar:<level>:<x>:<y>
+base_wall:<level>:<x>:<y>:<direction>
+base_transition:<level>:<x>:<y>:<targetLevel>:<spawnX>:<spawnY>
+```
+
+`runLateGMTargetResolutionSelfTest()` is a side-effect-free browser-console regression covering unselected pillar and door references, explicit target precedence, range/level bounding, ambiguity, the 96-candidate/no-world-dump guard, and `GMRequest` serialization.
+
 `getActionContextDiagnostics(context)` reports serialized character and UTF-8 byte size, nearby entity count, target/tool resolution, and validation results. It is developer instrumentation only and adds no visible UI.
 
 ## Action router v1
