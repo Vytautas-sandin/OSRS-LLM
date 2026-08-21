@@ -138,6 +138,11 @@
             <button id="resolve-action-ai" class="dev-btn">Resolve with AI</button>
         </div>
         <pre id="gm-transport-diagnostics">transport: idle\nendpoint: missing\nauth token: missing</pre>
+        <div class="dev-row">
+            <span id="gm-trace-count" class="dev-label">GM traces: 0 / 30</span>
+            <button id="export-gm-traces" class="dev-btn">Export GM Traces</button>
+            <button id="clear-gm-traces" class="dev-btn">Clear Traces</button>
+        </div>
         <div class="dev-label">GM narration (separate from physical effects)</div>
         <div id="action-gm-narration">—</div>
         <div class="dev-section">Legacy GM / world-building controls</div>
@@ -3693,6 +3698,154 @@
     let latestManualActionGMRequest = null;
     let externalGMRequestPending = false;
 
+    // Dev-only, local observation data. This is deliberately independent of every
+    // world save, memory, undo, request, and application object.
+    const GM_TRACE_PROTOCOL = 'gm_trace_v1';
+    const GM_TRACE_EXPORT_PROTOCOL = 'gm_trace_export_v1';
+    const GM_TRACE_STORAGE_KEY = 'osrs_llm_gm_traces_v1';
+    const GM_TRACE_LIMIT = 30;
+    let gmTraces = [];
+
+    function copyGMTraceValue(value, fallback = null) {
+        try { return JSON.parse(JSON.stringify(value)); }
+        catch (_) { return fallback; }
+    }
+
+    function safeGMTraceText(value) {
+        if (typeof value !== 'string') return null;
+        return value.slice(0, 500)
+            .replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]')
+            .replace(/(token|authorization|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
+    }
+
+    function updateGMTraceCount() {
+        const output = typeof document !== 'undefined' ? document.getElementById('gm-trace-count') : null;
+        if (output) output.textContent = `GM traces: ${gmTraces.length} / ${GM_TRACE_LIMIT}`;
+    }
+
+    function persistGMTraces() {
+        try { localStorage.setItem(GM_TRACE_STORAGE_KEY, JSON.stringify(gmTraces)); }
+        catch (_) {} // In-memory recording continues when storage is unavailable.
+        updateGMTraceCount();
+    }
+
+    function loadGMTraces() {
+        try {
+            const stored = JSON.parse(localStorage.getItem(GM_TRACE_STORAGE_KEY) || '[]');
+            if (Array.isArray(stored)) gmTraces = stored.filter(trace => trace?.protocol === GM_TRACE_PROTOCOL).slice(-GM_TRACE_LIMIT);
+        } catch (_) { gmTraces = []; }
+        updateGMTraceCount();
+        return copyGMTraceValue(gmTraces, []);
+    }
+
+    function makeGMTrace(gmRequest, now = new Date().toISOString()) {
+        const action = gmRequest?.action || {};
+        const context = gmRequest?.context || {};
+        const nearby = Array.isArray(context.nearby?.entities) ? context.nearby.entities : [];
+        const tools = Array.isArray(context.toolCandidates) ? context.toolCandidates : [];
+        const size = getSerializedProtocolSize(gmRequest);
+        return {
+            protocol: GM_TRACE_PROTOCOL, actionId: action.id || null, createdAt: now, updatedAt: now,
+            action: { intent: action.intent || '', targetId: action.targetId || null, toolId: action.toolId || null, route: gmRequest?.route?.mode || null },
+            context: {
+                level: context.actor?.level ?? null, playerTile: copyGMTraceValue(context.actor?.tile),
+                nearbyCount: nearby.length, toolCandidateCount: tools.length,
+                nearbyCandidates: nearby.map(entity => ({ id: entity?.id || null, kind: entity?.kind || null, name: entity?.name || null, distance: Number.isFinite(entity?.distance) ? entity.distance : null })),
+                toolCandidates: tools.map(tool => ({ id: tool?.id || null, name: tool?.name || null, type: tool?.type || null, tags: Array.isArray(tool?.tags) ? tool.tags.slice(0, 12) : [] }))
+            },
+            request: { characters: size.characters, bytes: size.bytes, allowedEffectOps: (gmRequest?.allowedEffects || []).map(effect => effect?.op).filter(Boolean) },
+            transport: { status: 'requesting', httpStatus: null, model: null, latencyMs: null, errorCode: null, errorMessage: null },
+            outcome: null, validation: { valid: null, errors: [], warnings: [] },
+            application: { attempted: false, status: 'not_attempted', preflight: null, resolved: { targetId: null, toolId: null }, diagnostics: [], appliedEffects: [], appliedMemory: [], rollback: null }
+        };
+    }
+
+    function upsertGMTrace(actionId, updater) {
+        try {
+            const index = gmTraces.findIndex(trace => trace.actionId === actionId);
+            const current = index >= 0 ? copyGMTraceValue(gmTraces[index]) : null;
+            const updated = updater(current);
+            if (!updated || updated.protocol !== GM_TRACE_PROTOCOL || !updated.actionId) return null;
+            updated.updatedAt = new Date().toISOString();
+            if (index >= 0) gmTraces.splice(index, 1);
+            gmTraces.push(copyGMTraceValue(updated));
+            if (gmTraces.length > GM_TRACE_LIMIT) gmTraces.splice(0, gmTraces.length - GM_TRACE_LIMIT);
+            persistGMTraces();
+            return copyGMTraceValue(updated);
+        } catch (_) { updateGMTraceCount(); return null; }
+    }
+
+    function startGMTrace(gmRequest) {
+        return upsertGMTrace(gmRequest?.action?.id, () => makeGMTrace(gmRequest));
+    }
+
+    function recordGMTraceTransport(actionId, result, latencyMs) {
+        return upsertGMTrace(actionId, trace => {
+            if (!trace) return null;
+            trace.transport = {
+                status: result?.ok ? 'received' : 'error', httpStatus: Number.isInteger(result?.httpStatus) ? result.httpStatus : null,
+                model: result?.ok && typeof result?.meta?.model === 'string' ? result.meta.model : null,
+                latencyMs: Number.isFinite(latencyMs) ? Math.max(0, Math.round(latencyMs)) : null,
+                errorCode: result?.ok ? null : safeGMTraceText(result?.error?.code),
+                errorMessage: result?.ok ? null : safeGMTraceText(result?.error?.message)
+            };
+            trace.outcome = result?.outcome && typeof result.outcome === 'object' ? copyGMTraceValue(result.outcome) : null;
+            const validation = result?.outcomeValidation;
+            trace.validation = { valid: result?.ok ? true : (validation?.valid ?? false), errors: copyGMTraceValue(validation?.errors, []), warnings: copyGMTraceValue(validation?.warnings, []) };
+            return trace;
+        });
+    }
+
+    function recordGMTraceApplication(actionId, result) {
+        return upsertGMTrace(actionId, trace => {
+            if (!trace) return null;
+            trace.application = {
+                attempted: true, status: result?.status || 'rejected', preflight: typeof result?.preflight === 'boolean' ? result.preflight : false,
+                resolved: copyGMTraceValue(result?.resolved, { targetId: null, toolId: null }), diagnostics: copyGMTraceValue(result?.diagnostics, []),
+                appliedEffects: copyGMTraceValue(result?.appliedEffects, []), appliedMemory: copyGMTraceValue(result?.appliedMemory, []), rollback: copyGMTraceValue(result?.rollback)
+            };
+            return trace;
+        });
+    }
+
+    function buildGMTraceExport(exportedAt = new Date().toISOString()) {
+        const traces = copyGMTraceValue(gmTraces, []);
+        const latencies = traces.map(trace => trace.transport?.latencyMs).filter(Number.isFinite);
+        const effectOpCounts = {};
+        const errorCodeCounts = {};
+        traces.forEach(trace => {
+            (trace.outcome?.effects || []).forEach(effect => { if (effect?.op) effectOpCounts[effect.op] = (effectOpCounts[effect.op] || 0) + 1; });
+            if (trace.transport?.errorCode) errorCodeCounts[trace.transport.errorCode] = (errorCodeCounts[trace.transport.errorCode] || 0) + 1;
+        });
+        return { protocol: GM_TRACE_EXPORT_PROTOCOL, exportedAt, summary: {
+            traceCount: traces.length, receivedCount: traces.filter(trace => trace.transport?.status === 'received').length,
+            errorCount: traces.filter(trace => trace.transport?.status === 'error').length,
+            validOutcomeCount: traces.filter(trace => trace.validation?.valid === true).length,
+            appliedCount: traces.filter(trace => trace.application?.status === 'applied').length,
+            rejectedCount: traces.filter(trace => ['rejected', 'failed'].includes(trace.application?.status)).length,
+            averageLatencyMs: latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : null,
+            effectOpCounts, errorCodeCounts
+        }, traces };
+    }
+
+    function exportGMTraces() {
+        try {
+            const envelope = buildGMTraceExport();
+            const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `osrs-llm-gm-traces-${envelope.exportedAt.replace(/[:.]/g, '-')}.json`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 0);
+        } catch (_) { addLogMessage('GM trace export failed; gameplay was not affected.'); }
+    }
+
+    function clearGMTraces() {
+        gmTraces = [];
+        try { localStorage.removeItem(GM_TRACE_STORAGE_KEY); } catch (_) {}
+        updateGMTraceCount();
+    }
+
     function makeGMTransportError(code, message, httpStatus = null) {
         return { ok: false, error: { code, message }, httpStatus };
     }
@@ -3738,7 +3891,7 @@
             if (!envelope.outcome || typeof envelope.outcome !== 'object' || Array.isArray(envelope.outcome)) return makeGMTransportError('invalid_response_envelope', 'The GM service response did not contain an outcome.', response.status);
             if (envelope.outcome.actionId !== gmRequest.action.id) return makeGMTransportError('action_id_mismatch', 'The returned outcome does not match the pending action.', response.status);
             const outcomeValidation = validateGMOutcome(envelope.outcome, gmRequest.action.id);
-            if (!outcomeValidation.valid) return { ...makeGMTransportError('invalid_gm_outcome', outcomeValidation.errors.join(' '), response.status), outcomeValidation };
+            if (!outcomeValidation.valid) return { ...makeGMTransportError('invalid_gm_outcome', outcomeValidation.errors.join(' '), response.status), outcome: envelope.outcome, outcomeValidation };
             return { ok: true, outcome: envelope.outcome, meta: envelope.meta || {}, httpStatus: response.status, outcomeValidation };
         } finally {
             clearTimeout(timeout);
@@ -3860,7 +4013,10 @@
         try { sessionStorage.setItem('osrs_llm_gm_access_token', accessToken); } catch (_) {}
         if (button) { button.disabled = true; button.textContent = 'Requesting…'; }
         setGMTransportDiagnostics('requesting');
+        startGMTrace(built.request);
+        const traceStartedAt = Date.now();
         const result = await requestExternalGMOutcome(built.request, { endpoint, accessToken });
+        recordGMTraceTransport(action.id, result, Date.now() - traceStartedAt);
         if (button) { button.disabled = false; button.textContent = 'Resolve with AI'; }
         if (!result.ok) {
             setGMTransportDiagnostics('error', { httpStatus: result.httpStatus, error: result.error.message });
@@ -3887,6 +4043,7 @@
             const errors = [!request ? 'Generate a GMRequest before applying an outcome.' : null, parseError ? `Invalid JSON: ${parseError}` : null].filter(Boolean);
             setActionGMDiagnostics({ outcomeValidation: 'invalid', application: 'not applied', errors });
             addLogMessage(`GMOutcome not applied: ${errors.join(' ')}`);
+            if (request?.action?.id) recordGMTraceApplication(request.action.id, { status: 'rejected', preflight: false, diagnostics: errors });
             return { status: 'rejected', diagnostics: errors };
         }
         const validation = validateGMOutcome(outcome, request.action.id);
@@ -3898,11 +4055,13 @@
                 outcomeValidation: 'invalid', application: 'not applied (no mutation)', errors: validation.errors
             });
             addLogMessage('Invalid GMOutcome rejected without mutation.');
+            recordGMTraceApplication(request.action.id, { status: 'rejected', preflight: false, diagnostics: validation.errors });
             return { status: 'rejected', diagnostics: validation.errors };
         }
         // applyGMOutcome owns full preflight, undo capture, mutation, rollback, save,
         // and history. The legacy Apply JSON command system is not involved.
         const result = applyGMOutcome(request, outcome);
+        recordGMTraceApplication(request.action.id, result);
         if (narration) narration.textContent = result.narration || '—';
         setActionGMDiagnostics({
             actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
@@ -6690,12 +6849,15 @@
     document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
     document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
     document.getElementById('resolve-action-ai').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resolveManualActionWithAI(); });
+    document.getElementById('export-gm-traces').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); exportGMTraces(); });
+    document.getElementById('clear-gm-traces').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); clearGMTraces(); });
     const gmEndpointInput = document.getElementById('gm-endpoint');
     const gmAccessTokenInput = document.getElementById('gm-access-token');
     try { gmEndpointInput.value = localStorage.getItem('osrs_llm_gm_endpoint') || ''; } catch (_) {}
     try { gmAccessTokenInput.value = sessionStorage.getItem('osrs_llm_gm_access_token') || ''; } catch (_) {}
     [gmEndpointInput, gmAccessTokenInput].forEach(input => input.addEventListener('input', () => setGMTransportDiagnostics('idle')));
     setGMTransportDiagnostics('idle');
+    loadGMTraces();
     document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
     document.getElementById('copy-adventure-seed').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyAdventureSeedPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
