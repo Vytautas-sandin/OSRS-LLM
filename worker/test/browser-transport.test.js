@@ -15,6 +15,13 @@ function loadAdapter() {
   return context.requestExternalGMOutcome;
 }
 
+function loadAdapterWithTimers(setTimeoutImpl, clearTimeoutImpl = () => {}, contextOverrides = {}) {
+  const context = { AbortController, setTimeout: setTimeoutImpl, clearTimeout: clearTimeoutImpl, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }), ...contextOverrides };
+  vm.createContext(context);
+  vm.runInContext(`let externalGMRequestPending = false;\n${html.slice(start, end)}\nthis.requestExternalGMOutcome = requestExternalGMOutcome;`, context);
+  return context.requestExternalGMOutcome;
+}
+
 const request = { action: { id: 'action-1' }, route: { mode: 'gm' } };
 const outcome = { protocol: 'gm_outcome_v1', actionId: 'action-1', effects: [], memory: [] };
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
@@ -53,6 +60,31 @@ test('browser adapter suppresses a duplicate while pending', async () => {
   const second = await adapter(request, config(async () => { calls++; return response({ ok: true, outcome }); }));
   assert.equal(second.error.code, 'request_pending'); assert.equal(calls, 1);
   release(); await first;
+});
+
+test('browser adapter defaults to 60000 ms and aborts safely without world mutation', async () => {
+  let configuredDelay;
+  let timeoutCallback;
+  let worldMutationCount = 0;
+  const adapter = loadAdapterWithTimers((callback, delay) => {
+    configuredDelay = delay;
+    timeoutCallback = callback;
+    return 1;
+  }, () => {}, { applyGMOutcome: () => { worldMutationCount++; } });
+  const resultPromise = adapter(request, {
+    endpoint: 'https://worker.example/resolve-action',
+    accessToken: 'secret',
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    })
+  });
+  assert.equal(configuredDelay, 60000);
+  timeoutCallback();
+  const result = await resultPromise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'timeout');
+  assert.equal(worldMutationCount, 0);
+  assert.doesNotMatch(html.slice(start, end), /applyGMOutcome\s*\(/);
 });
 
 test('live bridge reuses manual builder and keeps manual controls', () => {
