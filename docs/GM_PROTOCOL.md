@@ -8,7 +8,20 @@
 needs_gm -> buildGMRequest -> external model -> validateGMOutcome -> applyGMOutcome
 ```
 
-There is still no model connection. A caller must explicitly pass a correlated request and outcome to `applyGMOutcome(...)`; validation or pasting JSON into the legacy tools does not implicitly invoke this path.
+An optional live transport now sends a validated request to the separate Cloudflare Worker. A caller must still explicitly press **Validate / Apply GM Outcome** for the correlated response; receiving, validating, or displaying model JSON never invokes `applyGMOutcome(...)`.
+
+## Live external transport
+
+The Dev panel's compact **Live GM transport** subsection stores its ordinary endpoint in local storage and its password-masked prototype token in session storage only. **Resolve with AI** uses the same `buildManualActionGMRequest()` path as the manual Copy button, refuses local routes, prevents concurrent submissions, applies a timeout, and sends only `{ request: gm_request_v1 }` to the configured Worker. On success it validates correlation and `gm_outcome_v1`, places the JSON into the existing Action-GM textarea, retains the exact request, and waits for manual application.
+
+```text
+Game -> gm_request_v1 -> Worker -> OpenAI Responses API -> gm_outcome_v1
+     -> browser validation -> MANUAL Validate / Apply -> canonical world state
+```
+
+Transport diagnostics expose only configuration presence, state, HTTP status, model/response metadata, correlation, bindings, and validation/effect counts. They never expose the token or a raw OpenAI response. Transport failures preserve the request and do not mutate the world.
+
+The Worker deployment and secret commands are documented in `worker/README.md`. `OPENAI_API_KEY` and `GM_ACCESS_TOKEN` are Worker secrets and must never be committed. `OPENAI_MODEL` (default `gpt-5.6-terra`) and `ALLOWED_ORIGIN` are server configuration. CORS is not authorization: every model request also requires the access token. The backend treats all browser protocol content as untrusted game data, fixes its own OpenAI URL/model/instructions, and treats model output as untrusted until browser validation and application preflight succeed.
 
 ## Manual browser bridge
 
@@ -143,7 +156,7 @@ Implemented application boundary:
 
 Not implemented:
 
-- External model/API calls.
-- Automatic prompt submission.
+- Automatic outcome application.
+- Paid API calls in automated tests.
 - Any call from `executeGameAction()` into the legacy GM command application engine.
 - Automatic outcome application.
