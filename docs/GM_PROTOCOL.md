@@ -27,6 +27,10 @@ The Worker deployment and secret commands are documented in `worker/README.md`. 
 
 The Dev panel has a separately labelled **Action-scoped GM** workflow. **Copy Action GM Request** reads the Player action textarea at click time, creates a text-source `improvise` action, preserves an explicitly selected target/tool ID, builds the bounded `ActionContext`, routes it, and copies `gm_request_v1` only when the route needs a GM. An unselected target remains `null`; nearby stable candidates provide late target resolution context.
 
+### Dev-only live GM traces
+
+Live **Resolve with AI** actions produce local `gm_trace_v1` diagnostics, capped at the 30 most recent actions. They contain compact candidate, transport, validation, and application snapshots but no credentials, headers, token, or endpoint. Traces remain in their separate browser-local store until explicitly cleared or downloaded in a `gm_trace_export_v1` envelope; they are never sent to a server and never influence the AI request or canonical world state.
+
 Paste the correlated `gm_outcome_v1` into the Action-GM textarea and choose **Validate / Apply GM Outcome**. The bridge correlates against only its most recently generated request, validates the outcome, and delegates all preflight and mutation to `applyGMOutcome(...)`. Narration is displayed separately from the physical effects and application diagnostics. Invalid JSON, invalid outcomes, and mismatched action IDs never reach the mutation boundary.
 
 ## Late resolution bindings
