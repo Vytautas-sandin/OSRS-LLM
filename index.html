@@ -301,6 +301,10 @@
     const interactables = []; 
     const roofZones = [];
     const doors = [];
+    // Plain authoring registries for base features that need semantic identity.
+    // Do not derive these from rendered Three.js meshes.
+    const baseArchitecturalProps = [];
+    const baseTransitions = [];
 
     const unwalkables = { '-1': [], '0': [], '2': [] };
     const pathTiles = [];
@@ -716,6 +720,11 @@
         const colGeo = new THREE.CylinderGeometry(0.3, 0.3, 3.2, 8);
         for(let cy=20; cy<=24; cy+=2) {
             for(let cx of [12, 18]) {
+                baseArchitecturalProps.push({
+                    id: `base_prop:temple_pillar:${level}:${cx}:${cy}`,
+                    kind: 'prop', name: 'Temple Pillar', level, x: cx, y: cy,
+                    shape: 'pillar', blocksMovement: true, source: 'base_temple'
+                });
                 const col = new THREE.Mesh(colGeo, colMat);
                 let pos = getGridWorldPos(cx, cy, level);
                 col.position.set(pos.x, pos.y + 1.6, pos.z);
@@ -760,6 +769,10 @@
     Object.keys(allWalls).forEach(lvl => { allWalls[lvl].forEach(w => buildWall(w, lvl)); });
 
     function buildTrapdoorAndLadder() {
+        baseTransitions.push(
+            { id: 'base_transition:0:10:8:-1:10:8', kind: 'transition', name: 'Cellar Trapdoor', level: '0', x: 10, y: 8, targetLevel: '-1', spawnX: 10, spawnY: 8, shape: 'trapdoor' },
+            { id: 'base_transition:-1:10:8:0:10:8', kind: 'transition', name: 'Cellar Ladder', level: '-1', x: 10, y: 8, targetLevel: '0', spawnX: 10, spawnY: 8, shape: 'ladder' }
+        );
         const groundHoleGeo = new THREE.BoxGeometry(TILE_SIZE*0.8, 0.05, TILE_SIZE*0.8);
         const groundHoleMat = new THREE.MeshBasicMaterial({ color: 0x000000 }); 
         const hole = new THREE.Mesh(groundHoleGeo, groundHoleMat);
@@ -847,6 +860,10 @@
     createPalmTree(20, 20, '2'); createPalmTree(18, 21, '2'); createPalmTree(21, 18, '2');
 
     function createRowboat(x, y, level, targetLevel, spawnX, spawnY) {
+        baseTransitions.push({
+            id: `base_transition:${level}:${x}:${y}:${targetLevel}:${spawnX}:${spawnY}`,
+            kind: 'transition', name: 'Rowboat', level, x, y, targetLevel, spawnX, spawnY, shape: 'boat'
+        });
         const group = new THREE.Group();
         const mat = new THREE.MeshLambertMaterial({ color: 0x5c4033 });
         const hull = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 0.6), mat);
@@ -1606,6 +1623,7 @@
     // meshes, DOM nodes, materials, functions, and the global canvas-entity dump.
     const ACTION_CONTEXT_PROTOCOL = 'action_context_v1';
     const ACTION_CONTEXT_NEARBY_RADIUS = 8;
+    const ACTION_CONTEXT_NEARBY_MAX = 96;
     const ACTION_CONTEXT_EVENT_LIMIT = 20;
 
     function copyActionContextValue(value, seen = new WeakSet(), depth = 0) {
@@ -1675,6 +1693,17 @@
         };
     }
 
+    function getBaseWallActionSnapshot(wall, level) {
+        const direction = String(wall?.dir || '').toUpperCase();
+        if (!wall || !direction) return null;
+        return toActionContextEntity({
+            id: `base_wall:${level}:${wall.x}:${wall.y}:${direction}`,
+            kind: 'wall', name: `${wall.type === 'stone' ? 'Stone' : 'Structural'} Wall`,
+            level, x: wall.x, y: wall.y, dir: direction, type: wall.type || 'wall',
+            blocksMovement: true, compatibilityId: true
+        });
+    }
+
     function toActionContextEntity(snapshot) {
         if (!snapshot) return null;
         const reserved = new Set(['id', 'kind', 'name', 'level', 'x', 'y', 'gridX', 'gridY', 'state', 'blocksMovement', 'walkable']);
@@ -1707,6 +1736,19 @@
 
         const water = resolveWaterActionReference(referenceId);
         if (water) return water;
+
+        const baseProp = baseArchitecturalProps.find(entity => entity.id === referenceId);
+        if (baseProp) return toActionContextEntity(baseProp);
+
+        const baseTransition = baseTransitions.find(entity => entity.id === referenceId);
+        if (baseTransition) return toActionContextEntity(baseTransition);
+
+        const wallMatch = /^base_wall:([^:]+):(-?\d+):(-?\d+):([NSEW])$/.exec(referenceId);
+        if (wallMatch) {
+            const [, level, x, y, direction] = wallMatch;
+            const wall = (allWalls[level] || []).find(entry => !entry.gmId && entry.x === Number(x) && entry.y === Number(y) && String(entry.dir).toUpperCase() === direction);
+            if (wall) return getBaseWallActionSnapshot(wall, level);
+        }
 
         const canvasEntity = getAllCanvasEntities().find(entity => entity.id === referenceId || entity.itemId === referenceId);
         if (canvasEntity) {
@@ -1766,11 +1808,37 @@
         const nearbyDoors = doors
             .filter(door => door.level === currentLevel && distanceToPlayerTile(door.x, door.y, door.level) <= radius)
             .map(getLegacyDoorActionSnapshot);
+        const nearbyBaseProps = baseArchitecturalProps
+            .filter(entity => entity.level === currentLevel && distanceToPlayerTile(entity.x, entity.y, entity.level) <= radius)
+            .map(toActionContextEntity);
+        const nearbyBaseWalls = (allWalls[currentLevel] || [])
+            .filter(wall => !wall.gmId && distanceToPlayerTile(wall.x, wall.y, currentLevel) <= radius)
+            .map(wall => getBaseWallActionSnapshot(wall, currentLevel));
+        const nearbyBaseTransitions = baseTransitions
+            .filter(entity => entity.level === currentLevel && distanceToPlayerTile(entity.x, entity.y, entity.level) <= radius)
+            .map(toActionContextEntity);
         const deduplicated = new Map();
-        [...dynamic, ...nearbyNPCs, ...nearbyDoors].filter(Boolean).forEach(entity => {
+        [...dynamic, ...nearbyNPCs, ...nearbyDoors, ...nearbyBaseProps, ...nearbyBaseWalls, ...nearbyBaseTransitions].filter(Boolean).forEach(entity => {
             deduplicated.set(`${entity.kind}:${entity.id}`, entity);
         });
-        return Array.from(deduplicated.values());
+        return Array.from(deduplicated.values())
+            .map(entity => ({ ...entity, distance: entity.tile ? distanceToPlayerTile(entity.tile.x, entity.tile.y, entity.level) : Infinity }))
+            .filter(entity => entity.level === currentLevel && entity.distance <= radius)
+            .sort((a, b) => a.distance - b.distance || String(a.kind).localeCompare(String(b.kind)) || String(a.id).localeCompare(String(b.id)))
+            .slice(0, ACTION_CONTEXT_NEARBY_MAX);
+    }
+
+    // Free text remains authoritative. Only an explicit selection supplies targetId;
+    // candidate names are deliberately not matched against the prose here.
+    function createImprovisedGameAction(intent, { selectedTarget = null, lastTarget = null, toolId = null } = {}) {
+        const explicitTarget = selectedTarget || lastTarget;
+        const explicitTargetId = explicitTarget && typeof explicitTarget === 'object' ? explicitTarget.id : explicitTarget;
+        return createGameAction({
+            source: 'text', actorId: 'player', verb: 'improvise',
+            targetId: normalizeGameActionId(explicitTargetId),
+            toolId: normalizeGameActionId(toolId), intent,
+            routing: { mode: 'unknown', reason: 'Late GM target resolution.' }
+        });
     }
 
     function getRelevantActionAnchors(action, target) {
@@ -1819,6 +1887,7 @@
         if (!actionResult.valid) errors.push(...actionResult.errors.map(error => `Action: ${error}`));
         if (!context?.actor || context.actor.id !== actionResult.action.actorId) errors.push('ActionContext actor must match the action actorId.');
         if (!Array.isArray(context?.nearby?.entities)) errors.push('ActionContext nearby.entities must be an array.');
+        if (context?.nearby?.entities?.length > ACTION_CONTEXT_NEARBY_MAX) errors.push(`ActionContext nearby.entities exceeds ${ACTION_CONTEXT_NEARBY_MAX} candidates.`);
         if (!context?.relevantState || typeof context.relevantState !== 'object') errors.push('ActionContext relevantState is required.');
         if (!Array.isArray(context?.anchors)) errors.push('ActionContext anchors must be an array.');
         if (actionResult.action.targetId && !context?.target) warnings.push(`Target did not resolve: ${actionResult.action.targetId}.`);
@@ -1850,6 +1919,39 @@
             const context = buildActionContext(result.action);
             return { action: result.action, context, diagnostics: getActionContextDiagnostics(context) };
         });
+    }
+
+    // Browser-console regression for late GM target resolution. It temporarily moves
+    // only the logical player tile and restores it before returning.
+    function runLateGMTargetResolutionSelfTest() {
+        const original = { x: playerGridX, y: playerGridY, level: currentLevel };
+        const results = {};
+        const check = (name, pass, detail = null) => { results[name] = { pass: !!pass, detail }; };
+        try {
+            currentLevel = '0'; playerGridX = 15; playerGridY = 20;
+            const pillarAction = createImprovisedGameAction('I hit the pillar with the shovel.', { toolId: 'base_shovel_01' });
+            const pillarContext = buildActionContext(pillarAction);
+            const pillars = pillarContext.nearby.entities.filter(entity => entity.id.startsWith('base_prop:temple_pillar:'));
+            check('unselectedPillar', pillarAction.targetId === null && pillars.length > 0, pillars.map(entity => entity.id));
+            check('ambiguityPreserved', pillars.length > 1, pillars.map(entity => entity.id));
+
+            playerGridX = 11; playerGridY = 11;
+            const door = doors.find(entry => entry.level === currentLevel && distanceToPlayerTile(entry.x, entry.y, entry.level) <= ACTION_CONTEXT_NEARBY_RADIUS);
+            const doorId = makeLegacyDoorActionId(door);
+            const unselectedDoor = createImprovisedGameAction('I strike the nearby door.');
+            const doorContext = buildActionContext(unselectedDoor);
+            check('unselectedDoor', unselectedDoor.targetId === null && doorContext.nearby.entities.some(entity => entity.id === doorId), doorId);
+            const selectedDoor = createImprovisedGameAction('I strike the door.', { selectedTarget: { id: doorId }, lastTarget: { id: 'bob' } });
+            check('explicitTargetWins', selectedDoor.targetId === doorId && buildActionContext(selectedDoor).target?.id === doorId, selectedDoor.targetId);
+            check('distantExcluded', !doorContext.nearby.entities.some(entity => entity.id.startsWith('base_prop:temple_pillar:')), doorContext.nearby.entities.length);
+            check('noWholeWorldDump', doorContext.nearby.entities.length <= ACTION_CONTEXT_NEARBY_MAX && !doorContext.canvasEntities && !doorContext.nearby.all, doorContext.nearby.entities.length);
+            const route = routeGameAction(unselectedDoor, doorContext);
+            const built = buildGMRequest(unselectedDoor, doorContext, route);
+            check('gmRequestSerializes', built.ok && !!JSON.stringify(built.request) && validateGMRequest(built.request).valid, built.errors);
+        } finally {
+            currentLevel = original.level; playerGridX = original.x; playerGridY = original.y;
+        }
+        return { pass: Object.values(results).every(result => result.pass), cases: results };
     }
 
     // --- 5D. ACTION ROUTER V1 ---

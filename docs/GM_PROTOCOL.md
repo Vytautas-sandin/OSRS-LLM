@@ -20,6 +20,8 @@ It deliberately excludes source code, DOM or Three.js objects, and `canvasEntiti
 
 `buildGMRequest(...)` returns `{ ok, request, errors }` and refuses non-GM routes. `validateGMRequest(...)` independently checks the action, context, route, protocol, policy shape, allowed effects, plain JSON values, and serialization.
 
+Target resolution for unselected improvised actions happens late, at the GM boundary. In that case `action.targetId` remains `null`, the original intent is unchanged, and the request carries the bounded nearby candidate list described in the Action protocol. The client does not select a candidate by matching words in the intent. Explicit selected/last-target IDs remain direct targets and take precedence over candidate interpretation.
+
 ## GMOutcome v1
 
 `gm_outcome_v1` contains:
