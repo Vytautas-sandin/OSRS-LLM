@@ -88,6 +88,7 @@ The v1 context contains:
 - The normalized action.
 - The actor's current level, tile, compact inventory, active tool mode, and selected use item.
 - A resolved target and tool when their stable references can be found.
+- A bounded `toolCandidates` list of inventory tools, containing only stable ID, display name, type, and tags. When `toolId` is explicit, it is the sole candidate.
 - Nearby action-relevant entity snapshots within the existing eight-tile canvas interaction radius.
 - The recent GM event delta, capped at 20 events.
 - World flags and serialized world memory.
@@ -113,9 +114,9 @@ ActionContext includes the direct target/tool even when they require specific lo
 
 ## Late GM target resolution
 
-Improvised text does not need a previously clicked target. `createImprovisedGameAction(...)` preserves the player's natural-language intent and leaves `targetId` as `null` when neither an explicit selected target nor a last target is supplied. It never extracts or guesses an entity from the text. An explicit selected target takes precedence over the optional last-target fallback.
+Improvised text does not need a previously clicked target or tool. `createImprovisedGameAction(...)` preserves the player's natural-language intent and leaves `targetId` and `toolId` as `null` when no explicit selections are supplied. It never extracts or guesses an entity or tool from the text. An explicit selected target takes precedence over the optional last-target fallback, and an explicit tool suppresses tool-candidate ambiguity.
 
-The GM instead receives the nearby candidates in `ActionContext.nearby.entities`. Candidate collection uses the player's current level, an 8-tile Chebyshev radius, deterministic distance/kind/id ordering, stable-ID deduplication, and a defensive maximum of 96 entries. Similar entities are not collapsed, so ambiguity is available to the GM. The bounded set includes base doors, explicitly authored temple pillars, structural base walls, placement-derived base transitions, ground items, NPCs, and nearby GM-created entities (including props, hotspots, walls, and transitions). It does not inspect Three.js meshes to invent semantic objects and does not add a whole-world entity dump.
+The GM instead receives target candidates in `ActionContext.nearby.entities` and inventory tool candidates in `ActionContext.toolCandidates`. Nearby collection uses the player's current level, an 8-tile Chebyshev radius, deterministic distance/kind/id ordering, stable-ID deduplication, and a defensive maximum of 96 entries. Similar entities are not collapsed, so ambiguity is available to the GM. The bounded set includes base doors, explicitly authored temple pillars, structural base walls, placement-derived base transitions, ground items, NPCs, and nearby GM-created entities (including props, hotspots, walls, and transitions). It does not inspect Three.js meshes to invent semantic objects and does not add a whole-world entity dump.
 
 Base features without canonical IDs use deterministic compatibility IDs:
 

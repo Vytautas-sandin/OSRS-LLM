@@ -745,12 +745,13 @@
                 baseArchitecturalProps.push({
                     id: `base_prop:temple_pillar:${level}:${cx}:${cy}`,
                     kind: 'prop', name: 'Temple Pillar', level, x: cx, y: cy,
-                    shape: 'pillar', blocksMovement: true, source: 'base_temple'
+                    shape: 'pillar', blocksMovement: true, source: 'base_temple', state: {}
                 });
                 const col = new THREE.Mesh(colGeo, colMat);
                 let pos = getGridWorldPos(cx, cy, level);
                 col.position.set(pos.x, pos.y + 1.6, pos.z);
                 levelGroups[level].add(col);
+                baseArchitecturalProps[baseArchitecturalProps.length - 1].mesh = col;
                 unwalkables[level].push({x: cx, y: cy});
             }
         }
@@ -1728,7 +1729,7 @@
 
     function toActionContextEntity(snapshot) {
         if (!snapshot) return null;
-        const reserved = new Set(['id', 'kind', 'name', 'level', 'x', 'y', 'gridX', 'gridY', 'state', 'blocksMovement', 'walkable']);
+        const reserved = new Set(['id', 'kind', 'name', 'level', 'x', 'y', 'gridX', 'gridY', 'state', 'blocksMovement', 'walkable', 'mesh']);
         const metadata = {};
         Object.entries(snapshot).forEach(([key, value]) => {
             if (!reserved.has(key)) metadata[key] = value;
@@ -1824,6 +1825,29 @@
         });
     }
 
+    const ACTION_CONTEXT_TOOL_MAX = 28;
+
+    function getActionToolCandidates(explicitToolId = null) {
+        if (explicitToolId) {
+            const selected = resolveActionToolReference(explicitToolId);
+            return selected ? [copyActionContextValue({
+                id: explicitToolId,
+                name: selected.name,
+                type: selected.type || 'tool',
+                tags: Array.isArray(selected.metadata?.tags) ? selected.metadata.tags.slice(0, 12) : []
+            })] : [];
+        }
+        const inventoryTools = getInventorySnapshot()
+            .filter(item => item.category === 'tool' || (item.tags || []).includes('tool'))
+            .map(item => copyActionContextValue({
+                id: item.id,
+                name: item.name,
+                type: item.type || item.baseType || 'tool',
+                tags: Array.isArray(item.tags) ? item.tags.slice(0, 12) : []
+            }));
+        return inventoryTools.slice(0, ACTION_CONTEXT_TOOL_MAX);
+    }
+
     function getNearbyActionContextEntities(radius = ACTION_CONTEXT_NEARBY_RADIUS) {
         const dynamic = getNearbyCanvasEntities(radius).map(toActionContextEntity);
         const nearbyNPCs = getNearbyNPCs(radius).map(npc => toActionContextEntity({ ...npc, kind: 'npc', level: currentLevel }));
@@ -1876,6 +1900,7 @@
         const action = copyActionContextValue(actionValidation.action);
         const target = resolveActionEntityReference(action.targetId);
         const tool = resolveActionToolReference(action.toolId);
+        const toolCandidates = getActionToolCandidates(action.toolId);
         const memory = serializeWorldMemory();
         return {
             protocol: ACTION_CONTEXT_PROTOCOL,
@@ -1890,6 +1915,7 @@
             },
             target,
             tool,
+            toolCandidates,
             nearby: { entities: getNearbyActionContextEntities() },
             relevantState: {
                 flags: copyActionContextValue(worldFlags),
@@ -1910,6 +1936,10 @@
         if (!context?.actor || context.actor.id !== actionResult.action.actorId) errors.push('ActionContext actor must match the action actorId.');
         if (!Array.isArray(context?.nearby?.entities)) errors.push('ActionContext nearby.entities must be an array.');
         if (context?.nearby?.entities?.length > ACTION_CONTEXT_NEARBY_MAX) errors.push(`ActionContext nearby.entities exceeds ${ACTION_CONTEXT_NEARBY_MAX} candidates.`);
+        if (!Array.isArray(context?.toolCandidates)) errors.push('ActionContext toolCandidates must be an array.');
+        if (context?.toolCandidates?.length > ACTION_CONTEXT_TOOL_MAX) errors.push(`ActionContext toolCandidates exceeds ${ACTION_CONTEXT_TOOL_MAX} candidates.`);
+        if (context?.toolCandidates?.some(candidate => !candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string' || typeof candidate.type !== 'string' || !Array.isArray(candidate.tags))) errors.push('ActionContext toolCandidates entries require id, name, type, and tags.');
+        if (actionResult.action.toolId && (context?.toolCandidates?.length !== 1 || context.toolCandidates[0].id !== actionResult.action.toolId)) errors.push('An explicit toolId must be the sole tool candidate.');
         if (!context?.relevantState || typeof context.relevantState !== 'object') errors.push('ActionContext relevantState is required.');
         if (!Array.isArray(context?.anchors)) errors.push('ActionContext anchors must be an array.');
         if (actionResult.action.targetId && !context?.target) warnings.push(`Target did not resolve: ${actionResult.action.targetId}.`);
@@ -1947,15 +1977,25 @@
     // only the logical player tile and restores it before returning.
     function runLateGMTargetResolutionSelfTest() {
         const original = { x: playerGridX, y: playerGridY, level: currentLevel };
+        const originalInventory = inventory.slice();
         const results = {};
         const check = (name, pass, detail = null) => { results[name] = { pass: !!pass, detail }; };
         try {
+            if (!inventory.some(item => item?.id === 'base_shovel_01')) {
+                const slot = inventory.findIndex(item => item === null);
+                inventory[slot < 0 ? 0 : slot] = makeItemInstance({ id: 'base_shovel_01', type: 'shovel' });
+            }
+            if (!inventory.some(item => item?.id === 'base_rod_01')) {
+                const slot = inventory.findIndex(item => item === null);
+                inventory[slot < 0 ? 1 : slot] = makeItemInstance({ id: 'base_rod_01', type: 'rod' });
+            }
             currentLevel = '0'; playerGridX = 15; playerGridY = 20;
-            const pillarAction = createImprovisedGameAction('I hit the pillar with the shovel.', { toolId: 'base_shovel_01' });
+            const pillarAction = createImprovisedGameAction('I hit the pillar with my shovel.');
             const pillarContext = buildActionContext(pillarAction);
             const pillars = pillarContext.nearby.entities.filter(entity => entity.id.startsWith('base_prop:temple_pillar:'));
-            check('unselectedPillar', pillarAction.targetId === null && pillars.length > 0, pillars.map(entity => entity.id));
+            check('unselectedPillar', pillarAction.targetId === null && pillarAction.toolId === null && pillars.length > 0, pillars.map(entity => entity.id));
             check('ambiguityPreserved', pillars.length > 1, pillars.map(entity => entity.id));
+            check('inventoryToolCandidates', ['base_shovel_01', 'base_rod_01'].every(id => pillarContext.toolCandidates.some(tool => tool.id === id)), pillarContext.toolCandidates);
 
             playerGridX = 11; playerGridY = 11;
             const door = doors.find(entry => entry.level === currentLevel && distanceToPlayerTile(entry.x, entry.y, entry.level) <= ACTION_CONTEXT_NEARBY_RADIUS);
@@ -1972,6 +2012,7 @@
             check('gmRequestSerializes', built.ok && !!JSON.stringify(built.request) && validateGMRequest(built.request).valid, built.errors);
         } finally {
             currentLevel = original.level; playerGridX = original.x; playerGridY = original.y;
+            inventory.splice(0, inventory.length, ...originalInventory);
         }
         return { pass: Object.values(results).every(result => result.pass), cases: results };
     }
@@ -2193,6 +2234,7 @@
         { op: 'update_entity', purpose: 'Update the state or presentation of an existing entity.', required: ['id'] },
         { op: 'transform_entity', purpose: 'Transform an existing entity while retaining its stable id.', required: ['id'] },
         { op: 'set_entity_state', purpose: 'Merge persistent state into an existing entity.', required: ['id', 'state'] },
+        { op: 'damage_entity', purpose: 'Apply damage and semantic state to an existing entity.', required: ['id'] },
         { op: 'move_npc', purpose: 'Move an existing NPC.', required: ['id'] },
         { op: 'move_prop', purpose: 'Move an existing prop.', required: ['id'] },
         { op: 'create_prop', purpose: 'Create one small visible prop.', required: ['id', 'name'] },
@@ -2271,6 +2313,7 @@
                 narrationRole: 'Put narration, dialogue, interpretation, uncertainty, and pushback in narration.',
                 worldChangePolicy: 'Use effects only for persistent, physical, positional, inventory, flag, or memory consequences. Failed attempts may have no effects.',
                 existingEntityPolicy: 'Prefer updating stable existing entity ids over creating replacements or duplicates.',
+                resolutionBindingPolicy: 'When targetId or toolId is unresolved, bind only an ID supplied in nearby entities or toolCandidates. Never invent an ID.',
                 maxEffects: GM_OUTCOME_MAX_EFFECTS
             },
             allowedEffects: GM_ACTION_EFFECT_DEFINITIONS
@@ -2319,6 +2362,7 @@
             else if (typeof effect.item.id !== 'string' || !effect.item.id.trim()) errors.push(`${path}.item.id must be a stable non-empty string.`);
         }
         if (effect.op === 'set_entity_state' && (!effect.state || typeof effect.state !== 'object' || Array.isArray(effect.state))) errors.push(`${path}.state must be an object.`);
+        if (effect.state !== undefined && (!effect.state || typeof effect.state !== 'object' || Array.isArray(effect.state))) errors.push(`${path}.state must be an object when supplied.`);
         if (effect.op === 'add_memory' && (typeof effect.text !== 'string' || !effect.text.trim())) errors.push(`${path}.text must be a non-empty string.`);
         validatePlainProtocolValue(effect, path, errors);
     }
@@ -2331,6 +2375,17 @@
         if (typeof outcome?.actionId !== 'string' || !outcome.actionId.trim()) errors.push('GMOutcome actionId must be a non-empty string.');
         if (expectedActionId && outcome?.actionId !== expectedActionId) errors.push(`GMOutcome actionId does not match expected action: ${expectedActionId}.`);
         if (typeof outcome?.narration !== 'string') errors.push('GMOutcome narration must be a string.');
+        if (outcome?.bindings !== undefined) {
+            if (!outcome.bindings || typeof outcome.bindings !== 'object' || Array.isArray(outcome.bindings)) errors.push('GMOutcome bindings must be an object when supplied.');
+            else {
+                Object.keys(outcome.bindings).forEach(key => {
+                    if (!['targetId', 'toolId'].includes(key)) errors.push(`GMOutcome bindings.${key} is unsupported.`);
+                });
+                ['targetId', 'toolId'].forEach(key => {
+                    if (key in outcome.bindings && (typeof outcome.bindings[key] !== 'string' || !outcome.bindings[key].trim())) errors.push(`GMOutcome bindings.${key} must be a non-empty string.`);
+                });
+            }
+        }
         if (!GM_RESOLUTION_RESULTS.has(outcome?.resolution?.result)) errors.push(`GMOutcome resolution.result is unsupported: ${outcome?.resolution?.result ?? 'missing'}.`);
         if (typeof outcome?.resolution?.reason !== 'string' || !outcome.resolution.reason.trim()) errors.push('GMOutcome resolution.reason is required.');
         if (!Array.isArray(outcome?.effects)) errors.push('GMOutcome effects must be an array.');
@@ -2434,6 +2489,61 @@
         });
     }
 
+    function resolveBaseTemplePillar(id) {
+        const referenceId = normalizeGameActionId(id);
+        if (!/^base_prop:temple_pillar:[^:]+:-?\d+:-?\d+$/.test(referenceId || '')) return null;
+        return baseArchitecturalProps.find(prop => prop.id === referenceId && prop.source === 'base_temple') || null;
+    }
+
+    function renderBaseTemplePillarState(pillar) {
+        if (!pillar?.mesh) return false;
+        const damaged = !!pillar.state?.damaged;
+        if (!pillar.mesh.userData.basePillarMaterial) pillar.mesh.userData.basePillarMaterial = pillar.mesh.material;
+        if (pillar.mesh.material === pillar.mesh.userData.basePillarMaterial) pillar.mesh.material = pillar.mesh.material.clone();
+        pillar.mesh.material.color.setHex(damaged ? 0xb8afa4 : 0xffffff);
+        pillar.mesh.scale.set(1, damaged ? 0.94 : 1, 1);
+        return true;
+    }
+
+    function getBaseTemplePillarSemanticStatesSnapshot() {
+        return baseArchitecturalProps
+            .filter(prop => prop.source === 'base_temple' && Object.keys(prop.state || {}).length > 0)
+            .map(prop => ({ id: prop.id, state: copyActionContextValue(prop.state) }));
+    }
+
+    function restoreBaseTemplePillarSemanticStates(entries = []) {
+        baseArchitecturalProps.filter(prop => prop.source === 'base_temple').forEach(prop => { prop.state = {}; renderBaseTemplePillarState(prop); });
+        entries.forEach(entry => {
+            const pillar = resolveBaseTemplePillar(entry?.id);
+            if (pillar && entry.state && typeof entry.state === 'object' && !Array.isArray(entry.state)) {
+                pillar.state = copyActionContextValue(entry.state);
+                renderBaseTemplePillarState(pillar);
+            }
+        });
+    }
+
+    function validateGMResolutionBindings(gmRequest, gmOutcome) {
+        const errors = [];
+        const action = gmRequest?.action || {};
+        const context = gmRequest?.context || {};
+        const bindings = gmOutcome?.bindings || {};
+        const targetIds = new Set([context.target?.id, ...(context.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
+        const toolIds = new Set((context.toolCandidates || []).map(tool => tool?.id).filter(Boolean));
+        const inventoryIds = new Set((context.actor?.inventory || []).map(item => item?.id).filter(Boolean));
+        if (bindings.targetId && !targetIds.has(bindings.targetId)) errors.push(`Binding targetId is not an originating target candidate: ${bindings.targetId}.`);
+        if (bindings.toolId && (!toolIds.has(bindings.toolId) || !inventoryIds.has(bindings.toolId))) errors.push(`Binding toolId is not an originating inventory tool candidate: ${bindings.toolId}.`);
+        if (action.targetId && bindings.targetId && action.targetId !== bindings.targetId) errors.push('Binding targetId contradicts the explicit GameAction targetId.');
+        if (action.toolId && bindings.toolId && action.toolId !== bindings.toolId) errors.push('Binding toolId contradicts the explicit GameAction toolId.');
+        return {
+            valid: errors.length === 0,
+            errors,
+            resolved: {
+                targetId: action.targetId || bindings.targetId || null,
+                toolId: action.toolId || bindings.toolId || null
+            }
+        };
+    }
+
     function isSafeGMFlag(effect) {
         return GM_APPLICATION_FLAG_KEY.test(effect.key)
             && !['__proto__', 'prototype', 'constructor'].includes(effect.key)
@@ -2466,7 +2576,7 @@
         return { facts, inputCount: inputs.length, deduplicatedCount: inputs.length - facts.length };
     }
 
-    function translateGMOutcomeEffects(gmRequest, gmOutcome) {
+    function translateGMOutcomeEffects(gmRequest, gmOutcome, resolvedBindings = { targetId: null, toolId: null }) {
         const errors = [];
         const warnings = [];
         const translatedEffects = [];
@@ -2481,8 +2591,20 @@
         gmOutcome.effects.forEach((effect, index) => {
             if (effect.op === 'add_memory') return;
             const command = copyActionContextValue(effect);
-            if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) {
-                if (effect.op !== 'set_entity_state' && !Object.keys(effect).some(key => !['op', 'id', 'kind'].includes(key))) return fail(index, `${effect.op} has no requested change.`);
+            const pillar = resolveBaseTemplePillar(effect.id);
+            if (pillar && ['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
+                const originatingTargets = new Set([gmRequest.context?.target?.id, ...(gmRequest.context?.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
+                if (!originatingTargets.has(effect.id)) return fail(index, `base pillar is not present in the originating context: ${effect.id}.`);
+                if (resolvedBindings.targetId && resolvedBindings.targetId !== effect.id) return fail(index, `base pillar does not agree with resolved targetId ${resolvedBindings.targetId}.`);
+                if (effect.op !== 'damage_entity' && !effect.state) return fail(index, 'base pillars only support semantic state or damage updates.');
+                const state = { ...(effect.state || {}) };
+                if (effect.op === 'damage_entity') Object.assign(state, { damaged: effect.damaged !== undefined ? !!effect.damaged : true, damage: effect.damage ?? true });
+                translatedEffects.push({ op: 'set_base_pillar_state', id: effect.id, state: copyActionContextValue(state) });
+                compatibilityIdsResolved.push(effect.id);
+                return;
+            }
+            if (['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
+                if (['update_entity', 'transform_entity'].includes(effect.op) && !Object.keys(effect).some(key => !['op', 'id', 'kind'].includes(key))) return fail(index, `${effect.op} has no requested change.`);
                 const baseDoor = resolveLegacyDoorObject(effect.id);
                 if (baseDoor) {
                     if (effect.op !== 'set_entity_state') return fail(index, 'base doors only support set_entity_state semantic updates.');
@@ -2512,7 +2634,7 @@
             }
             if (effect.op === 'create_prop') {
                 const placement = preflightGMPlacement(effect);
-                if (findCanvasEntityRef(effect.id) || resolveLegacyDoorObject(effect.id) || resolveWaterActionReference(effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, `prop id already exists or placement is invalid: ${effect.id}.`);
+                if (findCanvasEntityRef(effect.id) || resolveActionEntityReference(effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, `prop id already exists or placement is invalid: ${effect.id}.`);
                 reservedCreatedIds.add(effect.id);
                 translatedEffects.push({ ...command, ...placement }); return;
             }
@@ -2574,13 +2696,15 @@
         const outcomeValidation = validateGMOutcome(gmOutcome, gmRequest?.action?.id || null);
         if (!outcomeValidation.valid) errors.push(...outcomeValidation.errors.map(error => `GMOutcome: ${error}`));
         if (gmRequest?.route?.mode !== 'gm') errors.push('Application requires an originating GM route.');
+        const bindingValidation = validateGMResolutionBindings(gmRequest, gmOutcome);
+        if (!bindingValidation.valid) errors.push(...bindingValidation.errors.map(error => `Bindings: ${error}`));
         let translation = null;
         if (errors.length === 0) {
-            translation = translateGMOutcomeEffects(gmRequest, gmOutcome);
+            translation = translateGMOutcomeEffects(gmRequest, gmOutcome, bindingValidation.resolved);
             if (!translation.valid) errors.push(...translation.errors.map(error => `Preflight: ${error}`));
             warnings.push(...translation.warnings);
         }
-        return { valid: errors.length === 0, errors, warnings, requestValidation, outcomeValidation, translation };
+        return { valid: errors.length === 0, errors, warnings, requestValidation, outcomeValidation, bindingValidation, translation };
     }
 
     function applyTranslatedGMOutcomeEffect(effect) {
@@ -2590,7 +2714,13 @@
             door.state = { ...(door.state || {}), ...copyActionContextValue(effect.state) };
             return true;
         }
-        if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
+        if (effect.op === 'set_base_pillar_state') {
+            const pillar = resolveBaseTemplePillar(effect.id);
+            if (!pillar) return false;
+            pillar.state = { ...(pillar.state || {}), ...copyActionContextValue(effect.state) };
+            return renderBaseTemplePillarState(pillar);
+        }
+        if (['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
         if (effect.op === 'move_npc') return moveGMNPC({ ...effect, silent: true });
         if (effect.op === 'move_prop') return moveGMObject({ ...effect, silent: true });
         if (effect.op === 'create_prop') return createGMObject({ ...effect, silent: true });
@@ -2620,6 +2750,7 @@
             actionId: gmOutcome?.actionId || gmRequest?.action?.id || null,
             outcomeProtocol: gmOutcome?.protocol || null,
             resolution: copyActionContextValue(gmOutcome?.resolution || {}),
+            resolved: copyActionContextValue(preflight.bindingValidation?.resolved || { targetId: null, toolId: null }),
             narration: typeof gmOutcome?.narration === 'string' ? gmOutcome.narration : '',
             appliedEffects: [], appliedMemory: [], diagnostics: [...preflight.errors, ...preflight.warnings],
             undoAvailable: hasGMUndoSnapshot(), rollback: { attempted: false, succeeded: null }
@@ -5631,6 +5762,7 @@
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
             baseDoorStates: getBaseDoorSemanticStatesSnapshot(),
+            baseTemplePillarStates: getBaseTemplePillarSemanticStatesSnapshot(),
             itemDefs: getItemDefsSnapshot(),
             inventory: getInventorySnapshot(),
             groundItems: getPersistentGroundItemsSnapshot(),
@@ -5802,6 +5934,7 @@
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             restoreBaseDoorSemanticStates(save.baseDoorStates);
+            restoreBaseTemplePillarSemanticStates(save.baseTemplePillarStates);
             if (Array.isArray(save.itemDefs)) save.itemDefs.forEach(def => registerGMItemDef({ ...def, silent: true }));
             if (Array.isArray(save.inventory)) {
                 inventory.fill(null);
@@ -5875,6 +6008,7 @@
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             restoreBaseDoorSemanticStates();
+            restoreBaseTemplePillarSemanticStates();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
