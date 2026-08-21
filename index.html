@@ -38,7 +38,7 @@
         #dev-toggle { position: absolute; right: 10px; bottom: 110px; width: 140px; height: 40px; background: #1f2d24; border: 2px solid #5c4e3c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 25; font-size: 14px; font-weight: bold; box-shadow: 2px 2px 0px rgba(0,0,0,0.5); }
         #dev-toggle:hover { background: #2c3d32; }
         #dev-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px rgba(0,0,0,0.5); }
-        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(360px, calc(100vw - 20px)); background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
+        #dev-panel { position: absolute; right: 10px; bottom: 160px; width: min(380px, calc(100vw - 20px)); max-height: calc(100dvh - 180px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: rgba(62, 53, 41, 0.95); border: 2px solid #5c4e3c; color: #fff; display: none; flex-direction: column; gap: 6px; padding: 8px; box-sizing: border-box; z-index: 30; font-size: 12px; box-shadow: 3px 3px 8px rgba(0,0,0,0.6); }
         #dev-panel-title { color: #ffff00; font-weight: bold; text-shadow: 1px 1px 0 #000; }
         #player-action { width: 100%; height: 48px; box-sizing: border-box; background: #1d1812; color: #fff; border: 1px solid #8a765b; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
         .dev-label { color: #d0c8b0; font-size: 11px; }
@@ -49,6 +49,10 @@
         .dev-row { display: flex; gap: 6px; }
         .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 5px; font-weight: bold; cursor: pointer; font-size: 11px; }
         .dev-btn:active { transform: translate(1px, 1px); }
+        .dev-section { border-top: 1px solid #8a765b; margin-top: 4px; padding-top: 7px; color: #ffff00; font-weight: bold; }
+        #action-gm-io { width: 100%; height: 110px; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
+        #action-gm-diagnostics { margin: 0; padding: 6px; min-height: 34px; white-space: pre-wrap; overflow-wrap: anywhere; background: #171f19; border: 1px solid #506557; color: #d9eadc; font-size: 10px; line-height: 1.35; }
+        #action-gm-narration { min-height: 22px; padding: 6px; background: #2b2419; border-left: 3px solid #d0c8b0; color: #fff; white-space: pre-wrap; }
         #use-indicator { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); max-width: calc(100vw - 30px); background: rgba(31, 45, 36, 0.95); border: 2px solid #d0c8b0; color: #fff; display: none; align-items: center; justify-content: center; padding: 8px 12px; z-index: 28; font-size: 13px; font-weight: bold; text-shadow: 1px 1px 0 #000; box-shadow: 2px 2px 6px rgba(0,0,0,0.5); pointer-events: none; }
 
         /* Inventory System */
@@ -85,6 +89,10 @@
 
         @media (max-width: 600px) {
             #dialogue-box { width: 90%; bottom: 120px; } 
+            #dev-panel { inset: 58px 8px 8px 8px; width: auto; max-height: none; }
+            #dev-toggle { bottom: 108px; }
+            .dev-row { flex-wrap: wrap; }
+            .dev-btn { min-width: 42%; }
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -110,6 +118,20 @@
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
         <div id="dev-panel-title">LLM / GM Panel · JSON Extract v2.7.2</div>
+        <div class="dev-section">Action-scoped GM · gm_request_v1 / gm_outcome_v1</div>
+        <div class="dev-label">Uses the current action text and explicit selection. Paste the correlated outcome below.</div>
+        <div class="dev-label">Player action / question for the GM</div>
+        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
+        <div class="dev-row">
+            <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
+            <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
+        </div>
+        <textarea id="action-gm-io" spellcheck="false" placeholder="A generated gm_request_v1 appears here. Replace it with the correlated gm_outcome_v1 JSON, then validate/apply."></textarea>
+        <div class="dev-label">Action-GM diagnostics</div>
+        <pre id="action-gm-diagnostics">No Action GM request generated.</pre>
+        <div class="dev-label">GM narration (separate from physical effects)</div>
+        <div id="action-gm-narration">—</div>
+        <div class="dev-section">Legacy GM / world-building controls</div>
         <div class="dev-row">
             <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
             <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
@@ -128,8 +150,6 @@
             <button id="export-world-save" class="dev-btn">Export Save</button>
             <button id="import-world-save" class="dev-btn">Import Save</button>
         </div>
-        <div class="dev-label">Player action / question for the GM</div>
-        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
         <div class="dev-label">World summary</div>
         <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
         <div class="dev-label">Memory facts / quest notes, one per line</div>
@@ -195,7 +215,9 @@
             verb,
             targetId: normalizeGameActionId(input.targetId),
             toolId: normalizeGameActionId(input.toolId),
-            intent: normalizeGameActionId(input.intent),
+            // Free-text intent is protocol data, not an identifier. Preserve it byte
+            // for byte so a manual bridge cannot silently rewrite the player's text.
+            intent: typeof input.intent === 'string' ? input.intent : null,
             parameters,
             routing: {
                 mode: routingMode,
@@ -723,9 +745,11 @@
                 baseArchitecturalProps.push({
                     id: `base_prop:temple_pillar:${level}:${cx}:${cy}`,
                     kind: 'prop', name: 'Temple Pillar', level, x: cx, y: cy,
-                    shape: 'pillar', blocksMovement: true, source: 'base_temple'
+                    shape: 'pillar', blocksMovement: true, source: 'base_temple', state: {}
                 });
-                const col = new THREE.Mesh(colGeo, colMat);
+                const pillar = baseArchitecturalProps[baseArchitecturalProps.length - 1];
+                const col = new THREE.Mesh(colGeo, colMat.clone());
+                Object.defineProperty(pillar, 'runtimeMesh', { value: col, enumerable: false });
                 let pos = getGridWorldPos(cx, cy, level);
                 col.position.set(pos.x, pos.y + 1.6, pos.z);
                 levelGroups[level].add(col);
@@ -1624,6 +1648,7 @@
     const ACTION_CONTEXT_PROTOCOL = 'action_context_v1';
     const ACTION_CONTEXT_NEARBY_RADIUS = 8;
     const ACTION_CONTEXT_NEARBY_MAX = 96;
+    const ACTION_CONTEXT_TOOL_CANDIDATE_MAX = 28;
     const ACTION_CONTEXT_EVENT_LIMIT = 20;
 
     function copyActionContextValue(value, seen = new WeakSet(), depth = 0) {
@@ -1828,6 +1853,17 @@
             .slice(0, ACTION_CONTEXT_NEARBY_MAX);
     }
 
+    function getActionToolCandidates() {
+        return getInventoryCompactSnapshot()
+            .slice(0, ACTION_CONTEXT_TOOL_CANDIDATE_MAX)
+            .map(item => copyActionContextValue({
+                id: item.id,
+                name: item.name,
+                type: item.type,
+                tags: Array.isArray(item.tags) ? item.tags : []
+            }));
+    }
+
     // Free text remains authoritative. Only an explicit selection supplies targetId;
     // candidate names are deliberately not matched against the prose here.
     function createImprovisedGameAction(intent, { selectedTarget = null, lastTarget = null, toolId = null } = {}) {
@@ -1869,6 +1905,11 @@
             target,
             tool,
             nearby: { entities: getNearbyActionContextEntities() },
+            candidates: {
+                // Do not infer from prose. When unresolved, expose every bounded,
+                // currently held item and let the GM return an explicit binding.
+                tools: action.toolId ? [] : getActionToolCandidates()
+            },
             relevantState: {
                 flags: copyActionContextValue(worldFlags),
                 memory: copyActionContextValue(memory),
@@ -1888,6 +1929,10 @@
         if (!context?.actor || context.actor.id !== actionResult.action.actorId) errors.push('ActionContext actor must match the action actorId.');
         if (!Array.isArray(context?.nearby?.entities)) errors.push('ActionContext nearby.entities must be an array.');
         if (context?.nearby?.entities?.length > ACTION_CONTEXT_NEARBY_MAX) errors.push(`ActionContext nearby.entities exceeds ${ACTION_CONTEXT_NEARBY_MAX} candidates.`);
+        if (!Array.isArray(context?.candidates?.tools)) errors.push('ActionContext candidates.tools must be an array.');
+        if (context?.candidates?.tools?.length > ACTION_CONTEXT_TOOL_CANDIDATE_MAX) errors.push(`ActionContext candidates.tools exceeds ${ACTION_CONTEXT_TOOL_CANDIDATE_MAX} items.`);
+        if (context?.candidates?.tools?.some(item => typeof item?.id !== 'string' || !item.id.trim())) errors.push('ActionContext tool candidates require stable item IDs.');
+        if (actionResult.action.toolId && context?.candidates?.tools?.length) errors.push('Explicit tools must take precedence over tool candidates.');
         if (!context?.relevantState || typeof context.relevantState !== 'object') errors.push('ActionContext relevantState is required.');
         if (!Array.isArray(context?.anchors)) errors.push('ActionContext anchors must be an array.');
         if (actionResult.action.targetId && !context?.target) warnings.push(`Target did not resolve: ${actionResult.action.targetId}.`);
@@ -1908,6 +1953,7 @@
             nearbyEntityCount: context?.nearby?.entities?.length || 0,
             targetResolved: !!context?.target,
             toolResolved: !!context?.tool,
+            toolCandidateCount: context?.candidates?.tools?.length || 0,
             validation: validateActionContext(context)
         };
     }
@@ -1925,15 +1971,20 @@
     // only the logical player tile and restores it before returning.
     function runLateGMTargetResolutionSelfTest() {
         const original = { x: playerGridX, y: playerGridY, level: currentLevel };
+        const originalInventory = inventory.slice();
         const results = {};
         const check = (name, pass, detail = null) => { results[name] = { pass: !!pass, detail }; };
         try {
+            inventory[0] = makeItemInstance({ id: 'base_shovel_01', type: 'shovel' });
+            inventory[1] = makeItemInstance({ id: 'base_rod_01', type: 'rod' });
             currentLevel = '0'; playerGridX = 15; playerGridY = 20;
-            const pillarAction = createImprovisedGameAction('I hit the pillar with the shovel.', { toolId: 'base_shovel_01' });
+            const pillarAction = createImprovisedGameAction('I hit the pillar with my shovel.');
             const pillarContext = buildActionContext(pillarAction);
             const pillars = pillarContext.nearby.entities.filter(entity => entity.id.startsWith('base_prop:temple_pillar:'));
-            check('unselectedPillar', pillarAction.targetId === null && pillars.length > 0, pillars.map(entity => entity.id));
+            check('unselectedPillarAndTool', pillarAction.targetId === null && pillarAction.toolId === null && pillars.length > 0, pillars.map(entity => entity.id));
             check('ambiguityPreserved', pillars.length > 1, pillars.map(entity => entity.id));
+            const toolIds = pillarContext.candidates.tools.map(item => item.id);
+            check('inventoryToolCandidates', toolIds.includes('base_shovel_01') && toolIds.includes('base_rod_01'), toolIds);
 
             playerGridX = 11; playerGridY = 11;
             const door = doors.find(entry => entry.level === currentLevel && distanceToPlayerTile(entry.x, entry.y, entry.level) <= ACTION_CONTEXT_NEARBY_RADIUS);
@@ -1950,6 +2001,7 @@
             check('gmRequestSerializes', built.ok && !!JSON.stringify(built.request) && validateGMRequest(built.request).valid, built.errors);
         } finally {
             currentLevel = original.level; playerGridX = original.x; playerGridY = original.y;
+            inventory.splice(0, inventory.length, ...originalInventory);
         }
         return { pass: Object.values(results).every(result => result.pass), cases: results };
     }
@@ -2171,6 +2223,7 @@
         { op: 'update_entity', purpose: 'Update the state or presentation of an existing entity.', required: ['id'] },
         { op: 'transform_entity', purpose: 'Transform an existing entity while retaining its stable id.', required: ['id'] },
         { op: 'set_entity_state', purpose: 'Merge persistent state into an existing entity.', required: ['id', 'state'] },
+        { op: 'damage_entity', purpose: 'Record semantic damage on an existing entity.', required: ['id'] },
         { op: 'move_npc', purpose: 'Move an existing NPC.', required: ['id'] },
         { op: 'move_prop', purpose: 'Move an existing prop.', required: ['id'] },
         { op: 'create_prop', purpose: 'Create one small visible prop.', required: ['id', 'name'] },
@@ -2249,6 +2302,7 @@
                 narrationRole: 'Put narration, dialogue, interpretation, uncertainty, and pushback in narration.',
                 worldChangePolicy: 'Use effects only for persistent, physical, positional, inventory, flag, or memory consequences. Failed attempts may have no effects.',
                 existingEntityPolicy: 'Prefer updating stable existing entity ids over creating replacements or duplicates.',
+                bindingPolicy: 'When resolving an ambiguous target or tool reference, return bindings.targetId and/or bindings.toolId using only supplied explicit references or candidates.',
                 maxEffects: GM_OUTCOME_MAX_EFFECTS
             },
             allowedEffects: GM_ACTION_EFFECT_DEFINITIONS
@@ -2301,7 +2355,33 @@
         validatePlainProtocolValue(effect, path, errors);
     }
 
-    function validateGMOutcome(outcome, expectedActionId = null) {
+    function validateGMOutcomeBindings(outcome, gmRequest, errors) {
+        if (outcome?.bindings === undefined) return;
+        if (!outcome.bindings || typeof outcome.bindings !== 'object' || Array.isArray(outcome.bindings)) {
+            errors.push('GMOutcome bindings must be an object.');
+            return;
+        }
+        const keys = Object.keys(outcome.bindings);
+        if (keys.some(key => !['targetId', 'toolId'].includes(key))) errors.push('GMOutcome bindings contains an unsupported field.');
+        for (const key of ['targetId', 'toolId']) {
+            if (key in outcome.bindings && (typeof outcome.bindings[key] !== 'string' || !outcome.bindings[key].trim())) {
+                errors.push(`GMOutcome bindings.${key} must be a stable non-empty string.`);
+            }
+        }
+        if (!gmRequest) return;
+        const action = gmRequest.action || {};
+        const context = gmRequest.context || {};
+        const targetId = outcome.bindings.targetId;
+        const toolId = outcome.bindings.toolId;
+        const targetIds = new Set([context.target?.id, ...(context.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
+        const toolIds = new Set([context.tool?.id, ...(context.candidates?.tools || []).map(item => item?.id)].filter(Boolean));
+        if (targetId && !targetIds.has(targetId)) errors.push(`GMOutcome bindings.targetId was not available in the originating ActionContext: ${targetId}.`);
+        if (toolId && !toolIds.has(toolId)) errors.push(`GMOutcome bindings.toolId was not available in the originating ActionContext: ${toolId}.`);
+        if (targetId && action.targetId && targetId !== action.targetId) errors.push(`GMOutcome target binding contradicts explicit targetId: ${action.targetId}.`);
+        if (toolId && action.toolId && toolId !== action.toolId) errors.push(`GMOutcome tool binding contradicts explicit toolId: ${action.toolId}.`);
+    }
+
+    function validateGMOutcome(outcome, expectedActionId = null, gmRequest = null) {
         const errors = [];
         const warnings = [];
         if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) errors.push('GMOutcome must be an object.');
@@ -2311,6 +2391,7 @@
         if (typeof outcome?.narration !== 'string') errors.push('GMOutcome narration must be a string.');
         if (!GM_RESOLUTION_RESULTS.has(outcome?.resolution?.result)) errors.push(`GMOutcome resolution.result is unsupported: ${outcome?.resolution?.result ?? 'missing'}.`);
         if (typeof outcome?.resolution?.reason !== 'string' || !outcome.resolution.reason.trim()) errors.push('GMOutcome resolution.reason is required.');
+        validateGMOutcomeBindings(outcome, gmRequest, errors);
         if (!Array.isArray(outcome?.effects)) errors.push('GMOutcome effects must be an array.');
         else {
             if (outcome.effects.length > GM_OUTCOME_MAX_EFFECTS) errors.push(`GMOutcome effects exceeds the limit of ${GM_OUTCOME_MAX_EFFECTS}.`);
@@ -2347,7 +2428,7 @@
             toolResolved: !!request?.context?.tool,
             allowedEffectDefinitionCount: request?.allowedEffects?.length || 0,
             requestValidation: validateGMRequest(request),
-            outcomeValidation: outcome ? validateGMOutcome(outcome, request?.action?.id || null) : null,
+            outcomeValidation: outcome ? validateGMOutcome(outcome, request?.action?.id || null, request) : null,
             returnedEffectCount: outcome?.effects?.length || 0
         };
     }
@@ -2412,6 +2493,39 @@
         });
     }
 
+    function getBasePropSemanticStatesSnapshot() {
+        return baseArchitecturalProps
+            .filter(prop => prop.id && prop.state && Object.keys(prop.state).length)
+            .map(prop => ({ id: prop.id, state: copyActionContextValue(prop.state) }));
+    }
+
+    function syncBasePropRenderer(prop) {
+        if (!prop?.runtimeMesh) return;
+        const damaged = !!prop.state?.damaged;
+        prop.runtimeMesh.scale.x = damaged ? 0.92 : 1;
+        prop.runtimeMesh.scale.z = damaged ? 0.92 : 1;
+        if (prop.runtimeMesh.material?.color) prop.runtimeMesh.material.color.setHex(damaged ? 0xb7aaa0 : 0xffffff);
+    }
+
+    function restoreBasePropSemanticStates(entries = []) {
+        const states = new Map((Array.isArray(entries) ? entries : []).map(entry => [entry?.id, entry?.state]));
+        baseArchitecturalProps.forEach(prop => {
+            prop.state = copyActionContextValue(states.get(prop.id) || {});
+            syncBasePropRenderer(prop);
+        });
+    }
+
+    function applyBasePropSemanticEffect(effect) {
+        const prop = baseArchitecturalProps.find(entry => entry.id === effect.id);
+        if (!prop) return false;
+        const state = effect.op === 'damage_entity'
+            ? { ...(effect.state || {}), damaged: true, damage: effect.damage ?? true }
+            : effect.state;
+        prop.state = { ...(prop.state || {}), ...copyActionContextValue(state || {}) };
+        syncBasePropRenderer(prop);
+        return true;
+    }
+
     function isSafeGMFlag(effect) {
         return GM_APPLICATION_FLAG_KEY.test(effect.key)
             && !['__proto__', 'prototype', 'constructor'].includes(effect.key)
@@ -2459,12 +2573,25 @@
         gmOutcome.effects.forEach((effect, index) => {
             if (effect.op === 'add_memory') return;
             const command = copyActionContextValue(effect);
-            if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) {
-                if (effect.op !== 'set_entity_state' && !Object.keys(effect).some(key => !['op', 'id', 'kind'].includes(key))) return fail(index, `${effect.op} has no requested change.`);
+            if (['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
+                if (['update_entity', 'transform_entity'].includes(effect.op) && !Object.keys(effect).some(key => !['op', 'id', 'kind'].includes(key))) return fail(index, `${effect.op} has no requested change.`);
                 const baseDoor = resolveLegacyDoorObject(effect.id);
                 if (baseDoor) {
                     if (effect.op !== 'set_entity_state') return fail(index, 'base doors only support set_entity_state semantic updates.');
                     translatedEffects.push({ op: 'set_base_door_state', id: effect.id, state: copyActionContextValue(effect.state) });
+                    compatibilityIdsResolved.push(effect.id);
+                    return;
+                }
+                const baseProp = baseArchitecturalProps.find(entry => entry.id === effect.id);
+                if (baseProp) {
+                    if (!String(baseProp.id).startsWith('base_prop:temple_pillar:') || !['set_entity_state', 'damage_entity'].includes(effect.op)) {
+                        return fail(index, 'base props only support narrow temple-pillar semantic state or damage updates.');
+                    }
+                    const availableTargetIds = new Set([gmRequest.context?.target?.id, ...(gmRequest.context?.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
+                    const resolvedTargetId = gmOutcome.bindings?.targetId || gmRequest.action?.targetId || null;
+                    if (!availableTargetIds.has(effect.id)) return fail(index, `base prop was not available in the originating ActionContext: ${effect.id}.`);
+                    if (resolvedTargetId && resolvedTargetId !== effect.id) return fail(index, `base prop effect contradicts resolved target binding: ${resolvedTargetId}.`);
+                    translatedEffects.push({ op: 'set_base_prop_state', id: effect.id, state: copyActionContextValue(effect.state || {}), damage: effect.damage, damageEntity: effect.op === 'damage_entity' });
                     compatibilityIdsResolved.push(effect.id);
                     return;
                 }
@@ -2541,7 +2668,11 @@
             }
             fail(index, `operation is validation-only and unsupported at application: ${effect.op}.`);
         });
-        return { valid: errors.length === 0, errors, warnings, translatedEffects, memory, compatibilityIdsResolved };
+        const resolvedBindings = {
+            targetId: gmOutcome.bindings?.targetId || gmRequest.action?.targetId || null,
+            toolId: gmOutcome.bindings?.toolId || gmRequest.action?.toolId || null
+        };
+        return { valid: errors.length === 0, errors, warnings, translatedEffects, memory, compatibilityIdsResolved, resolvedBindings };
     }
 
     function validateGMOutcomeApplication(gmRequest, gmOutcome) {
@@ -2549,7 +2680,7 @@
         const warnings = [];
         const requestValidation = validateGMRequest(gmRequest);
         if (!requestValidation.valid) errors.push(...requestValidation.errors.map(error => `GMRequest: ${error}`));
-        const outcomeValidation = validateGMOutcome(gmOutcome, gmRequest?.action?.id || null);
+        const outcomeValidation = validateGMOutcome(gmOutcome, gmRequest?.action?.id || null, gmRequest);
         if (!outcomeValidation.valid) errors.push(...outcomeValidation.errors.map(error => `GMOutcome: ${error}`));
         if (gmRequest?.route?.mode !== 'gm') errors.push('Application requires an originating GM route.');
         let translation = null;
@@ -2568,7 +2699,11 @@
             door.state = { ...(door.state || {}), ...copyActionContextValue(effect.state) };
             return true;
         }
-        if (['update_entity', 'transform_entity', 'set_entity_state'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
+        if (effect.op === 'set_base_prop_state') return applyBasePropSemanticEffect({
+            ...effect,
+            op: effect.damageEntity ? 'damage_entity' : 'set_entity_state'
+        });
+        if (['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
         if (effect.op === 'move_npc') return moveGMNPC({ ...effect, silent: true });
         if (effect.op === 'move_prop') return moveGMObject({ ...effect, silent: true });
         if (effect.op === 'create_prop') return createGMObject({ ...effect, silent: true });
@@ -2598,6 +2733,7 @@
             actionId: gmOutcome?.actionId || gmRequest?.action?.id || null,
             outcomeProtocol: gmOutcome?.protocol || null,
             resolution: copyActionContextValue(gmOutcome?.resolution || {}),
+            resolvedBindings: copyActionContextValue(preflight.translation?.resolvedBindings || { targetId: null, toolId: null }),
             narration: typeof gmOutcome?.narration === 'string' ? gmOutcome.narration : '',
             appliedEffects: [], appliedMemory: [], diagnostics: [...preflight.errors, ...preflight.warnings],
             undoAvailable: hasGMUndoSnapshot(), rollback: { attempted: false, succeeded: null }
@@ -2704,6 +2840,60 @@
             invalidBatch: { result: invalidResult, flagUnchanged: worldFlags.gm_atomicity_probe === beforeFlag },
             shovelDoor: { result: doorResult, futureDoorState: futureContext.target?.state || null, undoResult }
         };
+    }
+
+    // Browser-console regression for late target/tool bindings and base-pillar
+    // compatibility. With apply=true, the pillar mutation is immediately restored.
+    function runGMResolutionBindingSelfTest({ apply = false } = {}) {
+        const original = { x: playerGridX, y: playerGridY, level: currentLevel, inventory: inventory.slice() };
+        const cases = {};
+        const check = (name, pass, detail = null) => { cases[name] = { pass: !!pass, detail }; };
+        try {
+            currentLevel = '0'; playerGridX = 15; playerGridY = 20;
+            inventory[0] = makeItemInstance({ id: 'base_shovel_01', type: 'shovel' });
+            inventory[1] = makeItemInstance({ id: 'base_rod_01', type: 'rod' });
+            const action = createImprovisedGameAction('I hit the pillar with my shovel.');
+            const context = buildActionContext(action);
+            const route = routeGameAction(action, context);
+            const built = buildGMRequest(action, context, route);
+            const pillars = context.nearby.entities.filter(entity => entity.id.startsWith('base_prop:temple_pillar:'));
+            const pillarId = pillars[0]?.id;
+            const outcome = { protocol: GM_OUTCOME_PROTOCOL, actionId: action.id,
+                narration: 'The shovel rings against the old stone.',
+                resolution: { result: 'success', reason: 'The blow lands on the resolved pillar.' },
+                bindings: { targetId: pillarId, toolId: 'base_shovel_01' }, effects: [], memory: [] };
+            check('unresolvedInputsAndCandidates', action.targetId === null && action.toolId === null && pillars.length > 1
+                && context.candidates.tools.some(item => item.id === 'base_shovel_01')
+                && context.candidates.tools.some(item => item.id === 'base_rod_01'));
+            check('validBindings', validateGMOutcomeApplication(built.request, outcome).valid);
+            check('unavailableTargetRejected', !validateGMOutcomeApplication(built.request, { ...outcome, bindings: { ...outcome.bindings, targetId: 'base_prop:temple_pillar:0:99:99' } }).valid);
+            check('unavailableToolRejected', !validateGMOutcomeApplication(built.request, { ...outcome, bindings: { ...outcome.bindings, toolId: 'missing_hammer_01' } }).valid);
+            const explicitAction = createImprovisedGameAction('I hit it.', { selectedTarget: { id: pillarId } });
+            const explicitContext = buildActionContext(explicitAction);
+            const explicitRequest = buildGMRequest(explicitAction, explicitContext, routeGameAction(explicitAction, explicitContext)).request;
+            check('contradictoryExplicitTargetRejected', !validateGMOutcomeApplication(explicitRequest, { ...outcome, actionId: explicitAction.id, bindings: { targetId: pillars[1]?.id } }).valid);
+            const narrationResult = applyGMOutcome(built.request, outcome);
+            check('narrationOnlyNoMutation', narrationResult.status === 'applied' && narrationResult.appliedEffects.length === 0 && narrationResult.resolvedBindings.targetId === pillarId);
+            const damagedOutcome = { ...outcome, effects: [{ op: 'damage_entity', id: pillarId, damage: 'chipped' }] };
+            const invalidBatch = { ...outcome, effects: [{ op: 'damage_entity', id: pillarId }, { op: 'remove_prop', id: 'missing_prop' }] };
+            const beforeState = copyActionContextValue(baseArchitecturalProps.find(prop => prop.id === pillarId)?.state || {});
+            const invalidResult = applyGMOutcome(built.request, invalidBatch);
+            check('invalidBatchPreflight', invalidResult.status === 'rejected'
+                && JSON.stringify(baseArchitecturalProps.find(prop => prop.id === pillarId)?.state || {}) === JSON.stringify(beforeState));
+            if (apply) {
+                const propCount = baseArchitecturalProps.length;
+                const gmPropCount = gmObjects.length;
+                const result = applyGMOutcome(built.request, damagedOutcome);
+                const prop = baseArchitecturalProps.find(entry => entry.id === pillarId);
+                check('pillarMutation', result.status === 'applied' && prop?.state?.damaged === true
+                    && baseArchitecturalProps.length === propCount && gmObjects.length === gmPropCount, result);
+                prop.state = beforeState; syncBasePropRenderer(prop);
+            } else check('pillarMutationPreflight', validateGMOutcomeApplication(built.request, damagedOutcome).valid);
+        } finally {
+            currentLevel = original.level; playerGridX = original.x; playerGridY = original.y;
+            inventory.splice(0, inventory.length, ...original.inventory);
+        }
+        return { pass: Object.values(cases).every(entry => entry.pass), applied: apply, cases };
     }
 
     // --- 5G. LIVE ACTION EXECUTION ---
@@ -3522,6 +3712,126 @@
         document.execCommand('copy');
         temp.remove();
         return Promise.resolve();
+    }
+
+    // --- ACTION-SCOPED DEV-PANEL BRIDGE ---
+    // This state deliberately holds only the latest bounded request. It never calls
+    // the legacy payload/command path and is replaced whenever Copy is invoked.
+    let latestManualActionGMRequest = null;
+
+    function getManualActionGMSelection() {
+        const target = getLastInteractionTarget();
+        const tool = getSelectedUseItemSnapshot();
+        return {
+            targetId: normalizeGameActionId(target?.id),
+            toolId: normalizeGameActionId(tool?.id)
+        };
+    }
+
+    function setActionGMDiagnostics(details = {}) {
+        const output = document.getElementById('action-gm-diagnostics');
+        if (!output) return;
+        const value = value => value === null || value === undefined || value === '' ? '—' : String(value);
+        const lines = [
+            `Action ID: ${value(details.actionId)}`,
+            `intent: ${value(details.intent)}`,
+            `explicit target ID: ${value(details.targetId)}`,
+            `tool ID: ${value(details.toolId)}`,
+            `route: ${value(details.route)}`,
+            `ActionContext size: ${value(details.contextSize)}`,
+            `GMRequest size: ${value(details.requestSize)}`,
+            `GMOutcome validation: ${value(details.outcomeValidation)}`,
+            `application: ${value(details.application)}`
+        ];
+        if (details.errors?.length) lines.push(`errors: ${details.errors.join(' | ')}`);
+        output.textContent = lines.join('\n');
+    }
+
+    function serializedSizeLabel(value) {
+        const size = getSerializedProtocolSize(value);
+        return size.error ? `error: ${size.error}` : `${size.characters} chars / ${size.bytes} bytes`;
+    }
+
+    function buildManualActionGMRequest() {
+        const intent = document.getElementById('player-action')?.value ?? '';
+        const selection = getManualActionGMSelection();
+        const action = createGameAction({
+            source: 'text', actorId: 'player', verb: 'improvise', intent,
+            targetId: selection.targetId, toolId: selection.toolId,
+            routing: { mode: 'unknown', reason: null }
+        });
+        const context = buildActionContext(action);
+        const route = routeGameAction(action, context);
+        const built = route.mode === 'gm' ? buildGMRequest(action, context, route) : { ok: false, request: null, errors: [] };
+        return { action, context, route, built };
+    }
+
+    function copyManualActionGMRequest() {
+        const generated = buildManualActionGMRequest();
+        const { action, context, route, built } = generated;
+        latestManualActionGMRequest = built.ok ? built.request : null;
+        setActionGMDiagnostics({
+            actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId,
+            route: route.mode, contextSize: serializedSizeLabel(context),
+            requestSize: built.ok ? serializedSizeLabel(built.request) : 'not necessary',
+            outcomeValidation: 'not checked',
+            application: built.ok ? 'awaiting gm_outcome_v1' : `not applied (${route.mode} route)`,
+            errors: built.errors
+        });
+        if (!built.ok) {
+            document.getElementById('action-gm-io').value = '';
+            addLogMessage(route.mode === 'local'
+                ? 'Action routes locally; no GMRequest is necessary.'
+                : `Action GM request unavailable: ${built.errors.join(' ') || route.reason}`);
+            return generated;
+        }
+        const text = JSON.stringify(built.request, null, 2);
+        document.getElementById('action-gm-io').value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('Action-scoped GMRequest copied.'))
+            .catch(() => addLogMessage('Action GMRequest created in the panel. Copy it manually.'));
+        return generated;
+    }
+
+    function validateAndApplyManualActionGMOutcome() {
+        const narration = document.getElementById('action-gm-narration');
+        if (narration) narration.textContent = '—';
+        const request = latestManualActionGMRequest;
+        let outcome;
+        let parseError = null;
+        try { outcome = JSON.parse(document.getElementById('action-gm-io')?.value || ''); }
+        catch (error) { parseError = error.message; }
+        if (!request || parseError) {
+            const errors = [!request ? 'Generate a GMRequest before applying an outcome.' : null, parseError ? `Invalid JSON: ${parseError}` : null].filter(Boolean);
+            setActionGMDiagnostics({ outcomeValidation: 'invalid', application: 'not applied', errors });
+            addLogMessage(`GMOutcome not applied: ${errors.join(' ')}`);
+            return { status: 'rejected', diagnostics: errors };
+        }
+        const validation = validateGMOutcome(outcome, request.action.id, request);
+        if (!validation.valid) {
+            setActionGMDiagnostics({
+                actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
+                toolId: request.action.toolId, route: request.route.mode,
+                contextSize: serializedSizeLabel(request.context), requestSize: serializedSizeLabel(request),
+                outcomeValidation: 'invalid', application: 'not applied (no mutation)', errors: validation.errors
+            });
+            addLogMessage('Invalid GMOutcome rejected without mutation.');
+            return { status: 'rejected', diagnostics: validation.errors };
+        }
+        // applyGMOutcome owns full preflight, undo capture, mutation, rollback, save,
+        // and history. The legacy Apply JSON command system is not involved.
+        const result = applyGMOutcome(request, outcome);
+        if (narration) narration.textContent = result.narration || '—';
+        setActionGMDiagnostics({
+            actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
+            toolId: request.action.toolId, route: request.route.mode,
+            contextSize: serializedSizeLabel(request.context), requestSize: serializedSizeLabel(request),
+            outcomeValidation: 'valid',
+            application: `${result.status}; ${result.appliedEffects.length} physical effect(s), ${result.appliedMemory.length} memory fact(s)`,
+            errors: result.diagnostics
+        });
+        addLogMessage(`GMOutcome ${result.status}; narration shown in Action-GM panel.`);
+        return result;
     }
 
     function copyGMPayload() {
@@ -5484,11 +5794,12 @@
 
     function buildGMWorldSave() {
         return {
-            version: 10,
+            version: 11,
             savedAt: new Date().toISOString(),
             flags: { ...worldFlags },
             memory: serializeWorldMemory(),
             baseDoorStates: getBaseDoorSemanticStatesSnapshot(),
+            basePropStates: getBasePropSemanticStatesSnapshot(),
             itemDefs: getItemDefsSnapshot(),
             inventory: getInventorySnapshot(),
             groundItems: getPersistentGroundItemsSnapshot(),
@@ -5660,6 +5971,7 @@
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             restoreBaseDoorSemanticStates(save.baseDoorStates);
+            restoreBasePropSemanticStates(save.basePropStates);
             if (Array.isArray(save.itemDefs)) save.itemDefs.forEach(def => registerGMItemDef({ ...def, silent: true }));
             if (Array.isArray(save.inventory)) {
                 inventory.fill(null);
@@ -5733,6 +6045,7 @@
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
             resetWorldMemory();
             restoreBaseDoorSemanticStates();
+            restoreBasePropSemanticStates();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
@@ -5758,6 +6071,7 @@
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
         restoreBaseDoorSemanticStates();
+        restoreBasePropSemanticStates();
         gmEvents.length = 0;
         markGMResponseResolved();
         if (typeof spawnBaseGroundItems === 'function') spawnBaseGroundItems();
@@ -6292,6 +6606,8 @@
         ctxMenu.style.display = 'none';
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
+    document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
     document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
     document.getElementById('copy-adventure-seed').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyAdventureSeedPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });

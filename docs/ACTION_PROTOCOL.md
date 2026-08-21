@@ -129,6 +129,14 @@ base_transition:<level>:<x>:<y>:<targetLevel>:<spawnX>:<spawnY>
 
 `getActionContextDiagnostics(context)` reports serialized character and UTF-8 byte size, nearby entity count, target/tool resolution, and validation results. It is developer instrumentation only and adds no visible UI.
 
+## Late GM tool resolution
+
+Free text also does not cause the client to guess an inventory item. When `GameAction.toolId` is `null`, it remains `null`, while `ActionContext.candidates.tools` contains a bounded compact view of the player's currently held items. Each candidate contains its stable item ID plus only its name, type, and tags. For example, an inventory holding `base_shovel_01` and `base_rod_01` exposes both candidates for “I hit the pillar with my shovel”; the client does not select the shovel by matching that sentence.
+
+An explicitly selected tool resolves through `ActionContext.tool` and takes precedence; in that case the late tool candidate list is empty. This candidate mechanism is GM context only and does not alter deterministic item, pickup, drop, or fishing execution.
+
+`runLateGMTargetResolutionSelfTest()` now covers unresolved target and tool IDs, multiple nearby pillars, and both inventory candidates. `runGMResolutionBindingSelfTest()` covers bound resolution and application safety.
+
 ## Action router v1
 
 The router answers one question:
