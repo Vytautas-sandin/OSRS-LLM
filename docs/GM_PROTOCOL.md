@@ -15,13 +15,13 @@ An optional live transport now sends a validated request to the separate Cloudfl
 The Dev panel's compact **Live GM transport** subsection stores its ordinary endpoint in local storage and its password-masked prototype token in session storage only. **Resolve with AI** uses the same `buildManualActionGMRequest()` path as the manual Copy button, refuses local routes, prevents concurrent submissions, applies a timeout, and sends only `{ request: gm_request_v1 }` to the configured Worker. On success it validates correlation and `gm_outcome_v1`, places the JSON into the existing Action-GM textarea, retains the exact request, and waits for manual application.
 
 ```text
-Game -> gm_request_v1 -> Worker -> OpenAI Responses API -> gm_outcome_v1
+Game -> gm_request_v1 -> Worker -> Cloudflare Workers AI -> gm_outcome_v1
      -> browser validation -> MANUAL Validate / Apply -> canonical world state
 ```
 
-Transport diagnostics expose only configuration presence, state, HTTP status, model/response metadata, correlation, bindings, and validation/effect counts. They never expose the token or a raw OpenAI response. Transport failures preserve the request and do not mutate the world.
+Transport diagnostics expose only configuration presence, state, HTTP status, model/response metadata, correlation, bindings, and validation/effect counts. They never expose the token or a raw model response. Transport failures preserve the request and do not mutate the world.
 
-The Worker deployment and secret commands are documented in `worker/README.md`. `OPENAI_API_KEY` and `GM_ACCESS_TOKEN` are Worker secrets and must never be committed. `OPENAI_MODEL` (default `gpt-5.6-terra`) and `ALLOWED_ORIGIN` are server configuration. CORS is not authorization: every model request also requires the access token. The backend treats all browser protocol content as untrusted game data, fixes its own OpenAI URL/model/instructions, and treats model output as untrusted until browser validation and application preflight succeed.
+The Worker deployment and secret commands are documented in `worker/README.md`. `GM_ACCESS_TOKEN` is a Worker secret and must never be committed; it protects the game's Workers AI allocation and is not an AI-provider credential. The `AI` Workers AI binding, `WORKERS_AI_MODEL` (default `@cf/zai-org/glm-4.7-flash`), and `ALLOWED_ORIGIN` are server configuration. Players do not provide AI-provider API keys. CORS is not authorization: every model request also requires the access token. The backend treats all browser protocol content as untrusted game data, fixes its own model and instructions, and treats model output as untrusted until browser validation and application preflight succeed.
 
 ## Manual browser bridge
 
