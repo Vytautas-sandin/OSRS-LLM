@@ -3696,6 +3696,8 @@
         return { ok: false, error: { code, message }, httpStatus };
     }
 
+    const EXTERNAL_GM_TRANSPORT_TIMEOUT_MS = 60000;
+
     // Pure transport adapter: validates and correlates protocol data, but never
     // invokes applyGMOutcome or any world-state helper.
     async function requestExternalGMOutcome(gmRequest, transportConfig = {}) {
@@ -3709,7 +3711,7 @@
         if (!accessToken) return makeGMTransportError('missing_access_token', 'Enter the prototype access token first.');
         const fetchImpl = transportConfig.fetchImpl || fetch;
         const controller = new AbortController();
-        const timeoutMs = Number.isFinite(transportConfig.timeoutMs) ? transportConfig.timeoutMs : 30000;
+        const timeoutMs = Number.isFinite(transportConfig.timeoutMs) ? transportConfig.timeoutMs : EXTERNAL_GM_TRANSPORT_TIMEOUT_MS;
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
         externalGMRequestPending = true;
         try {
