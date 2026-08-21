@@ -49,9 +49,11 @@
         .dev-row { display: flex; gap: 6px; }
         .dev-btn { flex: 1; background: #d0c8b0; color: #000; border: 1px solid #000; padding: 8px 5px; font-weight: bold; cursor: pointer; font-size: 11px; }
         .dev-btn:active { transform: translate(1px, 1px); }
+        .dev-btn:disabled { opacity: 0.55; cursor: wait; }
+        .dev-input { flex: 1; min-width: 0; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font: 11px monospace; padding: 6px; }
         .dev-section { border-top: 1px solid #8a765b; margin-top: 4px; padding-top: 7px; color: #ffff00; font-weight: bold; }
         #action-gm-io { width: 100%; height: 110px; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
-        #action-gm-diagnostics { margin: 0; padding: 6px; min-height: 34px; white-space: pre-wrap; overflow-wrap: anywhere; background: #171f19; border: 1px solid #506557; color: #d9eadc; font-size: 10px; line-height: 1.35; }
+        #action-gm-diagnostics, #gm-transport-diagnostics { margin: 0; padding: 6px; min-height: 34px; white-space: pre-wrap; overflow-wrap: anywhere; background: #171f19; border: 1px solid #506557; color: #d9eadc; font-size: 10px; line-height: 1.35; }
         #action-gm-narration { min-height: 22px; padding: 6px; background: #2b2419; border-left: 3px solid #d0c8b0; color: #fff; white-space: pre-wrap; }
         #use-indicator { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); max-width: calc(100vw - 30px); background: rgba(31, 45, 36, 0.95); border: 2px solid #d0c8b0; color: #fff; display: none; align-items: center; justify-content: center; padding: 8px 12px; z-index: 28; font-size: 13px; font-weight: bold; text-shadow: 1px 1px 0 #000; box-shadow: 2px 2px 6px rgba(0,0,0,0.5); pointer-events: none; }
 
@@ -129,6 +131,13 @@
         <textarea id="action-gm-io" spellcheck="false" placeholder="A generated gm_request_v1 appears here. Replace it with the correlated gm_outcome_v1 JSON, then validate/apply."></textarea>
         <div class="dev-label">Action-GM diagnostics</div>
         <pre id="action-gm-diagnostics">No Action GM request generated.</pre>
+        <div class="dev-section">Live GM transport</div>
+        <div class="dev-row"><input id="gm-endpoint" class="dev-input" type="url" aria-label="GM endpoint" placeholder="https://your-worker.example/resolve-action"></div>
+        <div class="dev-row">
+            <input id="gm-access-token" class="dev-input" type="password" autocomplete="off" aria-label="Prototype access token" placeholder="Prototype access token (session only)">
+            <button id="resolve-action-ai" class="dev-btn">Resolve with AI</button>
+        </div>
+        <pre id="gm-transport-diagnostics">transport: idle\nendpoint: missing\nauth token: missing</pre>
         <div class="dev-label">GM narration (separate from physical effects)</div>
         <div id="action-gm-narration">—</div>
         <div class="dev-section">Legacy GM / world-building controls</div>
@@ -3681,6 +3690,76 @@
     // This state deliberately holds only the latest bounded request. It never calls
     // the legacy payload/command path and is replaced whenever Copy is invoked.
     let latestManualActionGMRequest = null;
+    let externalGMRequestPending = false;
+
+    function makeGMTransportError(code, message, httpStatus = null) {
+        return { ok: false, error: { code, message }, httpStatus };
+    }
+
+    // Pure transport adapter: validates and correlates protocol data, but never
+    // invokes applyGMOutcome or any world-state helper.
+    async function requestExternalGMOutcome(gmRequest, transportConfig = {}) {
+        if (gmRequest?.route?.mode !== 'gm') return makeGMTransportError('non_gm_route', 'Only GM-routed actions may use external transport.');
+        const requestValidation = validateGMRequest(gmRequest);
+        if (!requestValidation.valid) return makeGMTransportError('invalid_gm_request', requestValidation.errors.join(' '));
+        if (externalGMRequestPending) return makeGMTransportError('request_pending', 'A GM request is already in progress.');
+        const endpoint = typeof transportConfig.endpoint === 'string' ? transportConfig.endpoint.trim() : '';
+        const accessToken = typeof transportConfig.accessToken === 'string' ? transportConfig.accessToken : '';
+        if (!endpoint) return makeGMTransportError('missing_endpoint', 'Configure the GM endpoint first.');
+        if (!accessToken) return makeGMTransportError('missing_access_token', 'Enter the prototype access token first.');
+        const fetchImpl = transportConfig.fetchImpl || fetch;
+        const controller = new AbortController();
+        const timeoutMs = Number.isFinite(transportConfig.timeoutMs) ? transportConfig.timeoutMs : 30000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        externalGMRequestPending = true;
+        try {
+            let response;
+            try {
+                response = await fetchImpl(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+                    body: JSON.stringify({ request: gmRequest }),
+                    signal: controller.signal
+                });
+            } catch (error) {
+                return makeGMTransportError(error?.name === 'AbortError' ? 'timeout' : 'network_error', error?.name === 'AbortError' ? 'The GM request timed out.' : 'The GM service could not be reached.');
+            }
+            let envelope;
+            try { envelope = await response.json(); }
+            catch (_) { return makeGMTransportError('invalid_response_json', 'The GM service returned invalid JSON.', response.status); }
+            if (!response.ok || envelope?.ok !== true) {
+                const code = typeof envelope?.error?.code === 'string' ? envelope.error.code : 'transport_http_error';
+                const message = typeof envelope?.error?.message === 'string' ? envelope.error.message : `The GM service returned HTTP ${response.status}.`;
+                return makeGMTransportError(code, message, response.status);
+            }
+            if (!envelope.outcome || typeof envelope.outcome !== 'object' || Array.isArray(envelope.outcome)) return makeGMTransportError('invalid_response_envelope', 'The GM service response did not contain an outcome.', response.status);
+            if (envelope.outcome.actionId !== gmRequest.action.id) return makeGMTransportError('action_id_mismatch', 'The returned outcome does not match the pending action.', response.status);
+            const outcomeValidation = validateGMOutcome(envelope.outcome, gmRequest.action.id);
+            if (!outcomeValidation.valid) return { ...makeGMTransportError('invalid_gm_outcome', outcomeValidation.errors.join(' '), response.status), outcomeValidation };
+            return { ok: true, outcome: envelope.outcome, meta: envelope.meta || {}, httpStatus: response.status, outcomeValidation };
+        } finally {
+            clearTimeout(timeout);
+            externalGMRequestPending = false;
+        }
+    }
+
+    function setGMTransportDiagnostics(status, details = {}) {
+        const endpoint = document.getElementById('gm-endpoint')?.value.trim();
+        const token = document.getElementById('gm-access-token')?.value;
+        const lines = [`transport: ${status}`, `endpoint: ${endpoint ? 'configured' : 'missing'}`, `auth token: ${token ? 'configured' : 'missing'}`];
+        if (details.httpStatus) lines.push(`HTTP status: ${details.httpStatus}`);
+        if (details.model) lines.push(`model: ${details.model}`);
+        if (Number.isFinite(details.latencyMs)) lines.push(`latency: ${details.latencyMs} ms`);
+        if (details.responseId) lines.push(`response ID: ${details.responseId}`);
+        if (details.actionId) lines.push(`returned actionId: ${details.actionId}`);
+        if (details.validation) lines.push(`GMOutcome validation: ${details.validation}`);
+        if (Number.isInteger(details.effectCount)) lines.push(`effect count: ${details.effectCount}`);
+        if (details.targetId) lines.push(`binding targetId: ${details.targetId}`);
+        if (details.toolId) lines.push(`binding toolId: ${details.toolId}`);
+        if (details.error) lines.push(`error: ${details.error}`);
+        const output = document.getElementById('gm-transport-diagnostics');
+        if (output) output.textContent = lines.join('\n');
+    }
 
     function getManualActionGMSelection() {
         const target = getLastInteractionTarget();
@@ -3754,6 +3833,41 @@
             .then(() => addLogMessage('Action-scoped GMRequest copied.'))
             .catch(() => addLogMessage('Action GMRequest created in the panel. Copy it manually.'));
         return generated;
+    }
+
+    async function resolveManualActionWithAI() {
+        if (externalGMRequestPending) return makeGMTransportError('request_pending', 'A GM request is already in progress.');
+        const generated = buildManualActionGMRequest();
+        const { action, context, route, built } = generated;
+        if (!built.ok) {
+            setGMTransportDiagnostics('error', { error: route.mode === 'local' ? 'Action routes locally; external GM was not called.' : (built.errors.join(' ') || route.reason) });
+            addLogMessage(route.mode === 'local' ? 'Action routes locally; external GM was not called.' : 'Unable to build an Action GM request.');
+            return makeGMTransportError('request_not_available', 'The current action cannot be sent to the GM.');
+        }
+        // Retain this exact request as the sole correlation/application context.
+        latestManualActionGMRequest = built.request;
+        const endpointInput = document.getElementById('gm-endpoint');
+        const tokenInput = document.getElementById('gm-access-token');
+        const button = document.getElementById('resolve-action-ai');
+        const endpoint = endpointInput?.value.trim() || '';
+        const accessToken = tokenInput?.value || '';
+        try { localStorage.setItem('osrs_llm_gm_endpoint', endpoint); } catch (_) {}
+        try { sessionStorage.setItem('osrs_llm_gm_access_token', accessToken); } catch (_) {}
+        if (button) { button.disabled = true; button.textContent = 'Requesting…'; }
+        setGMTransportDiagnostics('requesting');
+        const result = await requestExternalGMOutcome(built.request, { endpoint, accessToken });
+        if (button) { button.disabled = false; button.textContent = 'Resolve with AI'; }
+        if (!result.ok) {
+            setGMTransportDiagnostics('error', { httpStatus: result.httpStatus, error: result.error.message });
+            setActionGMDiagnostics({ actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId, route: route.mode, contextSize: serializedSizeLabel(context), requestSize: serializedSizeLabel(built.request), outcomeValidation: 'not received', application: 'not applied (no mutation)', errors: [result.error.message] });
+            addLogMessage(`Live GM transport failed: ${result.error.message}`);
+            return result;
+        }
+        document.getElementById('action-gm-io').value = JSON.stringify(result.outcome, null, 2);
+        setGMTransportDiagnostics('received', { ...result.meta, httpStatus: result.httpStatus, actionId: result.outcome.actionId, validation: 'valid', effectCount: result.outcome.effects.length, targetId: result.outcome.bindings?.targetId, toolId: result.outcome.bindings?.toolId });
+        setActionGMDiagnostics({ actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId, route: route.mode, contextSize: serializedSizeLabel(context), requestSize: serializedSizeLabel(built.request), outcomeValidation: 'valid', application: 'awaiting manual Validate / Apply (no mutation)' });
+        addLogMessage('Live GM outcome received and validated; inspect it, then apply manually.');
+        return result;
     }
 
     function validateAndApplyManualActionGMOutcome() {
@@ -6570,6 +6684,13 @@
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
     document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
     document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
+    document.getElementById('resolve-action-ai').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resolveManualActionWithAI(); });
+    const gmEndpointInput = document.getElementById('gm-endpoint');
+    const gmAccessTokenInput = document.getElementById('gm-access-token');
+    try { gmEndpointInput.value = localStorage.getItem('osrs_llm_gm_endpoint') || ''; } catch (_) {}
+    try { gmAccessTokenInput.value = sessionStorage.getItem('osrs_llm_gm_access_token') || ''; } catch (_) {}
+    [gmEndpointInput, gmAccessTokenInput].forEach(input => input.addEventListener('input', () => setGMTransportDiagnostics('idle')));
+    setGMTransportDiagnostics('idle');
     document.getElementById('copy-gm-prompt').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPrompt(); });
     document.getElementById('copy-adventure-seed').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyAdventureSeedPrompt(); });
     document.getElementById('apply-llm-json').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); applyLLMCommands(); });
