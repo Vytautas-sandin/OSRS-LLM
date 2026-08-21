@@ -114,6 +114,16 @@ test('structured output with nested target and tool bindings is preserved', asyn
   assert.deepEqual((await response.json()).outcome, boundOutcome);
 });
 
+test('server instructions require conservative persistent effects and explicit late resolution', () => {
+  assert.match(GM_INSTRUCTIONS, /effects: \[\] is a normal outcome/i);
+  assert.match(GM_INSTRUCTIONS, /ONLY persistent canonical world consequences/);
+  assert.match(GM_INSTRUCTIONS, /Failed or blocked actions should normally return effects: \[\]/i);
+  assert.match(GM_INSTRUCTIONS, /damage_entity ONLY when the action actually damages that exact entity/i);
+  assert.match(GM_INSTRUCTIONS, /Never substitute an unrelated nearby entity/i);
+  assert.match(GM_INSTRUCTIONS, /never copy descriptive metadata such as purpose or required/i);
+  assert.match(GM_INSTRUCTIONS, /persistently mutated, return that late resolution as bindings\.targetId/i);
+});
+
 test('missing model output returns a safe error', async () => {
   const response = await handleRequest(browserRequest({ request: validRequest() }), makeEnv({ AI: makeAI({}) }));
   assert.equal(response.status, 502);

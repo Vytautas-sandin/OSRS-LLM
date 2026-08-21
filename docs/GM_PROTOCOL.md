@@ -94,9 +94,11 @@ No intentional partial application is allowed. If any preflight fails, no effect
 
 Narration remains presentation data: it is returned in the application result and is not converted into a log, dialogue command, or canvas mutation. Narration-only outcomes are valid successful no-ops and do not overwrite the current undo snapshot.
 
+Effects describe only persistent canonical consequences, so `effects: []` is normal and narration-only success is valid. Failed or blocked actions normally have no effects unless the attempt causes a genuine persistent side consequence. If an intended target is unsupported, the GM must not substitute an unrelated nearby entity.
+
 ## Compatibility references
 
-Action compatibility IDs are resolved before legacy mutation. In particular, `door:<level>:<x>:<y>:<direction>` resolves to the authoritative base-door object. `set_entity_state` merges plain semantic state onto that door without creating a prop, toggling `isOpen`, or rotating its mesh. Base-door semantic state is included in ActionContext and the GM save/undo snapshot. Other transform operations against base doors are rejected because the legacy base-door representation cannot safely express them.
+Action compatibility IDs are resolved before legacy mutation. In particular, `door:<level>:<x>:<y>:<direction>` resolves to the authoritative base-door object. `set_entity_state` merges plain semantic state onto that door without creating a prop, toggling `isOpen`, or rotating its mesh. Base-door semantic state is included in ActionContext and the GM save/undo snapshot. Other transform operations against base doors are rejected because the legacy base-door representation cannot safely express them. An authored base temple pillar may be mutated without a late binding when it is the explicit `GameAction.targetId`; when that action target is unresolved, preflight requires `bindings.targetId` to explicitly name the same pillar as the effect.
 
 GM-created canvas entities retain their normal legacy IDs and are passed to existing entity, prop, NPC, transition, and terrain helpers. Base NPC movement is deliberately rejected at this boundary; only GM-created NPC movement is currently rollback-safe.
 
