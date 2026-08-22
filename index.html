@@ -52,6 +52,10 @@
         .dev-btn:disabled { opacity: 0.55; cursor: wait; }
         .dev-input { flex: 1; min-width: 0; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font: 11px monospace; padding: 6px; }
         .dev-section { border-top: 1px solid #8a765b; margin-top: 4px; padding-top: 7px; color: #ffff00; font-weight: bold; }
+        .dev-details { border-top: 1px solid #8a765b; padding-top: 6px; }
+        .dev-details > summary { color: #ffff00; cursor: pointer; font-weight: bold; outline: none; text-shadow: 1px 1px 0 #000; }
+        .dev-details[open] > summary { margin-bottom: 6px; }
+        #legacy-gm-section[hidden] { display: none !important; }
         #action-gm-io { width: 100%; height: 110px; box-sizing: border-box; background: #171f19; color: #fff; border: 1px solid #78947e; font-family: monospace; font-size: 11px; padding: 6px; resize: vertical; }
         #action-gm-diagnostics, #gm-transport-diagnostics { margin: 0; padding: 6px; min-height: 34px; white-space: pre-wrap; overflow-wrap: anywhere; background: #171f19; border: 1px solid #506557; color: #d9eadc; font-size: 10px; line-height: 1.35; }
         #action-gm-narration { min-height: 22px; padding: 6px; background: #2b2419; border-left: 3px solid #d0c8b0; color: #fff; white-space: pre-wrap; }
@@ -119,57 +123,74 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">LLM / GM Panel · JSON Extract v2.7.2</div>
-        <div class="dev-section">Action-scoped GM · gm_request_v1 / gm_outcome_v1</div>
-        <div class="dev-label">Uses the current action text and explicit selection. Paste the correlated outcome below.</div>
-        <div class="dev-label">Player action / question for the GM</div>
-        <textarea id="player-action" spellcheck="false" placeholder="Example action: I pry open the chest with the shovel. For Copy Seed: write a brief like 'a quiet temple mystery'."></textarea>
-        <div class="dev-row">
-            <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
-            <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
-        </div>
-        <textarea id="action-gm-io" spellcheck="false" placeholder="A generated gm_request_v1 appears here. Replace it with the correlated gm_outcome_v1 JSON, then validate/apply."></textarea>
-        <div class="dev-label">Action-GM diagnostics</div>
-        <pre id="action-gm-diagnostics">No Action GM request generated.</pre>
-        <div class="dev-section">Live GM transport</div>
-        <div class="dev-row"><input id="gm-endpoint" class="dev-input" type="url" aria-label="GM endpoint" placeholder="https://your-worker.example/resolve-action"></div>
-        <div class="dev-row">
-            <input id="gm-access-token" class="dev-input" type="password" autocomplete="off" aria-label="Prototype access token" placeholder="Prototype access token (session only)">
-            <button id="resolve-action-ai" class="dev-btn">Resolve with AI</button>
-        </div>
-        <pre id="gm-transport-diagnostics">transport: idle\nendpoint: missing\nauth token: missing</pre>
-        <div class="dev-row">
-            <span id="gm-trace-count" class="dev-label">GM traces: 0 / 30</span>
-            <button id="export-gm-traces" class="dev-btn">Export GM Traces</button>
-            <button id="clear-gm-traces" class="dev-btn">Clear Traces</button>
-        </div>
-        <div class="dev-label">GM narration (separate from physical effects)</div>
-        <div id="action-gm-narration">—</div>
-        <div class="dev-section">Legacy GM / world-building controls</div>
-        <div class="dev-row">
-            <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
-            <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
-            <button id="copy-adventure-seed" class="dev-btn">Copy Scene Prompt</button>
-            <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
-        </div>
-        <div class="dev-row">
-            <button id="save-world-state" class="dev-btn">Save</button>
-            <button id="load-world-state" class="dev-btn">Load</button>
-            <button id="reset-world-state" class="dev-btn">Reset</button>
-            <button id="look-around-dev" class="dev-btn">Inspect</button>
-            <button id="undo-gm-apply" class="dev-btn">Undo</button>
-        </div>
-        <div class="dev-row">
-            <button id="validate-llm-json" class="dev-btn">Validate</button>
-            <button id="export-world-save" class="dev-btn">Export Save</button>
-            <button id="import-world-save" class="dev-btn">Import Save</button>
-        </div>
-        <div class="dev-label">World summary</div>
-        <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
-        <div class="dev-label">Memory facts / quest notes, one per line</div>
-        <textarea id="world-memory" spellcheck="false" placeholder="Example: The player found a hidden pressure stone near the temple entrance."></textarea>
-        <div class="dev-label">LLM JSON / copied payload</div>
-        <textarea id="llm-io" spellcheck="false" placeholder="Paste LLM JSON here, or tap Copy Payload to export the current game state."></textarea>
+        <div id="dev-panel-title">Action GM Panel</div>
+        <details class="dev-details" open>
+            <summary>Action GM · gm_request_v1 / gm_outcome_v1</summary>
+            <div class="dev-label">Uses the current action text and explicit selection. Paste the correlated outcome below.</div>
+            <div class="dev-label">Player action / question for the GM</div>
+            <textarea id="player-action" spellcheck="false" placeholder="Example action: I dig a hole here with my shovel."></textarea>
+            <div class="dev-row">
+                <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
+                <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
+            </div>
+            <textarea id="action-gm-io" spellcheck="false" placeholder="A generated gm_request_v1 appears here. Resolve with AI fills gm_outcome_v1 here; Validate / Apply remains manual."></textarea>
+            <div class="dev-label">Action-GM diagnostics</div>
+            <pre id="action-gm-diagnostics">No Action GM request generated.</pre>
+            <div class="dev-label">GM narration (separate from physical effects)</div>
+            <div id="action-gm-narration">—</div>
+        </details>
+        <details class="dev-details" open>
+            <summary>Live Transport</summary>
+            <div class="dev-row"><input id="gm-endpoint" class="dev-input" type="url" aria-label="GM endpoint" placeholder="https://your-worker.example/resolve-action"></div>
+            <div class="dev-row">
+                <input id="gm-access-token" class="dev-input" type="password" autocomplete="off" aria-label="Prototype access token" placeholder="Prototype access token (session only)">
+                <button id="resolve-action-ai" class="dev-btn">Resolve with AI</button>
+            </div>
+            <pre id="gm-transport-diagnostics">transport: idle\nendpoint: missing\nauth token: missing</pre>
+        </details>
+        <details class="dev-details">
+            <summary>World State</summary>
+            <div class="dev-row">
+                <button id="save-world-state" class="dev-btn">Save</button>
+                <button id="load-world-state" class="dev-btn">Load</button>
+                <button id="reset-world-state" class="dev-btn">Reset</button>
+                <button id="look-around-dev" class="dev-btn">Inspect</button>
+                <button id="undo-gm-apply" class="dev-btn">Undo</button>
+            </div>
+            <div class="dev-row">
+                <button id="export-world-save" class="dev-btn">Export Save</button>
+                <button id="import-world-save" class="dev-btn">Import Save</button>
+            </div>
+            <div class="dev-label">World summary</div>
+            <textarea id="world-summary" spellcheck="false" placeholder="Example: A quiet coastal town hides old sea-temple mechanisms."></textarea>
+        </details>
+        <details class="dev-details">
+            <summary>Memory</summary>
+            <div class="dev-label">Memory facts / quest notes, one per line</div>
+            <textarea id="world-memory" spellcheck="false" placeholder="Example: The player found a hidden pressure stone near the temple entrance."></textarea>
+        </details>
+        <details class="dev-details">
+            <summary>GM Traces</summary>
+            <div class="dev-row">
+                <span id="gm-trace-count" class="dev-label">GM traces: 0 / 30</span>
+                <button id="export-gm-traces" class="dev-btn">Export GM Traces</button>
+                <button id="clear-gm-traces" class="dev-btn">Clear Traces</button>
+            </div>
+        </details>
+        <details id="legacy-gm-section" class="dev-details" hidden>
+            <summary>Deprecated Legacy GM</summary>
+            <div class="dev-row">
+                <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
+                <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
+                <button id="copy-adventure-seed" class="dev-btn">Copy Scene Prompt</button>
+                <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
+            </div>
+            <div class="dev-row">
+                <button id="validate-llm-json" class="dev-btn">Validate Legacy JSON</button>
+            </div>
+            <div class="dev-label">LLM JSON / copied payload</div>
+            <textarea id="llm-io" spellcheck="false" placeholder="Deprecated legacy gm_payload_v0 JSON workflow. Use ?legacygm=1 only for historical debugging."></textarea>
+        </details>
     </div>
 
     <div id="dialogue-box" onclick="continueDialogue()">
@@ -1840,6 +1861,7 @@
     }
 
     const ACTION_CONTEXT_TOOL_MAX = 28;
+    const ACTION_CONTEXT_LOCAL_TILE_RADIUS = 4;
 
     function getActionToolCandidates(explicitToolId = null) {
         if (explicitToolId) {
@@ -1888,6 +1910,53 @@
             .slice(0, ACTION_CONTEXT_NEARBY_MAX);
     }
 
+    function makeActionTileCandidate(level, x, y) {
+        const distance = distanceToPlayerTile(x, y, level);
+        const protectedTile = isTileProtected(x, y, level);
+        const occupied = isTileOccupiedByGM(x, y, level);
+        const valid = isValidTile(x, y, level);
+        return copyActionContextValue({
+            id: `tile:${level}:${x}:${y}`,
+            level,
+            x,
+            y,
+            distance,
+            terrain: getTileCenterHeight(x, y, level) < 0 ? 'low_ground' : 'ground',
+            height: getTileCenterHeight(x, y, level),
+            walkable: valid && !isTileUnwalkable(level, x, y),
+            occupied,
+            protected: protectedTile,
+            canDig: valid && !protectedTile && !occupied && canModifyTerrainPatch({ x, y, level, radius: 0, mode: 'dig', delta: -0.45 })
+        });
+    }
+
+    function getLocalActionTileCandidates(radius = ACTION_CONTEXT_LOCAL_TILE_RADIUS) {
+        const level = currentLevel;
+        const r = Math.max(0, Math.min(4, Math.round(Number(radius) || 0)));
+        const candidates = [];
+        for (let dx = -r; dx <= r; dx++) {
+            for (let dy = -r; dy <= r; dy++) {
+                const x = playerGridX + dx;
+                const y = playerGridY + dy;
+                if (!isValidTile(x, y, level)) continue;
+                const distance = distanceToPlayerTile(x, y, level);
+                if (distance > r) continue;
+                candidates.push(makeActionTileCandidate(level, x, y));
+            }
+        }
+        return candidates.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
+    }
+
+    function actionNeedsLocalTileCandidates(action) {
+        const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
+        if (['dig', 'raise', 'lower', 'fill', 'flatten', 'place', 'build', 'use'].includes(verb)) return true;
+        const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.object]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase();
+        return /\b(terrain|ground|tile|hole|dig|dug|excavate|trench|ditch|mound|raise|lower|flatten|fill|build|place|put|plant)\b/.test(text);
+    }
+
     // Free text remains authoritative. Only an explicit selection supplies targetId;
     // candidate names are deliberately not matched against the prose here.
     function createImprovisedGameAction(intent, { selectedTarget = null, lastTarget = null, toolId = null } = {}) {
@@ -1916,7 +1985,7 @@
         const tool = resolveActionToolReference(action.toolId);
         const toolCandidates = getActionToolCandidates(action.toolId);
         const memory = serializeWorldMemory();
-        return {
+        const context = {
             protocol: ACTION_CONTEXT_PROTOCOL,
             action,
             actor: {
@@ -1938,6 +2007,13 @@
             },
             anchors: getRelevantActionAnchors(action, target)
         };
+        if (actionNeedsLocalTileCandidates(action)) {
+            context.localTiles = {
+                radius: ACTION_CONTEXT_LOCAL_TILE_RADIUS,
+                candidates: getLocalActionTileCandidates()
+            };
+        }
+        return context;
     }
 
     function validateActionContext(context) {
@@ -1954,6 +2030,11 @@
         if (context?.toolCandidates?.length > ACTION_CONTEXT_TOOL_MAX) errors.push(`ActionContext toolCandidates exceeds ${ACTION_CONTEXT_TOOL_MAX} candidates.`);
         if (context?.toolCandidates?.some(candidate => !candidate || typeof candidate.id !== 'string' || typeof candidate.name !== 'string' || typeof candidate.type !== 'string' || !Array.isArray(candidate.tags))) errors.push('ActionContext toolCandidates entries require id, name, type, and tags.');
         if (actionResult.action.toolId && (context?.toolCandidates?.length !== 1 || context.toolCandidates[0].id !== actionResult.action.toolId)) errors.push('An explicit toolId must be the sole tool candidate.');
+        if (context?.localTiles !== undefined) {
+            if (!Array.isArray(context?.localTiles?.candidates)) errors.push('ActionContext localTiles.candidates must be an array when localTiles is supplied.');
+            if (context?.localTiles?.candidates?.length > 81) errors.push('ActionContext localTiles.candidates exceeds the bounded local tile limit.');
+            if (context?.localTiles?.candidates?.some(tile => !tile || typeof tile.id !== 'string' || !isValidTile(tile.x, tile.y, tile.level))) errors.push('ActionContext local tile candidates require id, level, x, and y.');
+        }
         if (!context?.relevantState || typeof context.relevantState !== 'object') errors.push('ActionContext relevantState is required.');
         if (!Array.isArray(context?.anchors)) errors.push('ActionContext anchors must be an array.');
         if (actionResult.action.targetId && !context?.target) warnings.push(`Target did not resolve: ${actionResult.action.targetId}.`);
@@ -2263,7 +2344,7 @@
         { op: 'add_memory', purpose: 'Add one persistent world-memory fact.', required: ['text'] },
         { op: 'create_transition', purpose: 'Create one small passage or transition.', required: ['id', 'name', 'targetLevel'] },
         { op: 'remove_transition', purpose: 'Remove an existing transition.', required: ['id'] },
-        { op: 'set_terrain', purpose: 'Apply one limited terrain patch.', required: ['id', 'mode'] }
+        { op: 'set_terrain', purpose: 'Apply one limited terrain patch on an originating local tile candidate when tileId is supplied. Use a stable, specific id and ordinary terrain fields only.', required: ['id', 'mode'] }
     ]);
     const GM_ACTION_EFFECT_OPS = new Set(GM_ACTION_EFFECT_DEFINITIONS.map(definition => definition.op));
 
@@ -2327,6 +2408,7 @@
             rules: {
                 narrationRole: 'Put narration, dialogue, interpretation, uncertainty, and pushback in narration.',
                 worldChangePolicy: 'Use effects only for persistent, physical, positional, inventory, flag, or memory consequences. Failed attempts may have no effects.',
+                localTilePolicy: 'New terrain changes that use tileId must choose one of context.localTiles.candidates. When localTiles is absent, do not invent tileIds.',
                 existingEntityPolicy: 'Prefer updating stable existing entity ids over creating replacements or duplicates.',
                 resolutionBindingPolicy: 'When targetId or toolId is unresolved, bind only an ID supplied in nearby entities or toolCandidates. Never invent an ID.',
                 maxEffects: GM_OUTCOME_MAX_EFFECTS
@@ -2599,6 +2681,29 @@
         };
     }
 
+    function getOriginatingToolCandidate(context, toolId) {
+        if (!toolId) return null;
+        return (context?.toolCandidates || []).find(tool => tool?.id === toolId) || null;
+    }
+
+    function isDiggingToolCandidate(tool) {
+        if (!tool) return false;
+        const tags = Array.isArray(tool.tags) ? tool.tags : [];
+        const text = [tool.id, tool.type, tool.name, ...tags].filter(Boolean).join(' ').toLowerCase();
+        return /\b(shovel|spade|dig|digging|excavate|excavation)\b/.test(text);
+    }
+
+    function getAuthoritativeDiggingToolCandidate(context, toolId = null) {
+        const inventoryIds = new Set((context?.actor?.inventory || []).map(item => item?.id).filter(Boolean));
+        if (toolId) {
+            const tool = getOriginatingToolCandidate(context, toolId);
+            return inventoryIds.has(tool?.id) && isDiggingToolCandidate(tool) ? tool : null;
+        }
+        const candidates = (context?.toolCandidates || [])
+            .filter(tool => inventoryIds.has(tool?.id) && isDiggingToolCandidate(tool));
+        return candidates.length === 1 ? candidates[0] : null;
+    }
+
     function isSafeGMFlag(effect) {
         return GM_APPLICATION_FLAG_KEY.test(effect.key)
             && !['__proto__', 'prototype', 'constructor'].includes(effect.key)
@@ -2692,7 +2797,8 @@
                 translatedEffects.push({ ...command, ...placement }); return;
             }
             if (effect.op === 'create_prop') {
-                const placement = preflightGMPlacement(effect);
+                const placement = effect.tileId ? preflightGMLocalPropPlacement(gmRequest, effect) : preflightGMPlacement(effect);
+                if (effect.tileId && !placement.valid) return fail(index, placement.error);
                 if (findCanvasEntityRef(effect.id) || resolveActionEntityReference(effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, `prop id already exists or placement is invalid: ${effect.id}.`);
                 reservedCreatedIds.add(effect.id);
                 translatedEffects.push({ ...command, ...placement }); return;
@@ -2737,7 +2843,9 @@
                 translatedEffects.push(command); return;
             }
             if (effect.op === 'set_terrain') {
-                const placement = preflightGMPlacement(effect);
+                const placement = preflightGMLocalTerrainPlacement(gmRequest, effect);
+                if (!placement.valid) return fail(index, placement.error);
+                if (placement.mode === 'dig' && !getAuthoritativeDiggingToolCandidate(gmRequest.context, resolvedBindings.toolId)) return fail(index, 'dig terrain requires an originating inventory digging tool.');
                 if (gmTerrain.some(entry => entry.id === effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, 'terrain id already exists or placement is invalid.');
                 reservedCreatedIds.add(effect.id);
                 translatedEffects.push({ ...command, ...placement }); return;
@@ -4395,6 +4503,80 @@
         };
     }
 
+    function parseActionTileId(id) {
+        const match = /^tile:([^:]+):(-?\d+):(-?\d+)$/.exec(String(id || '').trim());
+        return match ? { level: match[1], x: Number(match[2]), y: Number(match[3]) } : null;
+    }
+
+    function getOriginatingLocalTileCandidate(gmRequest, effect) {
+        const candidates = Array.isArray(gmRequest?.context?.localTiles?.candidates) ? gmRequest.context.localTiles.candidates : [];
+        const byId = parseActionTileId(effect.tileId);
+        let x = Number.isFinite(Number(effect.x)) ? Math.round(Number(effect.x)) : null;
+        let y = Number.isFinite(Number(effect.y)) ? Math.round(Number(effect.y)) : null;
+        let level = effect.level !== undefined && effect.level !== null ? String(effect.level) : null;
+        if (byId) {
+            x = byId.x;
+            y = byId.y;
+            level = byId.level;
+        }
+        return candidates.find(tile => String(tile.level) === String(level) && tile.x === x && tile.y === y) || null;
+    }
+
+    function terrainPatchHeightAllowed(patch, vertices) {
+        const level = patch.level;
+        const mode = normalizeTerrainMode(patch);
+        const min = level === '2' ? -0.6 : -0.9;
+        const max = level === '2' ? 1.2 : 1.8;
+        return vertices.every(({ vx, vy }) => {
+            const current = vHeights[level][vx][vy];
+            let next = current;
+            if (mode === 'raise') next = current + Math.abs(Number(patch.delta) || 0.3);
+            else if (mode === 'lower') next = current - Math.abs(Number(patch.delta) || 0.3);
+            else if (mode === 'dig') next = current - Math.abs(Number(patch.delta) || 0.5);
+            else if (mode === 'fill') next = Number.isFinite(Number(patch.height)) ? Number(patch.height) : 0.1;
+            else if (mode === 'flatten') next = Number.isFinite(Number(patch.height)) ? Number(patch.height) : getWalkableHeight(patch.x, patch.y, level);
+            else next = Number.isFinite(Number(patch.height)) ? Number(patch.height) : current + (Number(patch.delta) || 0);
+            return next >= min && next <= max;
+        });
+    }
+
+    function canModifyTerrainPatch(patch) {
+        const level = String(patch.level ?? currentLevel);
+        const x = Math.round(Number(patch.x));
+        const y = Math.round(Number(patch.y));
+        if (level === '-1' || !vHeights[level] || !BASE_V_HEIGHTS[level] || !isValidTile(x, y, level)) return false;
+        const radius = Math.max(0, Math.min(3, Math.round(Number(patch.radius) || 0)));
+        const shape = patch.shape === 'circle' ? 'circle' : 'square';
+        const vertices = collectTerrainVertices(x, y, radius, shape);
+        if (vertices.length === 0) return false;
+        if (!vertices.every(({ vx, vy }) => canModifyVertex(vx, vy, level))) return false;
+        return terrainPatchHeightAllowed({ ...patch, x, y, level, radius, shape }, vertices);
+    }
+
+    function preflightGMLocalTerrainPlacement(gmRequest, effect) {
+        const candidate = getOriginatingLocalTileCandidate(gmRequest, effect);
+        if (!candidate) return { valid: false, error: 'terrain placement must match an originating local tile candidate.' };
+        const x = candidate.x;
+        const y = candidate.y;
+        const level = String(candidate.level);
+        const mode = normalizeTerrainMode(effect);
+        const radius = Math.max(0, Math.min(3, Math.round(Number(effect.radius) || 0)));
+        if (candidate.protected || candidate.occupied) return { valid: false, error: 'terrain placement candidate is protected, occupied, or unsafe to modify.' };
+        if (!canModifyTerrainPatch({ ...effect, x, y, level, radius, mode })) return { valid: false, error: 'terrain placement is rejected by authoritative terrain safety rules.' };
+        if (gmTerrain.some(entry => entry.level === level && entry.x === x && entry.y === y)) return { valid: false, error: 'terrain already exists at the originating tile.' };
+        return { valid: true, x, y, level, tileId: candidate.id, radius, mode };
+    }
+
+    function preflightGMLocalPropPlacement(gmRequest, effect) {
+        const candidate = getOriginatingLocalTileCandidate(gmRequest, effect);
+        if (!candidate) return { valid: false, error: 'prop placement must match an originating local tile candidate.' };
+        const x = candidate.x;
+        const y = candidate.y;
+        const level = String(candidate.level);
+        if (candidate.protected || candidate.occupied || !isTilePlaceableForGM(x, y, level, false)) return { valid: false, error: 'prop placement candidate is protected, occupied, or invalid.' };
+        return { valid: true, x, y, level, tileId: candidate.id };
+    }
+
 
     function sanitizeItemId(value) {
         return String(value || '')
@@ -5289,6 +5471,7 @@
         if (level === '-1' || !vHeights[level] || !isValidTile(x, y, level)) { if (!cmd.silent) addLogMessage('Invalid terrain command.'); return false; }
         const mode = normalizeTerrainMode(cmd);
         const radius = Math.max(0, Math.min(3, Math.round(Number(cmd.radius) || 0)));
+        if (!canModifyTerrainPatch({ ...cmd, x, y, level, radius, mode })) { if (!cmd.silent) addLogMessage('The ground here cannot be safely modified.'); return false; }
         const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : `${mode.replace('_', ' ')} terrain`;
         const patch = {
             id,
@@ -6946,6 +7129,12 @@
 
     const devToggle = document.getElementById('dev-toggle');
     const devPanel = document.getElementById('dev-panel');
+    const legacyGMSection = document.getElementById('legacy-gm-section');
+    try {
+        if (new URLSearchParams(window.location.search).get('legacygm') === '1') {
+            legacyGMSection.hidden = false;
+        }
+    } catch (_) {}
     devToggle.addEventListener('pointerdown', (e) => {
         e.stopPropagation(); e.preventDefault();
         devPanel.style.display = (devPanel.style.display === 'none' || devPanel.style.display === '') ? 'flex' : 'none';

@@ -97,6 +97,42 @@ test('live bridge reuses manual builder and keeps manual controls', () => {
   assert.match(html, /route\.mode === 'local'/);
 });
 
+test('dev panel presents Action GM as the normal AI-facing workflow', () => {
+  const panelStart = html.indexOf('<div id="dev-panel">');
+  const legacyStart = html.indexOf('<details id="legacy-gm-section"', panelStart);
+  const legacyEnd = html.indexOf('</details>', legacyStart);
+  assert.ok(panelStart > 0 && legacyStart > panelStart && legacyEnd > legacyStart);
+
+  const normalPanel = html.slice(panelStart, legacyStart);
+  const legacyPanel = html.slice(legacyStart, legacyEnd);
+  assert.match(normalPanel, /Action GM Panel/);
+  assert.match(normalPanel, /<summary>Action GM · gm_request_v1 \/ gm_outcome_v1<\/summary>/);
+  assert.match(normalPanel, /<summary>Live Transport<\/summary>/);
+  assert.match(normalPanel, /id="player-action"/);
+  assert.match(normalPanel, /id="copy-action-gm-request"/);
+  assert.match(normalPanel, /id="resolve-action-ai"/);
+  assert.match(normalPanel, /id="apply-action-gm-outcome"/);
+  assert.match(normalPanel, /id="action-gm-io"/);
+  assert.match(normalPanel, /id="save-world-state"/);
+  assert.match(normalPanel, /id="load-world-state"/);
+  assert.match(normalPanel, /id="undo-gm-apply"/);
+  assert.match(normalPanel, /id="look-around-dev"/);
+  assert.match(normalPanel, /id="world-summary"/);
+  assert.match(normalPanel, /id="world-memory"/);
+  assert.match(normalPanel, /id="gm-trace-count"/);
+  assert.doesNotMatch(normalPanel, /id="copy-gm-payload"|id="copy-gm-prompt"|id="copy-adventure-seed"|id="apply-llm-json"|id="validate-llm-json"|id="llm-io"/);
+
+  assert.match(legacyPanel, /hidden/);
+  assert.match(legacyPanel, /Deprecated Legacy GM/);
+  assert.match(legacyPanel, /id="copy-gm-payload"/);
+  assert.match(legacyPanel, /id="copy-gm-prompt"/);
+  assert.match(legacyPanel, /id="copy-adventure-seed"/);
+  assert.match(legacyPanel, /id="apply-llm-json"/);
+  assert.match(legacyPanel, /id="validate-llm-json"/);
+  assert.match(legacyPanel, /id="llm-io"/);
+  assert.match(html, /legacygm/);
+});
+
 test('fresh manual prose ignores stale interaction target but preserves active use-item selection', () => {
   const selectionStart = html.indexOf('    function getManualActionGMSelection()');
   const selectionEnd = html.indexOf('    function setActionGMDiagnostics', selectionStart);

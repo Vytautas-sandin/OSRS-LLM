@@ -33,6 +33,10 @@ const richRequest = () => ({
     target: null,
     tool: { id: 'base_shovel_01', name: 'Shovel', type: 'tool', metadata: { location: 'inventory', tags: ['tool', 'dig'] } },
     toolCandidates: [{ id: 'base_shovel_01', name: 'Shovel', type: 'tool', tags: ['tool', 'dig'] }],
+    localTiles: {
+      radius: 4,
+      candidates: [{ id: 'tile:0:18:21', level: '0', x: 18, y: 21, distance: 0, terrain: 'ground', walkable: true, occupied: false, protected: false, canDig: true }]
+    },
     nearby: {
       entities: [
         { id: 'base_prop:temple_pillar:0:18:22', kind: 'prop', name: 'Large Pillar', level: 0, tile: { x: 18, y: 22 }, distance: 1, state: { cracked: false }, blocking: true, metadata: { source: 'base_temple' } },
@@ -174,6 +178,7 @@ test('adjudication model input keeps fictional action context', () => {
   assert.deepEqual(input.context.target, request.context.target);
   assert.deepEqual(input.context.tool, request.context.tool);
   assert.deepEqual(input.context.toolCandidates, request.context.toolCandidates);
+  assert.equal('localTiles' in input.context, false);
   assert.deepEqual(input.context.nearby.entities, request.context.nearby.entities);
   assert.deepEqual(input.context.relevantState, request.context.relevantState);
   assert.deepEqual(input.context.anchors, request.context.anchors);
@@ -218,7 +223,7 @@ test('server instructions require conservative persistent effects and explicit l
   assert.match(GM_INSTRUCTIONS, /damage_entity ONLY when the action actually damages that exact entity/i);
   assert.match(GM_INSTRUCTIONS, /Never substitute an unrelated nearby entity/i);
   assert.match(GM_INSTRUCTIONS, /never copy descriptive metadata such as purpose or required/i);
-  assert.match(GM_INSTRUCTIONS, /persistently mutated, return that late resolution as bindings\.targetId/i);
+  assert.match(GM_INSTRUCTIONS, /persistently mutated, return that late entity resolution as bindings\.targetId/i);
 });
 
 test('server instructions keep narration fictional and avoid self-binding player', () => {
@@ -226,6 +231,11 @@ test('server instructions keep narration fictional and avoid self-binding player
   assert.match(GM_INSTRUCTIONS, /narration-only fictional resolution can safely describe the outcome/i);
   assert.match(GM_INSTRUCTIONS, /Self-directed actions normally need no bindings\.targetId/i);
   assert.match(GM_INSTRUCTIONS, /do not bind targetId to "player" unless that exact ID is explicitly present/i);
+  assert.match(GM_INSTRUCTIONS, /bindings\.targetId/i);
+  assert.match(GM_INSTRUCTIONS, /ENTITY/i);
+  assert.match(GM_INSTRUCTIONS, /Spatial effects such as set_terrain choose their location with effect\.tileId/i);
+  assert.match(GM_INSTRUCTIONS, /choosing a tile does not require or permit bindings\.targetId/i);
+  assert.match(GM_INSTRUCTIONS, /If an action has no entity target, omit bindings\.targetId/i);
   assert.match(GM_INSTRUCTIONS, /Bindings identify supplied target\/tool candidates for late resolution, not the acting player/i);
   assert.doesNotMatch(GM_INSTRUCTIONS, /engine cannot handle|engine does not support|exceeds the deterministic mechanics represented by the engine/i);
 });

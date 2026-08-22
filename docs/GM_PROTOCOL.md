@@ -10,6 +10,8 @@ needs_gm -> buildGMRequest -> external model -> validateGMOutcome -> applyGMOutc
 
 An optional live transport now sends a validated request to the separate Cloudflare Worker. A caller must still explicitly press **Validate / Apply GM Outcome** for the correlated response; receiving, validating, or displaying model JSON never invokes `applyGMOutcome(...)`.
 
+`gm_request_v1` / `gm_outcome_v1` is the only supported AI-facing action workflow in the normal UI. The older `gm_payload_v0` Copy Prompt/Payload / Apply JSON workflow is deprecated and hidden from the Dev panel by default.
+
 ## Live external transport
 
 The Dev panel's compact **Live GM transport** subsection stores its ordinary endpoint in local storage and its password-masked prototype token in session storage only. **Resolve with AI** uses the same `buildManualActionGMRequest()` path as the manual Copy button, refuses local routes, prevents concurrent submissions, applies a timeout, and sends the bounded request through adjudication and resolution endpoints. The resolution body also carries the validated adjudication and, when required, the engine-owned check result. On success it validates correlation and `gm_outcome_v1`, places the JSON into the existing Action-GM textarea, retains the exact request, and waits for manual application.
@@ -52,7 +54,7 @@ Each bound target must occur as the resolved target or in the originating bounde
 - **Mutating outcome:** every binding and effect is completely preflighted before the first mutation; an invalid later effect rejects the whole batch.
 - **Failed or impossible action:** `failure` or `blocked` with narration and no effects is valid. A persistent flag or memory fact should be returned only when the failed attempt itself creates a lasting fact.
 
-This bridge does not call `buildGMPayload()`, emit `gm_payload_v0`, include `canvasEntities.all`, embed the legacy command schema, or invoke the legacy Apply JSON controls. Those controls remain available under the clearly marked **Legacy GM / world-building controls** section.
+This bridge does not call `buildGMPayload()`, emit `gm_payload_v0`, include `canvasEntities.all`, embed the legacy command schema, or invoke the legacy Apply JSON controls. Those controls are deprecated and hidden from the normal Dev panel.
 
 ## GMRequest v1
 
@@ -137,7 +139,9 @@ New item effects require a stable `item.id`, and modifying existing stable entit
 
 ## Relationship to the legacy GM system
 
-The existing `buildGMPayload()`, `buildGMInstructions()`, Copy Prompt/Payload UI, JSON extraction/application, command history, undo, saves, and full scene-generation vocabulary remain unchanged.
+The legacy `gm_payload_v0` Copy Prompt/Payload / Apply JSON workflow is deprecated and hidden from the normal UI. It may be exposed only through explicit debug access for historical development work.
+
+The underlying trusted mutation helpers, JSON extraction/application helpers, command history, undo, saves, terrain patches, entity transforms, transitions, memory, and flags may still be reused internally by the `gm_outcome_v1` application boundary until they are replaced by canonical engine mutation APIs.
 
 The new protocol reuses the legacy system's strongest policies:
 
@@ -147,7 +151,7 @@ The new protocol reuses the legacy system's strongest policies:
 - normal action resolution should use small bounded deltas;
 - outcomes must be validated before mutation.
 
-In the future, action-scoped requests can supersede the large generic payload for ordinary improvised actions. The legacy workflow may remain valuable for manual development, adventure seeding, imports/exports, and large scene changes.
+For player actions, action-scoped `gm_request_v1` / `gm_outcome_v1` supersedes the large generic payload. Legacy helpers remain an internal compatibility substrate, not a normal AI-facing workflow.
 
 ## Current implementation boundary
 
