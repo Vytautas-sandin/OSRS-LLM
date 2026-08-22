@@ -152,7 +152,7 @@ function loadTerrainBoundary(overrides = {}) {
     preflightGMPlacement: effect => ({ x: Math.round(Number(effect.x)), y: Math.round(Number(effect.y)), level: String(effect.level ?? '0'), valid: true }),
     normalizeGMOutcomeMemory: null,
     sanitizeItemInstanceId: value => String(value || ''),
-    gmItemIdExists: () => false,
+    gmItemIdExists: id => context.inventory.some(item => item?.id === id) || context.groundItems.some(item => item?.hitBox?.userData?.item?.id === id),
     localStorage: {
       getItem: key => store.has(key) ? store.get(key) : null,
       setItem: (key, value) => { store.set(key, String(value)); },
@@ -183,16 +183,21 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('canModifyVertex'),
     functionSource('isTileOccupiedByGM'),
     functionSource('isTileUnwalkable'),
+    functionSource('isTilePlaceableForGM'),
     functionSource('normalizeTerrainMode'),
     functionSource('collectTerrainVertices'),
     functionSource('terrainPatchHeightAllowed'),
     functionSource('canModifyTerrainPatch'),
     functionSource('makeActionTileCandidate'),
     functionSource('getLocalActionTileCandidates'),
+    functionSource('isSearchInvestigateAction'),
     functionSource('parseActionTileId'),
     functionSource('getOriginatingLocalTileCandidate'),
     functionSource('preflightGMLocalTerrainPlacement'),
     functionSource('preflightGMLocalPropPlacement'),
+    functionSource('preflightGMLocalItemPlacement'),
+    functionSource('isSearchInvestigateGMRequest'),
+    functionSource('preflightGMSearchDiscoveryPlacement'),
     functionSource('validateGMResolutionBindings'),
     functionSource('getOriginatingToolCandidate'),
     functionSource('isDiggingToolCandidate'),
@@ -229,6 +234,22 @@ function terrainRequest(api, context, tileId = `tile:${context.currentLevel}:${c
   };
 }
 
+function searchRequest(api, context, tileId = `tile:${context.currentLevel}:${context.playerGridX}:${context.playerGridY}`) {
+  const candidates = api.getLocalActionTileCandidates();
+  const tile = candidates.find(candidate => candidate.id === tileId);
+  return {
+    action: { id: 'search-1', targetId: null, toolId: null, verb: 'improvise', intent: 'I search the nearby ground for anything unusual.' },
+    context: {
+      actor: { level: context.currentLevel, tile: { x: context.playerGridX, y: context.playerGridY }, inventory: [] },
+      toolCandidates: [],
+      localTiles: { radius: 4, candidates },
+      nearby: { entities: [] }
+    },
+    route: { mode: 'gm' },
+    tile
+  };
+}
+
 function terrainOutcome(tile, overrides = {}) {
   return {
     protocol: 'gm_outcome_v1',
@@ -241,6 +262,101 @@ function terrainOutcome(tile, overrides = {}) {
   };
 }
 
+function searchOutcome(overrides = {}) {
+  return {
+    protocol: 'gm_outcome_v1',
+    actionId: 'search-1',
+    narration: 'You search the nearby ground carefully.',
+    resolution: { result: 'success', reason: 'The area can be inspected safely.' },
+    effects: [],
+    memory: [],
+    ...overrides
+  };
+}
+
+function loadActionRequestBoundary() {
+  const effectDefinitions = [
+    { op: 'update_entity', required: ['id'] },
+    { op: 'transform_entity', required: ['id'] },
+    { op: 'set_entity_state', required: ['id', 'state'] },
+    { op: 'damage_entity', required: ['id'] },
+    { op: 'move_npc', required: ['id'] },
+    { op: 'move_prop', required: ['id'] },
+    { op: 'create_prop', required: ['id', 'name'] },
+    { op: 'remove_prop', required: ['id'] },
+    { op: 'give_item', required: ['item'] },
+    { op: 'remove_item', required: ['id'] },
+    { op: 'consume_item', required: ['id'] },
+    { op: 'spawn_item', required: ['item'] },
+    { op: 'remove_ground_item', required: ['id'] },
+    { op: 'set_flag', required: ['key', 'value'] },
+    { op: 'add_memory', required: ['text'] },
+    { op: 'create_transition', required: ['id', 'name', 'targetLevel'] },
+    { op: 'remove_transition', required: ['id'] },
+    { op: 'set_terrain', required: ['id', 'mode'] }
+  ];
+  const context = {
+    ACTION_CONTEXT_PROTOCOL: 'action_context_v1',
+    ACTION_CONTEXT_NEARBY_MAX: 96,
+    ACTION_CONTEXT_TOOL_MAX: 28,
+    ACTION_CONTEXT_LOCAL_TILE_RADIUS: 4,
+    ACTION_CONTEXT_EVENT_LIMIT: 12,
+    GAME_ACTION_SOURCES: new Set(['ui', 'text', 'system']),
+    GAME_ACTION_ROUTING_MODES: new Set(['local', 'gm', 'hybrid', 'unknown']),
+    ACTION_ROUTE_MODES: new Set(['local', 'gm', 'hybrid', 'reject']),
+    ACTION_ROUTE_RESOLVERS: new Set(['movement', 'door', 'pickup', 'drop', 'fishing', 'terrain', 'transition']),
+    DETERMINISTIC_ACTION_CAPABILITIES: [],
+    GM_REQUEST_PROTOCOL: 'gm_request_v1',
+    GM_OUTCOME_MAX_EFFECTS: 6,
+    GM_ACTION_EFFECT_DEFINITIONS: effectDefinitions,
+    GM_ACTION_EFFECT_OPS: new Set(effectDefinitions.map(effect => effect.op)),
+    currentLevel: '0',
+    playerGridX: 10,
+    playerGridY: 10,
+    activeTool: 'walk',
+    copyActionContextValue: value => structuredClone(value),
+    resolveActionEntityReference: () => null,
+    resolveActionToolReference: () => null,
+    getActionToolCandidates: () => [],
+    serializeWorldMemory: () => ({ summary: '', facts: [], quests: [] }),
+    getInventoryCompactSnapshot: () => [],
+    getSelectedUseItemSnapshot: () => null,
+    getNearbyActionContextEntities: () => [{ id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }],
+    getLocalActionTileCandidates: () => [{ id: 'tile:0:10:10', level: '0', x: 10, y: 10, distance: 0, terrain: 'ground', walkable: true, occupied: false, protected: false }],
+    getEventsSinceLastGM: () => [],
+    getRelevantActionAnchors: () => [],
+    isValidTile: (x, y, level) => level === '0' && Number.isInteger(Number(x)) && Number.isInteger(Number(y)),
+    worldFlags: {}
+  };
+  vm.createContext(context);
+  vm.runInContext([
+    `const GM_ACTION_EFFECT_DEFINITIONS = Object.freeze(${JSON.stringify(effectDefinitions)});`,
+    'const GM_ACTION_EFFECT_OPS = new Set(GM_ACTION_EFFECT_DEFINITIONS.map(effect => effect.op));',
+    'function copyActionContextValue(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }',
+    functionSource('normalizeGameActionId'),
+    functionSource('normalizeGameAction'),
+    functionSource('createGameAction'),
+    functionSource('validateGameAction'),
+    functionSource('isSearchInvestigateAction'),
+    functionSource('actionNeedsLocalTileCandidates'),
+    functionSource('buildActionContext'),
+    functionSource('validateActionContext'),
+    functionSource('normalizeActionRouteIntent'),
+    functionSource('actionHasTileParameter'),
+    functionSource('actionContextHasInventoryType'),
+    functionSource('addActionRouteHintWarning'),
+    functionSource('createActionRouteDecision'),
+    functionSource('routeGameAction'),
+    functionSource('validateActionRoute'),
+    functionSource('validatePlainProtocolValue'),
+    functionSource('getSerializedProtocolSize'),
+    functionSource('buildGMRequest'),
+    functionSource('validateGMRequest'),
+    'this.api = { createGameAction, buildActionContext, routeGameAction, buildGMRequest, validateGMRequest };'
+  ].join('\n'), context);
+  return context.api;
+}
+
 test('local tile candidates are bounded and deterministic', () => {
   const { api } = loadTerrainBoundary();
   const first = api.getLocalActionTileCandidates();
@@ -248,6 +364,41 @@ test('local tile candidates are bounded and deterministic', () => {
   assert.equal(first.length <= 81, true);
   assert.deepEqual(first.map(tile => tile.id), second.map(tile => tile.id));
   assert.deepEqual(first[0], { id: 'tile:0:10:10', level: '0', x: 10, y: 10, distance: 0, terrain: 'ground', height: 0, walkable: true, occupied: false, protected: false, canDig: true });
+});
+
+test('search ActionContext includes localTiles and builds a bounded GM request', () => {
+  const api = loadActionRequestBoundary();
+  const search = api.createGameAction({
+    id: 'search-nearby-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'improvise',
+    intent: 'I search the nearby ground for anything unusual.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(search);
+  const route = api.routeGameAction(search, context);
+  const built = api.buildGMRequest(search, context, route);
+  assert.equal(route.mode, 'gm');
+  assert.equal(built.ok, true, built.errors.join(' | '));
+  assert.equal(built.request.protocol, 'gm_request_v1');
+  assert.equal(built.request.route.mode, 'gm');
+  assert.equal(Array.isArray(built.request.context.localTiles.candidates), true);
+  assert.equal(built.request.context.localTiles.candidates.length, 1);
+  assert.equal(built.request.context.nearby.entities.length, 1);
+  assert.equal(built.request.context.canvasEntities, undefined);
+  assert.equal(built.request.context.nearby.all, undefined);
+  assert.equal(api.validateGMRequest(built.request).valid, true);
+
+  const ordinary = api.createGameAction({
+    id: 'ordinary-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'improvise',
+    intent: 'I wave hello.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  assert.equal('localTiles' in api.buildActionContext(ordinary), false);
 });
 
 test('ordinary ActionContext validation can pass without localTiles', () => {
@@ -476,4 +627,121 @@ test('create_prop without tileId uses general placement instead of local tile ca
   assert.equal(translated.valid, true);
   assert.equal(translated.translatedEffects[0].id, 'gm_prop_sign_01');
   assert.equal(translated.translatedEffects[0].x, 12);
+});
+
+test('search narration-only outcome validates through preflight as a no-op', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const binding = api.validateGMResolutionBindings(requestData, searchOutcome());
+  assert.equal(binding.valid, true);
+  const translated = api.translateGMOutcomeEffects(requestData, searchOutcome(), binding.resolved);
+  assert.equal(translated.valid, true);
+  assert.equal(translated.translatedEffects.length, 0);
+});
+
+test('search can reveal one local spawned item through preflight', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({
+    effects: [{
+      op: 'spawn_item',
+      item: { id: 'gm_clue_shell_01', name: 'Odd Shell', type: 'clue', tags: ['clue'], color: '#d8c0a0' },
+      tileId: requestData.tile.id
+    }]
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, true);
+  assert.equal(translated.translatedEffects[0].op, 'spawn_item');
+  assert.equal(translated.translatedEffects[0].item.id, 'gm_clue_shell_01');
+  assert.equal(translated.translatedEffects[0].x, requestData.tile.x);
+  assert.equal(translated.translatedEffects[0].y, requestData.tile.y);
+});
+
+test('search can reveal one local clue prop through preflight', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({
+    effects: [{
+      op: 'create_prop',
+      id: 'gm_clue_scratches_01',
+      name: 'Strange Scratches',
+      shape: 'sign',
+      note: 'Faint marks in the packed dirt.',
+      tileId: requestData.tile.id
+    }]
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, true);
+  assert.equal(translated.translatedEffects[0].op, 'create_prop');
+  assert.equal(translated.translatedEffects[0].id, 'gm_clue_scratches_01');
+  assert.equal(translated.translatedEffects[0].x, requestData.tile.x);
+  assert.equal(translated.translatedEffects[0].y, requestData.tile.y);
+});
+
+test('search rejects more than one local physical reveal', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({
+    effects: [
+      {
+        op: 'spawn_item',
+        item: { id: 'gm_clue_shell_01', name: 'Odd Shell', type: 'clue', tags: ['clue'] },
+        tileId: requestData.tile.id
+      },
+      { op: 'set_flag', key: 'found_odd_shell', value: true },
+      { op: 'add_memory', text: 'The player found an odd shell while searching nearby.' },
+      {
+        op: 'create_prop',
+        id: 'gm_clue_scratches_01',
+        name: 'Strange Scratches',
+        shape: 'sign',
+        tileId: requestData.tile.id
+      }
+    ]
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /at most one local physical clue or item/);
+});
+
+test('search rejects duplicate item ids and non-originating tile discoveries', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  context.inventory.push({ id: 'gm_clue_shell_01', name: 'Odd Shell' });
+  const duplicate = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [{
+      op: 'spawn_item',
+      item: { id: 'gm_clue_shell_01', name: 'Odd Shell', type: 'clue' },
+      tileId: requestData.tile.id
+    }]
+  }), { targetId: null, toolId: null });
+  assert.equal(duplicate.valid, false);
+  assert.match(duplicate.errors[0], /duplicated|invalid/);
+
+  const distantItem = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [{
+      op: 'spawn_item',
+      item: { id: 'gm_clue_shell_02', name: 'Odd Shell', type: 'clue' },
+      tileId: 'tile:0:30:30'
+    }]
+  }), { targetId: null, toolId: null });
+  assert.equal(distantItem.valid, false);
+  assert.match(distantItem.errors[0], /originating local tile candidate/);
+
+  const distantProp = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [{ op: 'create_prop', id: 'gm_clue_scratches_far', name: 'Far Scratches', tileId: 'tile:0:30:30' }]
+  }), { targetId: null, toolId: null });
+  assert.equal(distantProp.valid, false);
+  assert.match(distantProp.errors[0], /originating local tile candidate/);
+});
+
+test('search prop discoveries without tileId still cannot be distant', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({
+    effects: [{ op: 'create_prop', id: 'gm_clue_far_01', name: 'Far Clue', x: 30, y: 30, level: '0', shape: 'sign' }]
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /local to the originating search context/);
 });

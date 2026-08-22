@@ -130,6 +130,7 @@
             <div class="dev-label">Player action / question for the GM</div>
             <textarea id="player-action" spellcheck="false" placeholder="Example action: I dig a hole here with my shovel."></textarea>
             <div class="dev-row">
+                <button id="search-nearby-action" class="dev-btn">Search Nearby</button>
                 <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
                 <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
             </div>
@@ -1947,14 +1948,26 @@
         return candidates.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
     }
 
+    function isSearchInvestigateAction(action) {
+        const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
+        if (['search', 'investigate', 'inspect', 'examine'].includes(verb)) return true;
+        const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.object]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+        return /\b(search|investigate|look closely|inspect the ground|inspect nearby|inspect the area|search nearby|search the nearby ground|search the ground|examine the ground|examine nearby)\b/.test(text);
+    }
+
     function actionNeedsLocalTileCandidates(action) {
         const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
         if (['dig', 'raise', 'lower', 'fill', 'flatten', 'place', 'build', 'use'].includes(verb)) return true;
+        if (isSearchInvestigateAction(action)) return true;
         const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.object]
             .filter(value => typeof value === 'string')
             .join(' ')
             .toLowerCase();
-        return /\b(terrain|ground|tile|hole|dig|dug|excavate|trench|ditch|mound|raise|lower|flatten|fill|build|place|put|plant)\b/.test(text);
+        return /\b(terrain|ground|tile|hole|dig|dug|excavate|trench|ditch|mound|raise|lower|flatten|fill|build|place|put|plant|clue|unusual|hidden)\b/.test(text);
     }
 
     // Free text remains authoritative. Only an explicit selection supplies targetId;
@@ -2191,6 +2204,16 @@
         }
         if (action.toolId && !actionContext.tool) {
             return createActionRouteDecision(action, 'reject', null, `Tool "${action.toolId}" could not be resolved.`, 1, contextValidation.warnings);
+        }
+
+        if (isSearchInvestigateAction(action)) {
+            return createActionRouteDecision(
+                action,
+                'gm',
+                null,
+                'The player is searching or investigating the local fiction and needs action-scoped GM interpretation.',
+                0.9
+            );
         }
 
         if (action.verb === 'improvise') {
@@ -2746,6 +2769,7 @@
         const reservedCreatedIds = new Set();
         const reservedRemovedIds = new Set();
         let availableInventorySlots = inventory.filter(item => item === null).length;
+        let searchPhysicalRevealCount = 0;
         const fail = (index, message) => errors.push(`effects[${index}]: ${message}`);
 
         gmOutcome.effects.forEach((effect, index) => {
@@ -2797,8 +2821,11 @@
                 translatedEffects.push({ ...command, ...placement }); return;
             }
             if (effect.op === 'create_prop') {
+                if (isSearchInvestigateGMRequest(gmRequest) && ++searchPhysicalRevealCount > 1) return fail(index, 'search outcomes may reveal at most one local physical clue or item.');
                 const placement = effect.tileId ? preflightGMLocalPropPlacement(gmRequest, effect) : preflightGMPlacement(effect);
                 if (effect.tileId && !placement.valid) return fail(index, placement.error);
+                const searchPlacement = preflightGMSearchDiscoveryPlacement(gmRequest, placement, 'prop');
+                if (!searchPlacement.valid) return fail(index, searchPlacement.error);
                 if (findCanvasEntityRef(effect.id) || resolveActionEntityReference(effect.id) || reservedCreatedIds.has(effect.id) || !placement) return fail(index, `prop id already exists or placement is invalid: ${effect.id}.`);
                 reservedCreatedIds.add(effect.id);
                 translatedEffects.push({ ...command, ...placement }); return;
@@ -2819,8 +2846,12 @@
                 translatedEffects.push({ ...command, count: 1 }); return;
             }
             if (effect.op === 'spawn_item') {
+                if (isSearchInvestigateGMRequest(gmRequest) && ++searchPhysicalRevealCount > 1) return fail(index, 'search outcomes may reveal at most one local physical clue or item.');
                 const itemId = sanitizeItemInstanceId(effect.item?.id);
-                const placement = preflightGMPlacement(effect);
+                const placement = effect.tileId ? preflightGMLocalItemPlacement(gmRequest, effect) : preflightGMPlacement(effect);
+                if (effect.tileId && !placement.valid) return fail(index, placement.error);
+                const searchPlacement = preflightGMSearchDiscoveryPlacement(gmRequest, placement, 'item');
+                if (!searchPlacement.valid) return fail(index, searchPlacement.error);
                 if (!itemId || itemId !== effect.item.id || gmItemIdExists(itemId) || reservedItemIds.has(itemId) || !placement) return fail(index, 'item is invalid, duplicated, or placement is invalid.');
                 reservedItemIds.add(itemId);
                 translatedEffects.push({ ...command, item: copyActionContextValue(effect.item), ...placement }); return;
@@ -4154,6 +4185,20 @@
         return { action, context, route, built };
     }
 
+    function fillSearchNearbyAction() {
+        const input = document.getElementById('player-action');
+        if (!input) return false;
+        input.value = 'I search the nearby ground for anything unusual.';
+        input.focus();
+        setActionGMDiagnostics({
+            intent: input.value,
+            route: 'not built',
+            outcomeValidation: 'not checked',
+            application: 'not applied'
+        });
+        return true;
+    }
+
     function copyManualActionGMRequest() {
         const generated = buildManualActionGMRequest();
         const { action, context, route, built } = generated;
@@ -4575,6 +4620,37 @@
         const level = String(candidate.level);
         if (candidate.protected || candidate.occupied || !isTilePlaceableForGM(x, y, level, false)) return { valid: false, error: 'prop placement candidate is protected, occupied, or invalid.' };
         return { valid: true, x, y, level, tileId: candidate.id };
+    }
+
+    function preflightGMLocalItemPlacement(gmRequest, effect) {
+        const candidate = getOriginatingLocalTileCandidate(gmRequest, effect);
+        if (!candidate) return { valid: false, error: 'item placement must match an originating local tile candidate.' };
+        const x = candidate.x;
+        const y = candidate.y;
+        const level = String(candidate.level);
+        if (candidate.protected || candidate.occupied || !isTilePlaceableForGM(x, y, level, false)) return { valid: false, error: 'item placement candidate is protected, occupied, or invalid.' };
+        return { valid: true, x, y, level, tileId: candidate.id };
+    }
+
+    function isSearchInvestigateGMRequest(gmRequest) {
+        return isSearchInvestigateAction(gmRequest?.action) || isSearchInvestigateAction(gmRequest?.context?.action);
+    }
+
+    function preflightGMSearchDiscoveryPlacement(gmRequest, placement, kind) {
+        if (!isSearchInvestigateGMRequest(gmRequest)) return { valid: true };
+        if (!placement || !placement.valid) return { valid: false, error: `${kind} placement is invalid.` };
+        const actor = gmRequest?.context?.actor || {};
+        const actorTile = actor.tile || {};
+        const actorLevel = String(actor.level ?? currentLevel);
+        const x = Math.round(Number(placement.x));
+        const y = Math.round(Number(placement.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y) || String(placement.level) !== actorLevel) {
+            return { valid: false, error: `${kind} discovery must remain on the originating local level.` };
+        }
+        const distance = Math.hypot(x - Number(actorTile.x), y - Number(actorTile.y));
+        const radius = Math.max(0, Math.min(4, Math.round(Number(gmRequest?.context?.localTiles?.radius ?? ACTION_CONTEXT_LOCAL_TILE_RADIUS) || ACTION_CONTEXT_LOCAL_TILE_RADIUS)));
+        if (!Number.isFinite(distance) || distance > radius) return { valid: false, error: `${kind} discovery must remain local to the originating search context.` };
+        return { valid: true };
     }
 
 
@@ -7141,6 +7217,7 @@
         ctxMenu.style.display = 'none';
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('search-nearby-action').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); fillSearchNearbyAction(); });
     document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
     document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
     document.getElementById('resolve-action-ai').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resolveManualActionWithAI(); });

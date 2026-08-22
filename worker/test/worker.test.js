@@ -224,6 +224,11 @@ test('server instructions require conservative persistent effects and explicit l
   assert.match(GM_INSTRUCTIONS, /Never substitute an unrelated nearby entity/i);
   assert.match(GM_INSTRUCTIONS, /never copy descriptive metadata such as purpose or required/i);
   assert.match(GM_INSTRUCTIONS, /persistently mutated, return that late entity resolution as bindings\.targetId/i);
+  assert.match(GM_INSTRUCTIONS, /For local search or investigate actions/i);
+  assert.match(GM_INSTRUCTIONS, /reveal at most one small local clue or one modest local item/i);
+  assert.match(GM_INSTRUCTIONS, /Use spawn_item only for a pickup-able ground item/i);
+  assert.match(GM_INSTRUCTIONS, /Do not create valuable or arbitrary rewards/i);
+  assert.match(GM_INSTRUCTIONS, /auto-pickup into inventory/i);
 });
 
 test('server instructions keep narration fictional and avoid self-binding player', () => {

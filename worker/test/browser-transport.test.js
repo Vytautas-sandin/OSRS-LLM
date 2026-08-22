@@ -109,6 +109,7 @@ test('dev panel presents Action GM as the normal AI-facing workflow', () => {
   assert.match(normalPanel, /<summary>Action GM · gm_request_v1 \/ gm_outcome_v1<\/summary>/);
   assert.match(normalPanel, /<summary>Live Transport<\/summary>/);
   assert.match(normalPanel, /id="player-action"/);
+  assert.match(normalPanel, /id="search-nearby-action"/);
   assert.match(normalPanel, /id="copy-action-gm-request"/);
   assert.match(normalPanel, /id="resolve-action-ai"/);
   assert.match(normalPanel, /id="apply-action-gm-outcome"/);
@@ -131,6 +132,31 @@ test('dev panel presents Action GM as the normal AI-facing workflow', () => {
   assert.match(legacyPanel, /id="validate-llm-json"/);
   assert.match(legacyPanel, /id="llm-io"/);
   assert.match(html, /legacygm/);
+});
+
+test('Search Nearby button fills action text without resolving or applying', () => {
+  const fillStart = html.indexOf('    function fillSearchNearbyAction()');
+  const fillEnd = html.indexOf('    function copyManualActionGMRequest', fillStart);
+  assert.ok(fillStart > 0 && fillEnd > fillStart);
+  const input = { value: '', focused: false, focus() { this.focused = true; } };
+  const diagnostics = [];
+  const context = {
+    document: { getElementById: id => id === 'player-action' ? input : null },
+    setActionGMDiagnostics: value => diagnostics.push(value),
+    resolveManualActionWithAI: () => { throw new Error('should not resolve'); },
+    applyGMOutcome: () => { throw new Error('should not apply'); }
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(fillStart, fillEnd)}\nthis.result = fillSearchNearbyAction();`, context);
+  assert.equal(context.result, true);
+  assert.equal(input.value, 'I search the nearby ground for anything unusual.');
+  assert.equal(input.focused, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(diagnostics)), [{
+    intent: 'I search the nearby ground for anything unusual.',
+    route: 'not built',
+    outcomeValidation: 'not checked',
+    application: 'not applied'
+  }]);
 });
 
 test('fresh manual prose ignores stale interaction target but preserves active use-item selection', () => {
