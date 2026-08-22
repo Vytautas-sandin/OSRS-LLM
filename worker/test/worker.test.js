@@ -160,6 +160,27 @@ test('adjudication protocol validates direct and check modes strictly', () => {
   assert.deepEqual(GM_DIFFICULTY_DCS, { easy: 10, moderate: 15, hard: 20, extreme: 25 });
 });
 
+test('adjudication schema discriminates direct and check shapes', () => {
+  assert.equal(GM_ADJUDICATION_SCHEMA.oneOf.length, 2);
+  const directSchema = GM_ADJUDICATION_SCHEMA.oneOf.find(branch => branch.properties.mode.const === 'direct');
+  const checkSchema = GM_ADJUDICATION_SCHEMA.oneOf.find(branch => branch.properties.mode.const === 'check');
+
+  assert.ok(directSchema);
+  assert.equal(directSchema.required.includes('check'), false);
+  assert.equal(Object.hasOwn(directSchema.properties, 'check'), false);
+  assert.equal(directSchema.additionalProperties, false);
+
+  assert.ok(checkSchema);
+  assert.equal(checkSchema.required.includes('check'), true);
+  assert.deepEqual(checkSchema.properties.check.required, ['label', 'difficulty']);
+  assert.equal(checkSchema.properties.check.additionalProperties, false);
+});
+
+test('adjudication instructions explicitly require mode-specific check shapes', () => {
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /If mode is "check", you MUST return check, and check MUST contain label and difficulty/);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /If mode is "direct", you MUST NOT return check/);
+});
+
 test('/adjudicate-action shares transport boundaries and configured model', async () => {
   const env = makeEnv({ WORKERS_AI_MODEL: '@cf/example/configured', AI: makeAI({ response: checked }) });
   const response = await handleRequest(browserRequest({ request: validRequest() }, { path: '/adjudicate-action' }), env);
