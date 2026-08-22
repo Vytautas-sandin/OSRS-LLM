@@ -110,6 +110,7 @@ test('dev panel presents Action GM as the normal AI-facing workflow', () => {
   assert.match(normalPanel, /<summary>Live Transport<\/summary>/);
   assert.match(normalPanel, /id="player-action"/);
   assert.match(normalPanel, /id="search-nearby-action"/);
+  assert.match(normalPanel, /id="talk-nearby-action"/);
   assert.match(normalPanel, /id="copy-action-gm-request"/);
   assert.match(normalPanel, /id="resolve-action-ai"/);
   assert.match(normalPanel, /id="apply-action-gm-outcome"/);
@@ -153,6 +154,31 @@ test('Search Nearby button fills action text without resolving or applying', () 
   assert.equal(input.focused, true);
   assert.deepEqual(JSON.parse(JSON.stringify(diagnostics)), [{
     intent: 'I search the nearby ground for anything unusual.',
+    route: 'not built',
+    outcomeValidation: 'not checked',
+    application: 'not applied'
+  }]);
+});
+
+test('Talk Nearby button fills dialogue text without resolving or applying', () => {
+  const fillStart = html.indexOf('    function fillTalkNearbyAction()');
+  const fillEnd = html.indexOf('    function copyManualActionGMRequest', fillStart);
+  assert.ok(fillStart > 0 && fillEnd > fillStart);
+  const input = { value: '', focused: false, focus() { this.focused = true; } };
+  const diagnostics = [];
+  const context = {
+    document: { getElementById: id => id === 'player-action' ? input : null },
+    setActionGMDiagnostics: value => diagnostics.push(value),
+    resolveManualActionWithAI: () => { throw new Error('should not resolve'); },
+    applyGMOutcome: () => { throw new Error('should not apply'); }
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(fillStart, fillEnd)}\nthis.result = fillTalkNearbyAction();`, context);
+  assert.equal(context.result, true);
+  assert.equal(input.value, 'I ask Sage about the odd shell.');
+  assert.equal(input.focused, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(diagnostics)), [{
+    intent: 'I ask Sage about the odd shell.',
     route: 'not built',
     outcomeValidation: 'not checked',
     application: 'not applied'

@@ -131,6 +131,7 @@
             <textarea id="player-action" spellcheck="false" placeholder="Example action: I dig a hole here with my shovel."></textarea>
             <div class="dev-row">
                 <button id="search-nearby-action" class="dev-btn">Search Nearby</button>
+                <button id="talk-nearby-action" class="dev-btn">Talk Nearby</button>
                 <button id="copy-action-gm-request" class="dev-btn">Copy Action GM Request</button>
                 <button id="apply-action-gm-outcome" class="dev-btn">Validate / Apply GM Outcome</button>
             </div>
@@ -1360,6 +1361,50 @@
         };
     }
 
+    const ACTION_CONTEXT_MEMORY_FACT_LIMIT = 8;
+    const ACTION_CONTEXT_MEMORY_QUEST_LIMIT = 4;
+    const ACTION_CONTEXT_MEMORY_SUMMARY_LIMIT = 800;
+    const ACTION_CONTEXT_MEMORY_STOP_WORDS = new Set(['about', 'after', 'again', 'anything', 'around', 'because', 'before', 'being', 'close', 'could', 'found', 'from', 'ground', 'have', 'here', 'into', 'nearby', 'player', 'same', 'search', 'should', 'something', 'tell', 'that', 'their', 'there', 'thing', 'this', 'with', 'would']);
+
+    function getActionMemoryTerms(action, target = null, nearbyEntities = []) {
+        const source = [
+            action?.intent,
+            action?.verb,
+            action?.parameters?.topic,
+            action?.parameters?.object,
+            target?.id,
+            target?.name,
+            ...nearbyEntities.filter(entity => entity?.kind === 'npc').flatMap(entity => [entity.id, entity.name])
+        ].filter(value => typeof value === 'string').join(' ');
+        const terms = new Set();
+        source.toLowerCase().split(/[^a-z0-9_]+/).forEach(token => {
+            if (token.length >= 3 && !ACTION_CONTEXT_MEMORY_STOP_WORDS.has(token)) terms.add(token);
+        });
+        return terms;
+    }
+
+    function memoryTextMatchesTerms(value, terms) {
+        const text = safeMemoryText(value, 1200).toLowerCase();
+        if (!text || !terms?.size) return false;
+        return Array.from(terms).some(term => text.includes(term));
+    }
+
+    function getRelevantActionMemory(action, target = null, nearbyEntities = []) {
+        const memory = serializeWorldMemory();
+        const terms = getActionMemoryTerms(action, target, nearbyEntities);
+        const facts = memory.facts
+            .filter(fact => memoryTextMatchesTerms(fact, terms))
+            .slice(-ACTION_CONTEXT_MEMORY_FACT_LIMIT);
+        const quests = memory.quests
+            .filter(quest => memoryTextMatchesTerms([quest.id, quest.title, quest.status, quest.note].join(' '), terms))
+            .slice(-ACTION_CONTEXT_MEMORY_QUEST_LIMIT);
+        return {
+            summary: memoryTextMatchesTerms(memory.summary, terms) ? safeMemoryText(memory.summary, ACTION_CONTEXT_MEMORY_SUMMARY_LIMIT) : '',
+            facts,
+            quests
+        };
+    }
+
     function renderWorldMemoryUI() {
         const summaryEl = document.getElementById('world-summary');
         const factsEl = document.getElementById('world-memory');
@@ -1763,6 +1808,23 @@
         });
     }
 
+    const ACTION_CONTEXT_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);
+
+    function compactNPCDialogueState(state) {
+        if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
+        const compact = {};
+        ACTION_CONTEXT_NPC_STATE_KEYS.forEach(key => {
+            const value = state[key];
+            if (value === null || typeof value === 'boolean') compact[key] = value;
+            else if (typeof value === 'number' && Number.isFinite(value)) compact[key] = value;
+            else if (typeof value === 'string') {
+                const text = safeMemoryText(value, 160);
+                if (text) compact[key] = text;
+            }
+        });
+        return compact;
+    }
+
     function toActionContextEntity(snapshot) {
         if (!snapshot) return null;
         const reserved = new Set(['id', 'kind', 'name', 'level', 'x', 'y', 'gridX', 'gridY', 'state', 'blocksMovement', 'walkable', 'mesh']);
@@ -1770,6 +1832,9 @@
         Object.entries(snapshot).forEach(([key, value]) => {
             if (!reserved.has(key)) metadata[key] = value;
         });
+        const state = snapshot.kind === 'npc'
+            ? compactNPCDialogueState(snapshot.state)
+            : (snapshot.state && typeof snapshot.state === 'object' ? snapshot.state : {});
         return copyActionContextValue({
             id: snapshot.id || null,
             kind: snapshot.kind || 'entity',
@@ -1778,7 +1843,7 @@
             tile: Number.isFinite(Number(snapshot.x ?? snapshot.gridX)) && Number.isFinite(Number(snapshot.y ?? snapshot.gridY))
                 ? { x: Number(snapshot.x ?? snapshot.gridX), y: Number(snapshot.y ?? snapshot.gridY) }
                 : null,
-            state: snapshot.state && typeof snapshot.state === 'object' ? snapshot.state : {},
+            state,
             blocking: snapshot.blocksMovement !== undefined
                 ? !!snapshot.blocksMovement
                 : (snapshot.walkable !== undefined ? !snapshot.walkable : null),
@@ -1959,6 +2024,17 @@
         return /\b(search|investigate|look closely|inspect the ground|inspect nearby|inspect the area|search nearby|search the nearby ground|search the ground|examine the ground|examine nearby)\b/.test(text);
     }
 
+    function isNPCDialogueAction(action) {
+        const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
+        if (['talk', 'speak', 'say', 'tell', 'ask', 'warn', 'apologize', 'apologise', 'greet', 'question', 'reply'].includes(verb)) return true;
+        const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.topic]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+        return /\b(i\s+)?(tell|ask|warn|apologize|apologise|greet|question|reply to|speak to|talk to|say to|chat with|converse with)\b/.test(text);
+    }
+
     function actionNeedsLocalTileCandidates(action) {
         const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
         if (['dig', 'raise', 'lower', 'fill', 'flatten', 'place', 'build', 'use'].includes(verb)) return true;
@@ -1997,7 +2073,8 @@
         const target = resolveActionEntityReference(action.targetId);
         const tool = resolveActionToolReference(action.toolId);
         const toolCandidates = getActionToolCandidates(action.toolId);
-        const memory = serializeWorldMemory();
+        const nearbyEntities = getNearbyActionContextEntities();
+        const memory = getRelevantActionMemory(action, target, nearbyEntities);
         const context = {
             protocol: ACTION_CONTEXT_PROTOCOL,
             action,
@@ -2012,7 +2089,7 @@
             target,
             tool,
             toolCandidates,
-            nearby: { entities: getNearbyActionContextEntities() },
+            nearby: { entities: nearbyEntities },
             relevantState: {
                 flags: copyActionContextValue(worldFlags),
                 memory: copyActionContextValue(memory),
@@ -2204,6 +2281,16 @@
         }
         if (action.toolId && !actionContext.tool) {
             return createActionRouteDecision(action, 'reject', null, `Tool "${action.toolId}" could not be resolved.`, 1, contextValidation.warnings);
+        }
+
+        if (isNPCDialogueAction(action)) {
+            return createActionRouteDecision(
+                action,
+                'gm',
+                null,
+                'The player is speaking with an NPC and needs action-scoped GM dialogue interpretation.',
+                0.9
+            );
         }
 
         if (isSearchInvestigateAction(action)) {
@@ -2682,6 +2769,64 @@
         });
     }
 
+    function getBaseNPCSemanticStatesSnapshot() {
+        return npcs
+            .filter(npc => !npc.gmCreated && Object.keys(npc.state || {}).length > 0)
+            .map(npc => ({ id: npc.id, state: copyActionContextValue(npc.state) }));
+    }
+
+    function restoreBaseNPCSemanticStates(entries = []) {
+        npcs.filter(npc => !npc.gmCreated).forEach(npc => { npc.state = {}; });
+        entries.forEach(entry => {
+            const npc = npcs.find(candidate => !candidate.gmCreated && candidate.id === entry?.id);
+            if (npc && entry.state && typeof entry.state === 'object' && !Array.isArray(entry.state)) {
+                npc.state = copyActionContextValue(entry.state);
+            }
+        });
+    }
+
+    function getOriginatingActionEntityCandidate(context, id) {
+        const targetId = normalizeGameActionId(id);
+        if (!targetId) return null;
+        return [context?.target, ...(context?.nearby?.entities || [])]
+            .filter(Boolean)
+            .find(entity => entity.id === targetId) || null;
+    }
+
+    function isNPCDialogueGMRequest(gmRequest) {
+        return isNPCDialogueAction(gmRequest?.action) || isNPCDialogueAction(gmRequest?.context?.action);
+    }
+
+    function getResolvedDialogueNPCTarget(gmRequest, resolvedBindings = {}) {
+        if (!isNPCDialogueGMRequest(gmRequest)) return null;
+        const targetId = resolvedBindings.targetId || gmRequest?.action?.targetId || gmRequest?.outcome?.bindings?.targetId || null;
+        const candidate = getOriginatingActionEntityCandidate(gmRequest?.context || {}, targetId);
+        return candidate?.kind === 'npc' ? candidate : null;
+    }
+
+    const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);
+
+    function isSafeNPCDialogueState(state) {
+        if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
+        const entries = Object.entries(state);
+        if (entries.length < 1 || entries.length > 6) return false;
+        return entries.every(([key, value]) => {
+            if (!GM_DIALOGUE_NPC_STATE_KEYS.has(key)) return false;
+            return value === null
+                || typeof value === 'string'
+                || typeof value === 'boolean'
+                || (typeof value === 'number' && Number.isFinite(value));
+        });
+    }
+
+    function setDialogueNPCState(id, state) {
+        const npc = npcs.find(candidate => candidate.id === id);
+        if (!npc || !isSafeNPCDialogueState(state)) return false;
+        npc.state = { ...(npc.state || {}), ...copyActionContextValue(state) };
+        recordGMEvent('npc_dialogue_state_updated', { id, state: npc.state });
+        return true;
+    }
+
     function validateGMResolutionBindings(gmRequest, gmOutcome) {
         const errors = [];
         const action = gmRequest?.action || {};
@@ -2694,6 +2839,12 @@
         if (bindings.toolId && (!toolIds.has(bindings.toolId) || !inventoryIds.has(bindings.toolId))) errors.push(`Binding toolId is not an originating inventory tool candidate: ${bindings.toolId}.`);
         if (action.targetId && bindings.targetId && action.targetId !== bindings.targetId) errors.push('Binding targetId contradicts the explicit GameAction targetId.');
         if (action.toolId && bindings.toolId && action.toolId !== bindings.toolId) errors.push('Binding toolId contradicts the explicit GameAction toolId.');
+        if (isNPCDialogueGMRequest(gmRequest)) {
+            const resolvedTargetId = action.targetId || bindings.targetId || null;
+            const candidate = getOriginatingActionEntityCandidate(context, resolvedTargetId);
+            if (bindings.targetId && candidate?.kind !== 'npc') errors.push(`Dialogue binding targetId must be an originating nearby NPC candidate: ${bindings.targetId}.`);
+            if (action.targetId && candidate?.kind !== 'npc') errors.push(`Dialogue targetId must resolve to an originating NPC candidate: ${action.targetId}.`);
+        }
         return {
             valid: errors.length === 0,
             errors,
@@ -2770,11 +2921,27 @@
         const reservedRemovedIds = new Set();
         let availableInventorySlots = inventory.filter(item => item === null).length;
         let searchPhysicalRevealCount = 0;
+        const isDialogueOutcome = isNPCDialogueGMRequest(gmRequest);
+        const dialogueTarget = getResolvedDialogueNPCTarget(gmRequest, resolvedBindings);
         const fail = (index, message) => errors.push(`effects[${index}]: ${message}`);
 
         gmOutcome.effects.forEach((effect, index) => {
             if (effect.op === 'add_memory') return;
             const command = copyActionContextValue(effect);
+            if (isDialogueOutcome) {
+                if (effect.op === 'set_flag') {
+                    if (!isSafeGMFlag(effect)) return fail(index, 'flag key/value is unsafe or unsupported.');
+                    translatedEffects.push(command); return;
+                }
+                if (effect.op === 'set_entity_state') {
+                    if (!dialogueTarget) return fail(index, 'dialogue set_entity_state requires a resolved originating NPC target.');
+                    if (effect.id !== dialogueTarget.id) return fail(index, `dialogue set_entity_state must target resolved NPC ${dialogueTarget.id}.`);
+                    if (!isSafeNPCDialogueState(effect.state)) return fail(index, 'dialogue NPC state is unsupported or too broad.');
+                    translatedEffects.push({ op: 'set_dialogue_npc_state', id: effect.id, state: copyActionContextValue(effect.state) });
+                    return;
+                }
+                return fail(index, `operation is not supported for NPC dialogue: ${effect.op}.`);
+            }
             const pillar = resolveBaseTemplePillar(effect.id);
             if (pillar && ['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
                 const originatingTargets = new Set([gmRequest.context?.target?.id, ...(gmRequest.context?.nearby?.entities || []).map(entity => entity?.id)].filter(Boolean));
@@ -2918,6 +3085,7 @@
             pillar.state = { ...(pillar.state || {}), ...copyActionContextValue(effect.state) };
             return renderBaseTemplePillarState(pillar);
         }
+        if (effect.op === 'set_dialogue_npc_state') return setDialogueNPCState(effect.id, effect.state);
         if (['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) return applyEntityTransformCommand({ ...effect, silent: true });
         if (effect.op === 'move_npc') return moveGMNPC({ ...effect, silent: true });
         if (effect.op === 'move_prop') return moveGMObject({ ...effect, silent: true });
@@ -4189,6 +4357,20 @@
         const input = document.getElementById('player-action');
         if (!input) return false;
         input.value = 'I search the nearby ground for anything unusual.';
+        input.focus();
+        setActionGMDiagnostics({
+            intent: input.value,
+            route: 'not built',
+            outcomeValidation: 'not checked',
+            application: 'not applied'
+        });
+        return true;
+    }
+
+    function fillTalkNearbyAction() {
+        const input = document.getElementById('player-action');
+        if (!input) return false;
+        input.value = 'I ask Sage about the odd shell.';
         input.focus();
         setActionGMDiagnostics({
             intent: input.value,
@@ -6406,6 +6588,7 @@
             memory: serializeWorldMemory(),
             baseDoorStates: getBaseDoorSemanticStatesSnapshot(),
             baseTemplePillarStates: getBaseTemplePillarSemanticStatesSnapshot(),
+            baseNPCStates: getBaseNPCSemanticStatesSnapshot(),
             itemDefs: getItemDefsSnapshot(),
             inventory: getInventorySnapshot(),
             groundItems: getPersistentGroundItemsSnapshot(),
@@ -6578,6 +6761,7 @@
             resetWorldMemory();
             restoreBaseDoorSemanticStates(save.baseDoorStates);
             restoreBaseTemplePillarSemanticStates(save.baseTemplePillarStates);
+            restoreBaseNPCSemanticStates(save.baseNPCStates);
             if (Array.isArray(save.itemDefs)) save.itemDefs.forEach(def => registerGMItemDef({ ...def, silent: true }));
             if (Array.isArray(save.inventory)) {
                 inventory.fill(null);
@@ -6652,6 +6836,7 @@
             resetWorldMemory();
             restoreBaseDoorSemanticStates();
             restoreBaseTemplePillarSemanticStates();
+            restoreBaseNPCSemanticStates();
             addLogMessage('GM save caused a load error and has been cleared.');
             return false;
         }
@@ -6677,6 +6862,8 @@
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
         resetWorldMemory();
         restoreBaseDoorSemanticStates();
+        restoreBaseTemplePillarSemanticStates();
+        restoreBaseNPCSemanticStates();
         gmEvents.length = 0;
         markGMResponseResolved();
         if (typeof spawnBaseGroundItems === 'function') spawnBaseGroundItems();
@@ -7218,6 +7405,7 @@
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
     document.getElementById('search-nearby-action').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); fillSearchNearbyAction(); });
+    document.getElementById('talk-nearby-action').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); fillTalkNearbyAction(); });
     document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
     document.getElementById('apply-action-gm-outcome').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); validateAndApplyManualActionGMOutcome(); });
     document.getElementById('resolve-action-ai').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); resolveManualActionWithAI(); });

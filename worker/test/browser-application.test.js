@@ -34,6 +34,13 @@ function loadBoundary() {
   vm.createContext(context);
   vm.runInContext([
     functionSource('resolveBaseTemplePillar'),
+    functionSource('isSearchInvestigateAction'),
+    functionSource('isNPCDialogueAction'),
+    functionSource('getOriginatingActionEntityCandidate'),
+    functionSource('isNPCDialogueGMRequest'),
+    functionSource('getResolvedDialogueNPCTarget'),
+    `const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
+    functionSource('isSafeNPCDialogueState'),
     functionSource('validateGMResolutionBindings'),
     functionSource('getOriginatingToolCandidate'),
     functionSource('isDiggingToolCandidate'),
@@ -117,6 +124,7 @@ function loadTerrainBoundary(overrides = {}) {
     gmHotspots: [],
     gmTransitions: [],
     gmNPCs: [],
+    npcs: [],
     gmWalls: [],
     gmFloors: [],
     gmRemovedWalls: [],
@@ -127,6 +135,9 @@ function loadTerrainBoundary(overrides = {}) {
     doors: [],
     allWalls: { '0': [], '2': [], '-1': [] },
     worldFlags: {},
+    worldMemory: { summary: '', facts: [], quests: {} },
+    GM_MEMORY_LIMIT: 40,
+    GM_OUTCOME_APPLICATION_PROTOCOL: 'gm_outcome_application_v1',
     removedBaseGroundItemIds: new Set(),
     GM_SAVE_KEY: 'save',
     GM_UNDO_KEY: 'undo',
@@ -139,7 +150,9 @@ function loadTerrainBoundary(overrides = {}) {
     safeMemoryText: value => typeof value === 'string' ? value.trim() : '',
     distanceToPlayerTile: (x, y) => Math.hypot(x - context.playerGridX, y - context.playerGridY),
     directionToPlayerTile: () => 'nearby',
-    getNearbyNPCs: () => [],
+    getNearbyNPCs: (radius = 6) => context.npcs
+      .filter(npc => npc.level === context.currentLevel && Math.max(Math.abs(npc.gridX - context.playerGridX), Math.abs(npc.gridY - context.playerGridY)) <= radius)
+      .map(npc => ({ id: npc.id, name: npc.name || npc.id, type: npc.type, x: npc.gridX, y: npc.gridY, note: npc.note || '', gmCreated: !!npc.gmCreated, state: npc.state || {} })),
     getNearbyCanvasEntities: null,
     getLegacyDoorActionSnapshot: () => null,
     getBaseWallActionSnapshot: () => null,
@@ -149,6 +162,8 @@ function loadTerrainBoundary(overrides = {}) {
     findCanvasEntityRef: () => null,
     resolveActionEntityReference: () => null,
     isSafeGMFlag: () => true,
+    validateGMRequest: () => ({ valid: true, errors: [], warnings: [] }),
+    validateGMOutcome: () => ({ valid: true, errors: [], warnings: [] }),
     preflightGMPlacement: effect => ({ x: Math.round(Number(effect.x)), y: Math.round(Number(effect.y)), level: String(effect.level ?? '0'), valid: true }),
     normalizeGMOutcomeMemory: null,
     sanitizeItemInstanceId: value => String(value || ''),
@@ -161,11 +176,17 @@ function loadTerrainBoundary(overrides = {}) {
     serializeWorldMemory: () => ({ summary: '', facts: [], quests: [] }),
     getBaseDoorSemanticStatesSnapshot: () => [],
     getBaseTemplePillarSemanticStatesSnapshot: () => [],
+    getBaseNPCSemanticStatesSnapshot: () => [],
     getItemDefsSnapshot: () => [],
     getInventorySnapshot: () => [],
     getPersistentGroundItemsSnapshot: () => [],
     recordGMEvent: () => {},
     addLogMessage: () => {},
+    renderWorldMemoryUI: () => {},
+    saveGMWorld: () => true,
+    recordGMCommandHistory: () => {},
+    hasGMUndoSnapshot: () => true,
+    getGMOutcomeApplicationDiagnostics: () => ({}),
     loadGMWorld: silent => {
       const raw = context.localStorage.getItem(context.GM_SAVE_KEY);
       if (!raw) return false;
@@ -190,7 +211,18 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('canModifyTerrainPatch'),
     functionSource('makeActionTileCandidate'),
     functionSource('getLocalActionTileCandidates'),
+    functionSource('normalizeMemoryFacts'),
+    functionSource('serializeWorldMemory'),
+    `const ACTION_CONTEXT_MEMORY_FACT_LIMIT = 8;`,
+    `const ACTION_CONTEXT_MEMORY_QUEST_LIMIT = 4;`,
+    `const ACTION_CONTEXT_MEMORY_SUMMARY_LIMIT = 800;`,
+    `const ACTION_CONTEXT_MEMORY_STOP_WORDS = new Set(['about', 'after', 'again', 'anything', 'around', 'because', 'before', 'being', 'close', 'could', 'found', 'from', 'ground', 'have', 'here', 'into', 'nearby', 'player', 'same', 'search', 'should', 'something', 'tell', 'that', 'their', 'there', 'thing', 'this', 'with', 'would']);`,
+    functionSource('getActionMemoryTerms'),
+    functionSource('memoryTextMatchesTerms'),
+    functionSource('getRelevantActionMemory'),
+    functionSource('addWorldMemoryFact'),
     functionSource('isSearchInvestigateAction'),
+    functionSource('isNPCDialogueAction'),
     functionSource('parseActionTileId'),
     functionSource('getOriginatingLocalTileCandidate'),
     functionSource('preflightGMLocalTerrainPlacement'),
@@ -198,22 +230,34 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('preflightGMLocalItemPlacement'),
     functionSource('isSearchInvestigateGMRequest'),
     functionSource('preflightGMSearchDiscoveryPlacement'),
+    functionSource('getOriginatingActionEntityCandidate'),
+    functionSource('isNPCDialogueGMRequest'),
+    functionSource('getResolvedDialogueNPCTarget'),
+    `const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
+    functionSource('isSafeNPCDialogueState'),
+    functionSource('setDialogueNPCState'),
     functionSource('validateGMResolutionBindings'),
     functionSource('getOriginatingToolCandidate'),
     functionSource('isDiggingToolCandidate'),
     functionSource('getAuthoritativeDiggingToolCandidate'),
     functionSource('normalizeGMOutcomeMemory'),
     functionSource('translateGMOutcomeEffects'),
+    functionSource('validateGMOutcomeApplication'),
+    functionSource('applyTranslatedGMOutcomeEffect'),
+    'let lastGMOutcomeApplicationDiagnostic = null;',
+    functionSource('applyGMOutcome'),
     functionSource('validateGMOutcomeAgainstCheck'),
     functionSource('getCanvasEntitySnapshot'),
     functionSource('getAllCanvasEntities'),
     functionSource('getNearbyCanvasEntities'),
+    `const ACTION_CONTEXT_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
+    functionSource('compactNPCDialogueState'),
     functionSource('toActionContextEntity'),
     functionSource('getNearbyActionContextEntities'),
     functionSource('buildGMWorldSave'),
     functionSource('storeGMUndoSnapshot'),
     functionSource('undoLastGMApply'),
-    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply };'
+    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact };'
   ].join('\n'), context);
   return { api: context.api, context };
 }
@@ -274,7 +318,44 @@ function searchOutcome(overrides = {}) {
   };
 }
 
-function loadActionRequestBoundary() {
+function dialogueRequest(overrides = {}) {
+  const entities = overrides.entities || [
+    { id: 'sage', kind: 'npc', name: 'Sage', level: '0', tile: { x: 11, y: 10 }, distance: 1 },
+    { id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }
+  ];
+  const target = overrides.targetId ? entities.find(entity => entity.id === overrides.targetId) || null : null;
+  return {
+    action: {
+      id: 'dialogue-1',
+      targetId: overrides.targetId ?? null,
+      toolId: null,
+      verb: 'improvise',
+      intent: overrides.intent || 'I ask Sage about the odd shell.'
+    },
+    context: {
+      actor: { level: '0', tile: { x: 10, y: 10 }, inventory: [] },
+      target,
+      toolCandidates: [],
+      nearby: { entities },
+      relevantState: { memory: { summary: 'Sage watches the temple.', facts: ['The player found an odd shell.'], quests: [] } }
+    },
+    route: { mode: 'gm' }
+  };
+}
+
+function dialogueOutcome(overrides = {}) {
+  return {
+    protocol: 'gm_outcome_v1',
+    actionId: 'dialogue-1',
+    narration: 'Sage studies the shell and answers carefully.',
+    resolution: { result: 'success', reason: 'The question is clear and Sage is nearby.' },
+    effects: [],
+    memory: [],
+    ...overrides
+  };
+}
+
+function loadActionRequestBoundary(overrides = {}) {
   const effectDefinitions = [
     { op: 'update_entity', required: ['id'] },
     { op: 'transform_entity', required: ['id'] },
@@ -315,13 +396,14 @@ function loadActionRequestBoundary() {
     playerGridY: 10,
     activeTool: 'walk',
     copyActionContextValue: value => structuredClone(value),
-    resolveActionEntityReference: () => null,
+    safeMemoryText: value => typeof value === 'string' ? value.trim() : '',
+    resolveActionEntityReference: id => (overrides.resolvedEntities || []).find(entity => entity.id === id) || null,
     resolveActionToolReference: () => null,
     getActionToolCandidates: () => [],
-    serializeWorldMemory: () => ({ summary: '', facts: [], quests: [] }),
+    serializeWorldMemory: () => overrides.memory || { summary: '', facts: [], quests: [] },
     getInventoryCompactSnapshot: () => [],
     getSelectedUseItemSnapshot: () => null,
-    getNearbyActionContextEntities: () => [{ id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }],
+    getNearbyActionContextEntities: () => overrides.nearbyEntities || [{ id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }],
     getLocalActionTileCandidates: () => [{ id: 'tile:0:10:10', level: '0', x: 10, y: 10, distance: 0, terrain: 'ground', walkable: true, occupied: false, protected: false }],
     getEventsSinceLastGM: () => [],
     getRelevantActionAnchors: () => [],
@@ -337,7 +419,15 @@ function loadActionRequestBoundary() {
     functionSource('normalizeGameAction'),
     functionSource('createGameAction'),
     functionSource('validateGameAction'),
+    `const ACTION_CONTEXT_MEMORY_FACT_LIMIT = 8;`,
+    `const ACTION_CONTEXT_MEMORY_QUEST_LIMIT = 4;`,
+    `const ACTION_CONTEXT_MEMORY_SUMMARY_LIMIT = 800;`,
+    `const ACTION_CONTEXT_MEMORY_STOP_WORDS = new Set(['about', 'after', 'again', 'anything', 'around', 'because', 'before', 'being', 'close', 'could', 'found', 'from', 'ground', 'have', 'here', 'into', 'nearby', 'player', 'same', 'search', 'should', 'something', 'tell', 'that', 'their', 'there', 'thing', 'this', 'with', 'would']);`,
+    functionSource('getActionMemoryTerms'),
+    functionSource('memoryTextMatchesTerms'),
+    functionSource('getRelevantActionMemory'),
     functionSource('isSearchInvestigateAction'),
+    functionSource('isNPCDialogueAction'),
     functionSource('actionNeedsLocalTileCandidates'),
     functionSource('buildActionContext'),
     functionSource('validateActionContext'),
@@ -399,6 +489,48 @@ test('search ActionContext includes localTiles and builds a bounded GM request',
     routing: { mode: 'unknown', reason: null }
   }, '2026-08-22T12:00:00.000Z');
   assert.equal('localTiles' in api.buildActionContext(ordinary), false);
+});
+
+test('NPC dialogue routes to GM with bounded nearby NPC candidates', () => {
+  const sageEntity = { id: 'sage', kind: 'npc', name: 'Sage', level: '0', tile: { x: 11, y: 10 }, distance: 1, state: { mood: 'watchful' } };
+  const guardEntity = { id: 'guard', kind: 'npc', name: 'Guard', level: '0', tile: { x: 12, y: 10 }, distance: 2 };
+  const api = loadActionRequestBoundary({ nearbyEntities: [sageEntity, guardEntity, { id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }] });
+  const action = api.createGameAction({
+    id: 'dialogue-route-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'improvise',
+    intent: 'I ask Sage about the tide.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(action);
+  const route = api.routeGameAction(action, context);
+  const built = api.buildGMRequest(action, context, route);
+  assert.equal(route.mode, 'gm');
+  assert.equal(built.ok, true, built.errors.join(' | '));
+  assert.equal(built.request.protocol, 'gm_request_v1');
+  assert.deepEqual(JSON.parse(JSON.stringify(built.request.context.nearby.entities.filter(entity => entity.kind === 'npc').map(entity => entity.id))), ['sage', 'guard']);
+  assert.equal(built.request.context.canvasEntities, undefined);
+  assert.equal(built.request.context.nearby.all, undefined);
+  assert.equal(api.validateGMRequest(built.request).valid, true);
+});
+
+test('explicit selected NPC target is preserved in dialogue context', () => {
+  const sageEntity = { id: 'sage', kind: 'npc', name: 'Sage', level: '0', tile: { x: 11, y: 10 }, distance: 1 };
+  const api = loadActionRequestBoundary({ nearbyEntities: [sageEntity], resolvedEntities: [sageEntity] });
+  const action = api.createGameAction({
+    id: 'dialogue-target-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'improvise',
+    targetId: 'sage',
+    intent: 'I tell Sage I found an odd shell.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(action);
+  assert.equal(context.target.id, 'sage');
+  assert.equal(context.target.kind, 'npc');
+  assert.equal(api.routeGameAction(action, context).mode, 'gm');
 });
 
 test('ordinary ActionContext validation can pass without localTiles', () => {
@@ -744,4 +876,189 @@ test('search prop discoveries without tileId still cannot be distant', () => {
   const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
   assert.equal(translated.valid, false);
   assert.match(translated.errors[0], /local to the originating search context/);
+});
+
+test('NPC dialogue allows narration-only responses and supporting memory or flags', () => {
+  const { api } = loadTerrainBoundary();
+  const requestData = dialogueRequest();
+  const narrationOnlyBinding = api.validateGMResolutionBindings(requestData, dialogueOutcome());
+  assert.equal(narrationOnlyBinding.valid, true);
+  const narrationOnly = api.translateGMOutcomeEffects(requestData, dialogueOutcome(), narrationOnlyBinding.resolved);
+  assert.equal(narrationOnly.valid, true);
+  assert.equal(narrationOnly.translatedEffects.length, 0);
+
+  const outcome = dialogueOutcome({
+    effects: [
+      { op: 'set_flag', key: 'sage_heard_about_shell', value: true },
+      { op: 'add_memory', text: 'Sage heard that the player found an odd shell.' }
+    ]
+  });
+  const binding = api.validateGMResolutionBindings(requestData, outcome);
+  assert.equal(binding.valid, true);
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, binding.resolved);
+  assert.equal(translated.valid, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.translatedEffects.map(effect => effect.op))), ['set_flag']);
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.memory.facts)), ['Sage heard that the player found an odd shell.']);
+});
+
+test('NPC dialogue can update only the resolved target NPC semantic state', () => {
+  const { api } = loadTerrainBoundary();
+  const requestData = dialogueRequest();
+  const outcome = dialogueOutcome({
+    bindings: { targetId: 'sage' },
+    effects: [{ op: 'set_entity_state', id: 'sage', state: { mood: 'curious', lastHeard: 'odd shell', trust: 1 } }]
+  });
+  const binding = api.validateGMResolutionBindings(requestData, outcome);
+  assert.equal(binding.valid, true);
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, binding.resolved);
+  assert.equal(translated.valid, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.translatedEffects)), [{ op: 'set_dialogue_npc_state', id: 'sage', state: { mood: 'curious', lastHeard: 'odd shell', trust: 1 } }]);
+
+  const otherNpc = api.translateGMOutcomeEffects(requestData, dialogueOutcome({
+    bindings: { targetId: 'sage' },
+    effects: [{ op: 'set_entity_state', id: 'guard', state: { mood: 'suspicious' } }]
+  }), { targetId: 'sage', toolId: null });
+  assert.equal(otherNpc.valid, false);
+  assert.match(otherNpc.errors[0], /must target resolved NPC sage/);
+
+  const unsafeState = api.translateGMOutcomeEffects(requestData, dialogueOutcome({
+    bindings: { targetId: 'sage' },
+    effects: [{ op: 'set_entity_state', id: 'sage', state: { inventory: ['shell'] } }]
+  }), { targetId: 'sage', toolId: null });
+  assert.equal(unsafeState.valid, false);
+  assert.match(unsafeState.errors[0], /unsupported or too broad/);
+});
+
+test('NPC dialogue rejects physical, movement, terrain, and damage effects', () => {
+  const { api } = loadTerrainBoundary();
+  const requestData = dialogueRequest();
+  const blockedEffects = [
+    { op: 'spawn_item', item: { id: 'gm_shell_dialogue', name: 'Shell' }, x: 10, y: 10, level: '0' },
+    { op: 'give_item', item: { id: 'gm_shell_gift', name: 'Shell' } },
+    { op: 'remove_item', id: 'base_shell_01' },
+    { op: 'create_prop', id: 'gm_dialogue_prop', name: 'Sudden Sign', x: 10, y: 10, level: '0' },
+    { op: 'move_prop', id: 'gm_dialogue_prop', x: 11, y: 10, level: '0' },
+    { op: 'remove_prop', id: 'gm_dialogue_prop' },
+    { op: 'set_terrain', id: 'gm_dialogue_terrain', tileId: 'tile:0:10:10', mode: 'dig' },
+    { op: 'move_npc', id: 'sage', x: 11, y: 10, level: '0' },
+    { op: 'damage_entity', id: 'sage', damage: true }
+  ];
+
+  for (const effect of blockedEffects) {
+    const translated = api.translateGMOutcomeEffects(requestData, dialogueOutcome({ bindings: { targetId: 'sage' }, effects: [effect] }), { targetId: 'sage', toolId: null });
+    assert.equal(translated.valid, false, `${effect.op} should be rejected`);
+    assert.match(translated.errors[0], /not supported for NPC dialogue/);
+  }
+});
+
+test('NPC dialogue late binding rejects non-originating, non-NPC, and player targets', () => {
+  const { api } = loadTerrainBoundary();
+  const requestData = dialogueRequest();
+  const missing = api.validateGMResolutionBindings(requestData, dialogueOutcome({ bindings: { targetId: 'missing_npc' } }));
+  assert.equal(missing.valid, false);
+  assert.match(missing.errors[0], /not an originating target candidate/);
+
+  const prop = api.validateGMResolutionBindings(requestData, dialogueOutcome({ bindings: { targetId: 'base_prop:old_stone:0:10:11' } }));
+  assert.equal(prop.valid, false);
+  assert.match(prop.errors.join(' | '), /nearby NPC candidate/);
+
+  const player = api.validateGMResolutionBindings(requestData, dialogueOutcome({ bindings: { targetId: 'player' } }));
+  assert.equal(player.valid, false);
+  assert.match(player.errors[0], /not an originating target candidate/);
+});
+
+test('nearby NPC dialogue state is compact and limited to safe semantic fields', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.npcs.push({
+    id: 'sage',
+    name: 'Sage',
+    type: 'human',
+    gridX: 11,
+    gridY: 10,
+    level: '0',
+    state: {
+      mood: 'curious',
+      attitude: 'guarded',
+      lastHeard: 'odd shell',
+      secretInventory: ['coins'],
+      unboundedNotes: 'x'.repeat(500)
+    }
+  });
+  const sageCandidate = api.getNearbyActionContextEntities().find(entity => entity.id === 'sage');
+  assert.deepEqual(JSON.parse(JSON.stringify(sageCandidate.state)), {
+    mood: 'curious',
+    attitude: 'guarded',
+    lastHeard: 'odd shell'
+  });
+  assert.equal(sageCandidate.state.secretInventory, undefined);
+  assert.equal(sageCandidate.state.unboundedNotes, undefined);
+});
+
+test('Search to Tell NPC loop persists canonical memory and state into later relevant ActionContext', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.worldMemory.facts = Array.from({ length: 20 }, (_, index) => `Unrelated harbor rumor ${index}.`);
+  context.worldMemory.summary = 'A broad unrelated history of distant places.';
+  context.npcs.push({
+    id: 'sage',
+    name: 'Sage',
+    type: 'human',
+    gridX: 11,
+    gridY: 10,
+    level: '0',
+    state: { privateNotes: 'not for ActionContext' }
+  });
+
+  const searchRequestData = searchRequest(api, context);
+  const searchResult = api.applyGMOutcome(searchRequestData, searchOutcome({
+    effects: [
+      { op: 'add_memory', text: 'The player found an odd shell while searching nearby.' },
+      { op: 'set_flag', key: 'found_odd_shell', value: true }
+    ]
+  }));
+  assert.equal(searchResult.status, 'applied', searchResult.diagnostics.join(' | '));
+  assert.equal(context.worldFlags.found_odd_shell, true);
+  assert.equal(context.worldMemory.facts.includes('The player found an odd shell while searching nearby.'), true);
+
+  const dialogueEntities = api.getNearbyActionContextEntities();
+  const tellRequest = dialogueRequest({
+    entities: dialogueEntities,
+    intent: 'I tell Sage I found an odd shell.'
+  });
+  const tellResult = api.applyGMOutcome(tellRequest, dialogueOutcome({
+    bindings: { targetId: 'sage' },
+    effects: [
+      { op: 'add_memory', text: 'Sage was told about the odd shell the player found.' },
+      { op: 'set_flag', key: 'sage_heard_about_odd_shell', value: true },
+      { op: 'set_entity_state', id: 'sage', state: { topic: 'odd shell', mood: 'curious', lastHeard: 'The player found an odd shell.' } }
+    ]
+  }));
+  assert.equal(tellResult.status, 'applied', tellResult.diagnostics.join(' | '));
+  assert.equal(context.worldFlags.sage_heard_about_odd_shell, true);
+  assert.equal(context.npcs.find(npc => npc.id === 'sage').state.lastHeard, 'The player found an odd shell.');
+
+  const laterEntities = api.getNearbyActionContextEntities();
+  const laterSage = laterEntities.find(entity => entity.id === 'sage');
+  const laterAction = { id: 'dialogue-later', verb: 'improvise', intent: 'I ask Sage about the odd shell again.' };
+  const laterMemory = api.getRelevantActionMemory(laterAction, laterSage, laterEntities);
+  const laterRequest = {
+    protocol: 'gm_request_v1',
+    action: laterAction,
+    context: {
+      nearby: { entities: laterEntities },
+      relevantState: { memory: laterMemory }
+    }
+  };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(laterSage.state)), {
+    mood: 'curious',
+    topic: 'odd shell',
+    lastHeard: 'The player found an odd shell.'
+  });
+  assert.equal(laterSage.state.privateNotes, undefined);
+  assert.equal(laterRequest.context.relevantState.memory.facts.length <= 8, true);
+  assert.equal(laterRequest.context.relevantState.memory.facts.some(fact => /odd shell/i.test(fact)), true);
+  assert.equal(laterRequest.context.relevantState.memory.facts.some(fact => /Unrelated harbor rumor/i.test(fact)), false);
+  assert.equal(laterRequest.context.relevantState.memory.summary, '');
+  assert.equal(laterRequest.context.nearby.all, undefined);
+  assert.equal(laterRequest.context.canvasEntities, undefined);
 });
