@@ -3158,11 +3158,24 @@
                 translatedEffects.push(command); return;
             }
             if (effect.op === 'create_transition') {
-                const placement = preflightGMPlacement(effect);
+                const searchDiscovery = isSearchInvestigateGMRequest(gmRequest);
+                if (searchDiscovery && ++searchPhysicalRevealCount > 1) return fail(index, 'search outcomes may reveal at most one local physical discovery.');
+                const placement = effect.tileId
+                    ? preflightGMLocalTransitionPlacement(gmRequest, effect)
+                    : (searchDiscovery ? preflightGMRawSearchTransitionPlacement(gmRequest, effect) : preflightGMPlacement(effect));
+                if ((effect.tileId || searchDiscovery) && !placement.valid) return fail(index, placement.error);
+                const searchPlacement = preflightGMSearchDiscoveryPlacement(gmRequest, placement, 'transition');
+                if (!searchPlacement.valid) return fail(index, searchPlacement.error);
                 const targetLevel = String(effect.targetLevel);
+                const shape = searchDiscovery ? normalizeGMSearchPassageShape(effect.shape ?? effect.type ?? effect.kind ?? 'passage') : effect.shape;
+                const spawnX = Math.round(Number(effect.spawnX ?? effect.targetX ?? placement?.x));
+                const spawnY = Math.round(Number(effect.spawnY ?? effect.targetY ?? placement?.y));
+                if (searchDiscovery && !shape) return fail(index, 'search transition shape is unsupported.');
+                if (searchDiscovery && !isStableGMTransitionId(effect.id)) return fail(index, 'search transition id must be stable and safe.');
+                if (searchDiscovery && !isTilePlaceableForGM(spawnX, spawnY, targetLevel, false)) return fail(index, 'search transition spawn tile is invalid or blocked.');
                 if (gmTransitions.some(entry => entry.id === effect.id) || reservedCreatedIds.has(effect.id) || !placement || !levelGroups[targetLevel]) return fail(index, 'transition id, placement, or target level is invalid.');
                 reservedCreatedIds.add(effect.id);
-                translatedEffects.push({ ...command, ...placement, targetLevel }); return;
+                translatedEffects.push({ ...command, ...placement, targetLevel, ...(searchDiscovery ? { shape, spawnX, spawnY } : {}) }); return;
             }
             if (effect.op === 'remove_transition') {
                 if (!gmTransitions.some(entry => entry.id === effect.id)) return fail(index, `transition is not resolvable: ${effect.id}.`);
@@ -3178,6 +3191,8 @@
             }
             fail(index, `operation is validation-only and unsupported at application: ${effect.op}.`);
         });
+        const searchConsistencyError = validateGMSearchOutcomeDiscoveryConsistency(gmRequest, gmOutcome);
+        if (searchConsistencyError) errors.push(searchConsistencyError);
         return { valid: errors.length === 0, errors, warnings, translatedEffects, memory, compatibilityIdsResolved };
     }
 
@@ -5102,8 +5117,87 @@
         return { valid: true, x, y, level, tileId: candidate.id };
     }
 
+    function preflightGMLocalTransitionPlacement(gmRequest, effect) {
+        const candidate = getOriginatingLocalTileCandidate(gmRequest, effect);
+        if (!candidate) return { valid: false, error: 'transition placement must match an originating local tile candidate.' };
+        const x = candidate.x;
+        const y = candidate.y;
+        const level = String(candidate.level);
+        const actorLevel = String(gmRequest?.context?.actor?.level ?? currentLevel);
+        if (level !== actorLevel) return { valid: false, error: 'transition discovery must remain on the originating actor level.' };
+        if (candidate.protected || candidate.occupied || !isTilePlaceableForGM(x, y, level, false)) return { valid: false, error: 'transition placement candidate is protected, occupied, or invalid.' };
+        return { valid: true, x, y, level, tileId: candidate.id };
+    }
+
+    function preflightGMRawSearchTransitionPlacement(gmRequest, effect) {
+        const rawX = Number(effect.x);
+        const rawY = Number(effect.y);
+        if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return { valid: false, error: 'search transition raw placement requires x and y.' };
+        const x = Math.round(rawX);
+        const y = Math.round(rawY);
+        const level = String(effect.level ?? gmRequest?.context?.actor?.level ?? currentLevel);
+        const placement = { valid: isValidTile(x, y, level), x, y, level };
+        const searchPlacement = preflightGMSearchDiscoveryPlacement(gmRequest, placement, 'transition');
+        if (!searchPlacement.valid) return searchPlacement;
+        if (isTileProtected(x, y, level) || isTileOccupiedByGM(x, y, level) || !isTilePlaceableForGM(x, y, level, false)) {
+            return { valid: false, error: 'transition discovery source tile is protected, occupied, blocked, or invalid.' };
+        }
+        return placement;
+    }
+
     function isSearchInvestigateGMRequest(gmRequest) {
         return isSearchInvestigateAction(gmRequest?.action) || isSearchInvestigateAction(gmRequest?.context?.action);
+    }
+
+    function isStableGMTransitionId(id) {
+        return typeof id === 'string'
+            && /^[A-Za-z0-9:_-]{1,96}$/.test(id.trim())
+            && !['__proto__', 'prototype', 'constructor'].includes(id.trim());
+    }
+
+    function normalizeGMSearchPassageShape(value) {
+        const shape = String(value || 'passage').trim().toLowerCase();
+        return ['trapdoor', 'stairs', 'ladder', 'hole', 'passage'].includes(shape) ? shape : null;
+    }
+
+    function getGMSearchPhysicalRevealEffects(gmOutcome) {
+        return (Array.isArray(gmOutcome?.effects) ? gmOutcome.effects : [])
+            .filter(effect => ['create_transition', 'create_prop', 'spawn_item'].includes(effect?.op));
+    }
+
+    function getGMSearchPhysicalDiscoveryClaim(gmOutcome) {
+        const text = [
+            gmOutcome?.narration,
+            gmOutcome?.resolution?.reason
+        ].filter(value => typeof value === 'string').join(' ').toLowerCase().replace(/\s+/g, ' ');
+        if (!text) return null;
+        const negation = "(?:do\\s+not|don\\s*'?t|did\\s+not|didn\\s*'?t|fail\\s+to|failed\\s+to|cannot|can\\s+not|can\\s*'?t)";
+        const negativeDiscoverVerb = '(?:find|discover|reveal|uncover|locate)';
+        const negativeNoun = '(?:entrance|passage|trapdoor|stairs|stairway|ladder|door|cellar\\s+entrance|opening|item|shell|key|coin|gem|tool|artifact|artefact|clue|object|cache|chest|container|marking|symbol|sign)';
+        const negatedBeforeVerb = new RegExp(`\\byou\\s+${negation}\\s+${negativeDiscoverVerb}\\b.{0,80}\\b${negativeNoun}\\b`, 'i');
+        const findNoNoun = new RegExp(`\\byou\\s+find\\s+no\\b.{0,80}\\b${negativeNoun}\\b`, 'i');
+        const noNounFound = new RegExp(`\\bno\\b.{0,40}\\b${negativeNoun}\\b.{0,40}\\b(?:is|are|was|were)?\\s*found\\b`, 'i');
+        if (negatedBeforeVerb.test(text) || findNoNoun.test(text) || noNounFound.test(text)) return null;
+        const discoverVerb = '(?:find|found|discover|discovered|reveal|revealed|uncover|uncovered|locate|located)';
+        const passageNoun = '(?:hidden\\s+)?(?:entrance|passage|trapdoor|stairs|stairway|ladder|door|cellar\\s+entrance|opening)';
+        const itemNoun = '(?:item|shell|key|coin|gem|tool|artifact|artefact)';
+        const propNoun = '(?:clue|object|cache|chest|container|marking|symbol|sign)';
+        const scan = (pattern) => new RegExp(`${discoverVerb}\\b.{0,80}\\b${pattern}\\b`, 'i').test(text);
+        if (scan(passageNoun)) return { kind: 'passage', allowedOps: ['create_transition'] };
+        if (scan(itemNoun)) return { kind: 'item', allowedOps: ['spawn_item'] };
+        if (scan(propNoun)) return { kind: 'clue', allowedOps: ['create_prop', 'spawn_item'] };
+        return null;
+    }
+
+    function validateGMSearchOutcomeDiscoveryConsistency(gmRequest, gmOutcome) {
+        if (!isSearchInvestigateGMRequest(gmRequest)) return null;
+        if (!['success', 'partial'].includes(gmOutcome?.resolution?.result)) return null;
+        const claim = getGMSearchPhysicalDiscoveryClaim(gmOutcome);
+        if (!claim) return null;
+        const revealEffects = getGMSearchPhysicalRevealEffects(gmOutcome);
+        if (revealEffects.length !== 1) return `search narration claims a persistent physical ${claim.kind} discovery, but the outcome does not include exactly one physical reveal effect.`;
+        if (!claim.allowedOps.includes(revealEffects[0].op)) return `search narration claims a persistent physical ${claim.kind} discovery, but the reveal effect is ${revealEffects[0].op}.`;
+        return null;
     }
 
     function preflightGMSearchDiscoveryPlacement(gmRequest, placement, kind) {
@@ -6334,13 +6428,13 @@
         const mat = new THREE.MeshLambertMaterial({ color: color, flatShading: true });
         const darkMat = new THREE.MeshLambertMaterial({ color: 0x111111, flatShading: true });
         const glowMat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
-        const safeShape = ['hole', 'stairs', 'ladder', 'portal', 'boat', 'passage'].includes(shape) ? shape : 'passage';
+        const safeShape = ['hole', 'trapdoor', 'stairs', 'ladder', 'portal', 'boat', 'passage'].includes(shape) ? shape : 'passage';
 
-        if (safeShape === 'hole' || safeShape === 'passage') {
+        if (safeShape === 'hole' || safeShape === 'trapdoor' || safeShape === 'passage') {
             const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.06, 20), darkMat);
             disc.position.y = 0.03;
             group.add(disc);
-            if (safeShape === 'passage') {
+            if (safeShape === 'trapdoor' || safeShape === 'passage') {
                 const rim = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.035, 6, 24), mat);
                 rim.rotation.x = Math.PI / 2;
                 rim.position.y = 0.08;

@@ -35,6 +35,7 @@ function loadBoundary() {
   vm.runInContext([
     functionSource('resolveBaseTemplePillar'),
     functionSource('isSearchInvestigateAction'),
+    functionSource('isSearchInvestigateGMRequest'),
     functionSource('isNPCDialogueAction'),
     functionSource('isItemToNPCAction'),
     functionSource('getOriginatingActionEntityCandidate'),
@@ -50,6 +51,9 @@ function loadBoundary() {
     functionSource('getOriginatingToolCandidate'),
     functionSource('isDiggingToolCandidate'),
     functionSource('normalizeGMOutcomeMemory'),
+    functionSource('getGMSearchPhysicalRevealEffects'),
+    functionSource('getGMSearchPhysicalDiscoveryClaim'),
+    functionSource('validateGMSearchOutcomeDiscoveryConsistency'),
     functionSource('translateGMOutcomeEffects'),
     'this.api = { validateGMResolutionBindings, translateGMOutcomeEffects };'
   ].join('\n'), context);
@@ -110,6 +114,19 @@ function makeHeights(size = 41, value = 0) {
   return Array.from({ length: size }, () => Array.from({ length: size }, () => value));
 }
 
+function makeSceneNode() {
+  return {
+    children: [],
+    position: { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } },
+    rotation: { x: 0, y: 0, z: 0 },
+    userData: {},
+    visible: true,
+    add(child) { this.children.push(child); },
+    remove(child) { this.children = this.children.filter(entry => entry !== child); },
+    clone() { return makeSceneNode(); }
+  };
+}
+
 function loadTerrainBoundary(overrides = {}) {
   const store = new Map();
   const context = {
@@ -130,6 +147,8 @@ function loadTerrainBoundary(overrides = {}) {
     gmMarkers: [],
     gmHotspots: [],
     gmTransitions: [],
+    levelGroups: { '-1': makeSceneNode(), '0': makeSceneNode(), '2': makeSceneNode() },
+    interactables: [],
     gmNPCs: [],
     npcs: [],
     gmWalls: [],
@@ -196,6 +215,7 @@ function loadTerrainBoundary(overrides = {}) {
     saveGMWorld: () => true,
     restoreBaseTerrainHeights: () => true,
     rebuildTerrainMesh: () => true,
+    getGridWorldPos: (x, y, level = '0') => ({ x, y: context.LEVELS[String(level)]?.h || 0, z: y }),
     recordGMCommandHistory: () => {},
     hasGMUndoSnapshot: () => true,
     getGMOutcomeApplicationDiagnostics: () => ({}),
@@ -205,6 +225,19 @@ function loadTerrainBoundary(overrides = {}) {
       const save = JSON.parse(raw);
       context.gmTerrain.splice(0, context.gmTerrain.length, ...(save.terrain || []));
       return true;
+    },
+    THREE: {
+      Group: function Group() { return makeSceneNode(); },
+      Mesh: function Mesh() { return makeSceneNode(); },
+      MeshLambertMaterial: function MeshLambertMaterial(options = {}) { return { ...options }; },
+      MeshBasicMaterial: function MeshBasicMaterial(options = {}) { return { ...options }; },
+      BoxGeometry: function BoxGeometry() { return {}; },
+      CylinderGeometry: function CylinderGeometry() { return {}; },
+      ConeGeometry: function ConeGeometry() { return {}; },
+      TorusGeometry: function TorusGeometry() { return {}; },
+      CircleGeometry: function CircleGeometry() { return {}; },
+      Color: function Color(value) { return { value }; },
+      DoubleSide: 'DoubleSide'
     }
   };
   vm.createContext(context);
@@ -249,7 +282,14 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('preflightGMLocalTerrainPlacement'),
     functionSource('preflightGMLocalPropPlacement'),
     functionSource('preflightGMLocalItemPlacement'),
+    functionSource('preflightGMLocalTransitionPlacement'),
+    functionSource('preflightGMRawSearchTransitionPlacement'),
     functionSource('isSearchInvestigateGMRequest'),
+    functionSource('isStableGMTransitionId'),
+    functionSource('normalizeGMSearchPassageShape'),
+    functionSource('getGMSearchPhysicalRevealEffects'),
+    functionSource('getGMSearchPhysicalDiscoveryClaim'),
+    functionSource('validateGMSearchOutcomeDiscoveryConsistency'),
     functionSource('preflightGMSearchDiscoveryPlacement'),
     functionSource('getOriginatingActionEntityCandidate'),
     functionSource('isNPCDialogueGMRequest'),
@@ -271,6 +311,10 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('applyTranslatedGMOutcomeEffect'),
     'let lastGMOutcomeApplicationDiagnostic = null;',
     functionSource('applyGMOutcome'),
+    functionSource('normalizeMarkerColor'),
+    functionSource('parseMarkerColor'),
+    functionSource('buildGMTransitionVisual'),
+    functionSource('createGMTransition'),
     functionSource('normalizeGameAction'),
     functionSource('createGameAction'),
     functionSource('createTerrainAction'),
@@ -295,7 +339,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('buildGMWorldSave'),
     functionSource('storeGMUndoSnapshot'),
     functionSource('undoLastGMApply'),
-    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact };'
+    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact, createGMTransition };'
   ].join('\n'), context);
   return { api: context.api, context };
 }
@@ -352,6 +396,20 @@ function searchOutcome(overrides = {}) {
     resolution: { result: 'success', reason: 'The area can be inspected safely.' },
     effects: [],
     memory: [],
+    ...overrides
+  };
+}
+
+function searchTransitionEffect(tile, overrides = {}) {
+  return {
+    op: 'create_transition',
+    id: 'gm_transition_hidden_cellar_01',
+    name: 'Hidden Cellar Entrance',
+    shape: 'trapdoor',
+    tileId: tile.id,
+    targetLevel: '-1',
+    spawnX: 10,
+    spawnY: 8,
     ...overrides
   };
 }
@@ -583,6 +641,26 @@ test('search ActionContext includes localTiles and builds a bounded GM request',
     routing: { mode: 'unknown', reason: null }
   }, '2026-08-22T12:00:00.000Z');
   assert.equal('localTiles' in api.buildActionContext(ordinary), false);
+});
+
+test('search for temple cellar entrance routes to GM with localTiles', () => {
+  const api = loadActionRequestBoundary();
+  const search = api.createGameAction({
+    id: 'search-cellar-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'improvise',
+    intent: 'I search for the temple cellar entrance.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(search);
+  const route = api.routeGameAction(search, context);
+  const built = api.buildGMRequest(search, context, route);
+  assert.equal(route.mode, 'gm');
+  assert.equal(built.ok, true, built.errors.join(' | '));
+  assert.equal(Array.isArray(built.request.context.localTiles.candidates), true);
+  assert.equal(built.request.context.localTiles.candidates.length, 1);
+  assert.equal(built.request.context.canvasEntities, undefined);
 });
 
 test('NPC dialogue routes to GM with bounded nearby NPC candidates', () => {
@@ -1042,6 +1120,176 @@ test('search can reveal one local clue prop through preflight', () => {
   assert.equal(translated.translatedEffects[0].y, requestData.tile.y);
 });
 
+test('search can reveal one local transition to an existing target level', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({ narration: 'You discover a hidden trapdoor in the dust.', effects: [searchTransitionEffect(requestData.tile)] });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, true, translated.errors.join(' | '));
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.translatedEffects[0])), {
+    op: 'create_transition',
+    id: 'gm_transition_hidden_cellar_01',
+    name: 'Hidden Cellar Entrance',
+    shape: 'trapdoor',
+    tileId: 'tile:0:10:10',
+    targetLevel: '-1',
+    spawnX: 10,
+    spawnY: 8,
+    x: 10,
+    y: 10,
+    level: '0',
+    valid: true
+  });
+
+  const applied = api.applyGMOutcome(requestData, outcome);
+  assert.equal(applied.status, 'applied', applied.diagnostics.join(' | '));
+  assert.equal(context.gmTransitions.length, 1);
+  assert.equal(context.gmTransitions[0].id, 'gm_transition_hidden_cellar_01');
+  assert.equal(context.gmTransitions[0].shape, 'trapdoor');
+  assert.equal(api.buildGMWorldSave().transitions[0].id, 'gm_transition_hidden_cellar_01');
+  const later = api.getNearbyActionContextEntities().find(entity => entity.id === 'gm_transition_hidden_cellar_01');
+  assert.equal(later.kind, 'transition');
+  assert.equal(later.metadata.targetLevel, '-1');
+  assert.equal(later.metadata.spawnX, 10);
+  assert.equal(later.metadata.spawnY, 8);
+});
+
+test('search rejects physical discovery narration without a reveal effect', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const entrance = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    narration: 'You find a hidden entrance beneath the temple dust.',
+    resolution: { result: 'success', reason: 'Your search reveals the entrance clearly.' },
+    effects: []
+  }), { targetId: null, toolId: null });
+  assert.equal(entrance.valid, false);
+  assert.match(entrance.errors[0], /claims a persistent physical passage discovery/);
+
+  const shell = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    narration: 'You find an odd shell tucked between the stones.',
+    effects: []
+  }), { targetId: null, toolId: null });
+  assert.equal(shell.valid, false);
+  assert.match(shell.errors[0], /claims a persistent physical item discovery/);
+});
+
+test('search accepts negative no-discovery narration without a reveal effect', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const cases = [
+    'You do not find a hidden entrance.',
+    "You don't find a trapdoor.",
+    'You fail to find a trapdoor.',
+    'You cannot find an entrance here.',
+    'You find no item between the stones.',
+    'No entrance is found beneath the dust.'
+  ];
+  for (const narration of cases) {
+    const translated = api.translateGMOutcomeEffects(requestData, searchOutcome({
+      narration,
+      resolution: { result: 'success', reason: narration },
+      effects: []
+    }), { targetId: null, toolId: null });
+    assert.equal(translated.valid, true, narration);
+    assert.equal(translated.translatedEffects.length, 0);
+  }
+});
+
+test('search discovery consistency is enforced only for success and partial results', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  for (const result of ['failure', 'blocked', 'uncertain']) {
+    const translated = api.translateGMOutcomeEffects(requestData, searchOutcome({
+      narration: 'You find a hidden entrance beneath the temple dust.',
+      resolution: { result, reason: 'The search does not produce a canonical reveal.' },
+      effects: []
+    }), { targetId: null, toolId: null });
+    assert.equal(translated.valid, true, result);
+    assert.equal(translated.translatedEffects.length, 0);
+  }
+});
+
+test('search accepts uncertain observation narration without a reveal effect', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const translated = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    narration: 'You notice scrape marks in the dust and suspect something may be hidden here.',
+    resolution: { result: 'success', reason: 'The ground looks disturbed, but nothing physical is revealed yet.' },
+    effects: []
+  }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, true, translated.errors.join(' | '));
+  assert.equal(translated.translatedEffects.length, 0);
+});
+
+test('search can reveal one transition using safe raw local source coordinates', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const { tileId, ...effect } = searchTransitionEffect(requestData.tile, {
+    id: 'gm_transition_raw_cellar_01',
+    x: 11,
+    y: 10,
+    level: '0'
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, searchOutcome({ effects: [effect] }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, true, translated.errors.join(' | '));
+  assert.equal(translated.translatedEffects[0].id, 'gm_transition_raw_cellar_01');
+  assert.equal(translated.translatedEffects[0].x, 11);
+  assert.equal(translated.translatedEffects[0].y, 10);
+  assert.equal(translated.translatedEffects[0].level, '0');
+  assert.equal('tileId' in translated.translatedEffects[0], false);
+});
+
+test('search raw transition source coordinates reject blocked occupied protected and invalid tiles', () => {
+  const blockedBoundary = loadTerrainBoundary({ playerGridX: 5, playerGridY: 5 });
+  let requestData = searchRequest(blockedBoundary.api, blockedBoundary.context, 'tile:0:5:5');
+  let { tileId, ...effect } = searchTransitionEffect(requestData.tile, {
+    id: 'gm_transition_blocked_source_01',
+    x: 5,
+    y: 5,
+    level: '0'
+  });
+  let translated = blockedBoundary.api.translateGMOutcomeEffects(requestData, searchOutcome({ effects: [effect] }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /protected|occupied|blocked|invalid/);
+
+  const occupiedBoundary = loadTerrainBoundary();
+  occupiedBoundary.context.gmObjects.push({ id: 'gm_blocking_crate', x: 10, y: 10, level: '0' });
+  requestData = searchRequest(occupiedBoundary.api, occupiedBoundary.context);
+  ({ tileId, ...effect } = searchTransitionEffect(requestData.tile, {
+    id: 'gm_transition_occupied_source_01',
+    x: 10,
+    y: 10,
+    level: '0'
+  }));
+  translated = occupiedBoundary.api.translateGMOutcomeEffects(requestData, searchOutcome({ effects: [effect] }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /protected|occupied|blocked|invalid/);
+
+  const protectedBoundary = loadTerrainBoundary({ playerGridX: 2, playerGridY: 2 });
+  requestData = searchRequest(protectedBoundary.api, protectedBoundary.context, 'tile:0:2:2');
+  ({ tileId, ...effect } = searchTransitionEffect(requestData.tile, {
+    id: 'gm_transition_protected_source_01',
+    x: 2,
+    y: 2,
+    level: '0'
+  }));
+  translated = protectedBoundary.api.translateGMOutcomeEffects(requestData, searchOutcome({ effects: [effect] }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /protected|occupied|blocked|invalid/);
+
+  const invalidBoundary = loadTerrainBoundary({ playerGridX: 0, playerGridY: 0 });
+  requestData = searchRequest(invalidBoundary.api, invalidBoundary.context, 'tile:0:0:0');
+  ({ tileId, ...effect } = searchTransitionEffect(requestData.tile, {
+    id: 'gm_transition_invalid_source_01',
+    x: -1,
+    y: 0,
+    level: '0'
+  }));
+  translated = invalidBoundary.api.translateGMOutcomeEffects(requestData, searchOutcome({ effects: [effect] }), { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /placement is invalid|local|protected|occupied|blocked|invalid/);
+});
+
 test('search rejects more than one local physical reveal', () => {
   const { api, context } = loadTerrainBoundary();
   const requestData = searchRequest(api, context);
@@ -1066,6 +1314,22 @@ test('search rejects more than one local physical reveal', () => {
   const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
   assert.equal(translated.valid, false);
   assert.match(translated.errors[0], /at most one local physical clue or item/);
+});
+
+test('search rejects transition plus another physical reveal', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const outcome = searchOutcome({
+    effects: [
+      searchTransitionEffect(requestData.tile),
+      { op: 'set_flag', key: 'found_cellar_entrance', value: true },
+      { op: 'add_memory', text: 'The player found a hidden cellar entrance.' },
+      { op: 'create_prop', id: 'gm_cellar_scratches_01', name: 'Scratches by the Trapdoor', tileId: requestData.tile.id }
+    ]
+  });
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
+  assert.equal(translated.valid, false);
+  assert.match(translated.errors[0], /at most one local physical/);
 });
 
 test('search rejects duplicate item ids and non-originating tile discoveries', () => {
@@ -1108,6 +1372,34 @@ test('search prop discoveries without tileId still cannot be distant', () => {
   const translated = api.translateGMOutcomeEffects(requestData, outcome, { targetId: null, toolId: null });
   assert.equal(translated.valid, false);
   assert.match(translated.errors[0], /local to the originating search context/);
+});
+
+test('search transition discoveries reject distant, invalid target, and unsafe shape', () => {
+  const { api, context } = loadTerrainBoundary();
+  const requestData = searchRequest(api, context);
+  const distant = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [searchTransitionEffect(requestData.tile, { id: 'gm_transition_far_cellar_01', tileId: 'tile:0:30:30', x: 30, y: 30 })]
+  }), { targetId: null, toolId: null });
+  assert.equal(distant.valid, false);
+  assert.match(distant.errors[0], /originating local tile candidate/);
+
+  const missingLevel = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [searchTransitionEffect(requestData.tile, { id: 'gm_transition_missing_level_01', targetLevel: '99' })]
+  }), { targetId: null, toolId: null });
+  assert.equal(missingLevel.valid, false);
+  assert.match(missingLevel.errors[0], /spawn tile|target level/);
+
+  const malformedShape = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [searchTransitionEffect(requestData.tile, { id: 'gm_transition_castle_01', shape: 'castle' })]
+  }), { targetId: null, toolId: null });
+  assert.equal(malformedShape.valid, false);
+  assert.match(malformedShape.errors[0], /shape is unsupported/);
+
+  const blockedSpawn = api.translateGMOutcomeEffects(requestData, searchOutcome({
+    effects: [searchTransitionEffect(requestData.tile, { id: 'gm_transition_blocked_spawn_01', spawnX: 5, spawnY: 5 })]
+  }), { targetId: null, toolId: null });
+  assert.equal(blockedSpawn.valid, false);
+  assert.match(blockedSpawn.errors[0], /spawn tile is invalid or blocked/);
 });
 
 test('NPC dialogue allows narration-only responses and supporting memory or flags', () => {
