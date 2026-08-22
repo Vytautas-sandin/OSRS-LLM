@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GM_ADJUDICATION_INSTRUCTIONS, GM_ADJUDICATION_SCHEMA, GM_DIFFICULTY_DCS, GM_INSTRUCTIONS, GM_OUTCOME_SCHEMA, handleRequest, validateAdjudication, validateCheckResult, validateRequestBoundary } from '../src/index.js';
+import { GM_ADJUDICATION_INSTRUCTIONS, GM_ADJUDICATION_SCHEMA, GM_DIFFICULTY_DCS, GM_INSTRUCTIONS, GM_OUTCOME_SCHEMA, buildAdjudicationModelInput, handleRequest, validateAdjudication, validateCheckResult, validateRequestBoundary } from '../src/core.js';
 
 const origin = 'https://game.example';
 const outcome = { protocol: 'gm_outcome_v1', actionId: 'action-1', narration: 'Done.', resolution: { result: 'success', reason: 'Possible.' }, effects: [], memory: [] };
@@ -8,6 +8,65 @@ const validRequest = () => ({ protocol: 'gm_request_v1', action: { id: 'action-1
 const makeAI = (result = { response: JSON.stringify(outcome) }) => ({ calls: [], async run(...args) { this.calls.push(args); return result; } });
 const makeEnv = (overrides = {}) => ({ GM_ACCESS_TOKEN: 'prototype-token', ALLOWED_ORIGIN: origin, AI: makeAI(), ...overrides });
 const browserRequest = (body, options = {}) => new Request(`https://worker.example${options.path || '/resolve-action'}`, { method: options.method || 'POST', headers: { Origin: origin, Authorization: `Bearer ${options.token ?? 'prototype-token'}`, 'Content-Type': 'application/json', ...(options.headers || {}) }, body: options.method === 'OPTIONS' ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)) });
+const richRequest = () => ({
+  protocol: 'gm_request_v1',
+  action: {
+    id: 'action-rich', source: 'text', actorId: 'player', verb: 'improvise',
+    targetId: null, toolId: 'base_shovel_01', intent: 'I climb on top of the pillar.',
+    parameters: { approach: 'carefully' }, routing: { mode: 'unknown', reason: 'Late GM target resolution.' },
+    createdAt: '2026-08-22T12:00:00.000Z'
+  },
+  context: {
+    protocol: 'action_context_v1',
+    action: {
+      id: 'action-rich', source: 'text', actorId: 'player', verb: 'improvise',
+      targetId: null, toolId: 'base_shovel_01', intent: 'I climb on top of the pillar.',
+      parameters: { approach: 'carefully' }, routing: { mode: 'unknown', reason: 'Late GM target resolution.' },
+      createdAt: '2026-08-22T12:00:00.000Z'
+    },
+    actor: {
+      id: 'player', level: 0, tile: { x: 18, y: 21 },
+      inventory: [{ id: 'base_shovel_01', name: 'Shovel', type: 'tool', tags: ['tool', 'dig'] }],
+      activeTool: null,
+      selectedUseItem: { id: 'base_shovel_01', name: 'Shovel' }
+    },
+    target: null,
+    tool: { id: 'base_shovel_01', name: 'Shovel', type: 'tool', metadata: { location: 'inventory', tags: ['tool', 'dig'] } },
+    toolCandidates: [{ id: 'base_shovel_01', name: 'Shovel', type: 'tool', tags: ['tool', 'dig'] }],
+    nearby: {
+      entities: [
+        { id: 'base_prop:temple_pillar:0:18:22', kind: 'prop', name: 'Large Pillar', level: 0, tile: { x: 18, y: 22 }, distance: 1, state: { cracked: false }, blocking: true, metadata: { source: 'base_temple' } },
+        { id: 'sage', kind: 'npc', name: 'Sage', level: 0, tile: { x: 20, y: 22 }, distance: 3, state: { alert: true }, blocking: true, metadata: { dialogueRole: 'temple guardian' } }
+      ]
+    },
+    relevantState: {
+      flags: { temple_alarm: false },
+      memory: { summary: 'The temple is quiet.', facts: ['Sage guards the temple.'], quests: [{ id: 'temple', title: 'Temple', status: 'active', note: 'Explore the temple.' }] },
+      recentEvents: [{ type: 'player_action', text: 'The player entered the temple.' }]
+    },
+    anchors: [{ id: 'player_nearby', name: 'Near the player', level: 0, x: 18, y: 21, radius: 3 }]
+  },
+  route: {
+    mode: 'gm', resolver: null,
+    reason: 'The requested improvised physical manipulation exceeds the deterministic mechanics represented by the engine.',
+    confidence: 0.9, warnings: []
+  },
+  task: {
+    type: 'resolve_action',
+    instruction: "Resolve the player's intended action fairly using only the supplied action-scoped context."
+  },
+  rules: {
+    narrationRole: 'Put narration, dialogue, interpretation, uncertainty, and pushback in narration.',
+    worldChangePolicy: 'Use effects only for persistent consequences.',
+    existingEntityPolicy: 'Prefer updating stable existing entity ids.',
+    resolutionBindingPolicy: 'Bind only supplied IDs.',
+    maxEffects: 6
+  },
+  allowedEffects: [
+    { op: 'damage_entity', purpose: 'Apply damage and semantic state to an existing entity.', required: ['id'] },
+    { op: 'set_flag', purpose: 'Set a persistent world flag.', required: ['key', 'value'] }
+  ]
+});
 
 const direct = { protocol: 'gm_adjudication_v1', actionId: 'action-1', mode: 'direct', reason: 'Routine.' };
 const checked = { protocol: 'gm_adjudication_v1', actionId: 'action-1', mode: 'check', reason: 'Uncertain.', check: { label: 'athletics', difficulty: 'moderate' } };
@@ -97,6 +156,40 @@ test('structured object and JSON string output forms are accepted', async () => 
   }
 });
 
+test('adjudication model input keeps fictional action context', () => {
+  const request = richRequest();
+  const input = buildAdjudicationModelInput(request);
+  assert.deepEqual(input.action, {
+    id: request.action.id,
+    source: request.action.source,
+    actorId: request.action.actorId,
+    verb: request.action.verb,
+    targetId: null,
+    toolId: 'base_shovel_01',
+    intent: 'I climb on top of the pillar.',
+    parameters: { approach: 'carefully' },
+    createdAt: request.action.createdAt
+  });
+  assert.deepEqual(input.context.actor, request.context.actor);
+  assert.deepEqual(input.context.target, request.context.target);
+  assert.deepEqual(input.context.tool, request.context.tool);
+  assert.deepEqual(input.context.toolCandidates, request.context.toolCandidates);
+  assert.deepEqual(input.context.nearby.entities, request.context.nearby.entities);
+  assert.deepEqual(input.context.relevantState, request.context.relevantState);
+  assert.deepEqual(input.context.anchors, request.context.anchors);
+});
+
+test('adjudication model input excludes mutation and engine capability metadata', () => {
+  const serialized = JSON.stringify(buildAdjudicationModelInput(richRequest()));
+  assert.doesNotMatch(serialized, /allowedEffects/);
+  assert.doesNotMatch(serialized, /damage_entity|set_flag/);
+  assert.doesNotMatch(serialized, /Apply damage and semantic state|Set a persistent world flag/);
+  assert.doesNotMatch(serialized, /maxEffects/);
+  assert.doesNotMatch(serialized, /worldChangePolicy|existingEntityPolicy|resolutionBindingPolicy/);
+  assert.doesNotMatch(serialized, /deterministic mechanics represented by the engine/);
+  assert.doesNotMatch(serialized, /route|resolver|confidence/);
+});
+
 test('outcome schema exposes optional nested resolution bindings only', () => {
   assert.equal(GM_OUTCOME_SCHEMA.required.includes('bindings'), false);
   assert.equal('targetId' in GM_OUTCOME_SCHEMA.properties, false);
@@ -126,6 +219,15 @@ test('server instructions require conservative persistent effects and explicit l
   assert.match(GM_INSTRUCTIONS, /Never substitute an unrelated nearby entity/i);
   assert.match(GM_INSTRUCTIONS, /never copy descriptive metadata such as purpose or required/i);
   assert.match(GM_INSTRUCTIONS, /persistently mutated, return that late resolution as bindings\.targetId/i);
+});
+
+test('server instructions keep narration fictional and avoid self-binding player', () => {
+  assert.match(GM_INSTRUCTIONS, /Do not mention internal engine capability, deterministic mechanic coverage, or implementation limits/i);
+  assert.match(GM_INSTRUCTIONS, /narration-only fictional resolution can safely describe the outcome/i);
+  assert.match(GM_INSTRUCTIONS, /Self-directed actions normally need no bindings\.targetId/i);
+  assert.match(GM_INSTRUCTIONS, /do not bind targetId to "player" unless that exact ID is explicitly present/i);
+  assert.match(GM_INSTRUCTIONS, /Bindings identify supplied target\/tool candidates for late resolution, not the acting player/i);
+  assert.doesNotMatch(GM_INSTRUCTIONS, /engine cannot handle|engine does not support|exceeds the deterministic mechanics represented by the engine/i);
 });
 
 test('missing model output returns a safe error', async () => {
@@ -181,6 +283,33 @@ test('adjudication instructions explicitly require mode-specific check shapes', 
   assert.match(GM_ADJUDICATION_INSTRUCTIONS, /If mode is "direct", you MUST NOT return check/);
 });
 
+test('adjudication instructions make checks fiction-first instead of mechanic-first', () => {
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /fictionally feasible, success is materially uncertain/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /mode MUST be "check"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /skill, chance, precision, strength, stealth, persuasion, dexterity, awareness/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /dedicated deterministic engine mechanic, persistent state field, visual animation, or effect operation is NOT required/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /Persistent representation is not part of this decision/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /narration-only with effects: \[\]/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I climb the pillar"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I sneak past Sage"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I convince Sage that I own the temple"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /Do NOT choose direct merely because there is no deterministic mechanic/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /Judge only fictional feasibility and uncertainty, not implementation coverage/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /modifier 0 authoritatively/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /Do not use a roll as permission to invent unsupported canonical world effects/i);
+});
+
+test('adjudication instructions reserve direct for routine, impossible, or already determined actions', () => {
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /routine or automatic actions/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /clearly impossible actions/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /already determined by canonical game facts/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /no meaningful uncertainty exists/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I jump up and down"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I hide behind the large pillar beside me"/i);
+  assert.match(GM_ADJUDICATION_INSTRUCTIONS, /"I lift the entire temple"/i);
+  assert.doesNotMatch(GM_ADJUDICATION_INSTRUCTIONS, /safely unrepresentable/i);
+});
+
 test('/adjudicate-action shares transport boundaries and configured model', async () => {
   const env = makeEnv({ WORKERS_AI_MODEL: '@cf/example/configured', AI: makeAI({ response: checked }) });
   const response = await handleRequest(browserRequest({ request: validRequest() }, { path: '/adjudicate-action' }), env);
@@ -192,6 +321,41 @@ test('/adjudicate-action shares transport boundaries and configured model', asyn
   assert.equal((await handleRequest(browserRequest(JSON.stringify({ request: validRequest(), padding: 'x'.repeat(65536) }), { path: '/adjudicate-action' }), makeEnv())).status, 413);
   const options = await handleRequest(browserRequest(null, { path: '/adjudicate-action', method: 'OPTIONS' }), makeEnv());
   assert.equal(options.status, 204); assert.equal(options.headers.get('Access-Control-Allow-Origin'), origin);
+});
+
+test('/adjudicate-action validates the full request but sends only adjudication context', async () => {
+  const env = makeEnv({ AI: makeAI({ response: { ...checked, actionId: 'action-rich' } }) });
+  const response = await handleRequest(browserRequest({ request: richRequest() }, { path: '/adjudicate-action' }), env);
+  assert.equal(response.status, 200);
+  const payload = env.AI.calls[0][1].messages[1].content;
+  assert.match(payload, /Untrusted adjudication context derived from gm_request_v1/);
+  const modelInput = JSON.parse(payload.split('\n')[2]);
+  assert.deepEqual(modelInput, buildAdjudicationModelInput(richRequest()));
+  assert.equal(modelInput.action.intent, 'I climb on top of the pillar.');
+  assert.equal(JSON.stringify(modelInput).includes('allowedEffects'), false);
+  assert.equal(JSON.stringify(modelInput).includes('maxEffects'), false);
+
+  const invalidFullRequest = richRequest();
+  delete invalidFullRequest.allowedEffects;
+  const invalidEnv = makeEnv({ AI: makeAI({ response: { ...checked, actionId: 'action-rich' } }) });
+  const invalid = await handleRequest(browserRequest({ request: invalidFullRequest }, { path: '/adjudicate-action' }), invalidEnv);
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).error.code, 'malformed_request');
+  assert.equal(invalidEnv.AI.calls.length, 0);
+});
+
+test('/resolve-action still sends the full gm_request_v1 to the resolution model', async () => {
+  const request = richRequest();
+  const env = makeEnv({ AI: makeAI({ response: { ...outcome, actionId: 'action-rich' } }) });
+  const response = await handleRequest(browserRequest({ request }), env);
+  assert.equal(response.status, 200);
+  const payload = env.AI.calls[0][1].messages[1].content;
+  assert.match(payload, /Untrusted game data \(serialized gm_request_v1\)/);
+  const modelRequest = JSON.parse(payload.split('\n')[2]);
+  assert.deepEqual(modelRequest, request);
+  assert.equal(modelRequest.allowedEffects[0].op, 'damage_entity');
+  assert.equal(modelRequest.rules.maxEffects, 6);
+  assert.match(modelRequest.route.reason, /deterministic mechanics represented by the engine/);
 });
 
 test('malformed adjudication model output is rejected safely', async () => {
