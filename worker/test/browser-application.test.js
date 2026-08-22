@@ -147,6 +147,7 @@ function loadTerrainBoundary(overrides = {}) {
     gmMarkers: [],
     gmHotspots: [],
     gmTransitions: [],
+    gmMapPieces: [],
     levelGroups: { '-1': makeSceneNode(), '0': makeSceneNode(), '2': makeSceneNode() },
     walkables: { '-1': [], '0': [], '2': [] },
     interactables: [],
@@ -263,6 +264,7 @@ function loadTerrainBoundary(overrides = {}) {
       if (save.flags && typeof save.flags === 'object') Object.assign(context.worldFlags, save.flags);
       if (context.worldFlags.scene_time && typeof context.applyGMSceneTimeVisuals === 'function') context.applyGMSceneTimeVisuals(context.worldFlags.scene_time);
       else if (typeof context.resetGMSceneTimeVisuals === 'function') context.resetGMSceneTimeVisuals();
+      context.gmMapPieces.splice(0, context.gmMapPieces.length, ...((save.mapPieces || []).map(piece => ({ ...piece, connectors: piece.connectors || [] }))));
       context.gmTerrain.splice(0, context.gmTerrain.length, ...(save.terrain || []));
       context.gmObjects.splice(0, context.gmObjects.length, ...(save.objects || []));
       context.gmWalls.splice(0, context.gmWalls.length, ...(save.walls || []));
@@ -378,6 +380,29 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('normalizeGMSettlementPlacementMode'),
     functionSource('normalizeGMSettlementFitMode'),
     functionSource('normalizeGMSettlementDirection'),
+    `const GM_BASE_MAP_PIECES = [{
+        id: 'starting_village',
+        name: 'Starting Village',
+        level: '0',
+        bounds: { minX: 4, minY: 6, maxX: 30, maxY: 26 },
+        connectors: [
+            { id: 'east_road', side: 'east', x: 30, y: 13, level: '0', kind: 'road' },
+            { id: 'west_road', side: 'west', x: 4, y: 13, level: '0', kind: 'road' },
+            { id: 'south_temple', side: 'south', x: 15, y: 26, level: '0', kind: 'path' }
+        ],
+        source: 'base'
+    }];`,
+    functionSource('normalizeGMMapPieceBounds'),
+    functionSource('normalizeGMMapPieceConnector'),
+    functionSource('cloneGMMapPiece'),
+    functionSource('getGMMapPieces'),
+    functionSource('getGMMapPieceById'),
+    functionSource('serializeGMMapPieces'),
+    functionSource('clearGMMapPieces'),
+    functionSource('restoreGMMapPieces'),
+    functionSource('registerGMMapPiece'),
+    functionSource('getGMMapPieceConnector'),
+    functionSource('oppositeGMSettlementSide'),
     functionSource('getGMSettlementFootprintCandidates'),
     functionSource('normalizeSettlementFeature'),
     functionSource('getGMSettlementBlockedTileSets'),
@@ -389,6 +414,9 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('getGMSettlementDirectionOrder'),
     functionSource('makeGMSettlementFrontierCandidates'),
     functionSource('findGMSettlementFrontierParcel'),
+    functionSource('getGMSettlementAttachmentSideOrder'),
+    functionSource('makeGMSettlementAttachmentCandidate'),
+    functionSource('findGMSettlementAttachmentParcel'),
     functionSource('createGMSettlement'),
     `const GM_SCENE_TIME_PROFILES = {
         day: { bg: 0x87ceeb, ambient: 0xffffff, ambientIntensity: 0.65, directional: 0xffffff, directionalIntensity: 0.6 },
@@ -444,7 +472,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('buildGMWorldSave'),
     functionSource('storeGMUndoSnapshot'),
     functionSource('undoLastGMApply'),
-    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact, createGMTransition, createGMSettlement, setGMSceneTime, spawnGMVisitors, buildGMMapExport, copyGMMapExport, buildGMWorldContextExport, copyGMWorldContextExport };'
+    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact, createGMTransition, createGMSettlement, setGMSceneTime, spawnGMVisitors, getGMMapPieces, registerGMMapPiece, buildGMMapExport, copyGMMapExport, buildGMWorldContextExport, copyGMWorldContextExport };'
   ].join('\n'), context);
   return { api: context.api, context };
 }
@@ -622,8 +650,54 @@ function settlementPrimitiveSnapshot(context) {
     floors: context.gmFloors.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, color: entry.color })).sort((a, b) => a.id.localeCompare(b.id)),
     walls: context.gmWalls.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, dir: entry.dir, height: entry.height })).sort((a, b) => a.id.localeCompare(b.id)),
     objects: context.gmObjects.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, shape: entry.shape, name: entry.name })).sort((a, b) => a.id.localeCompare(b.id)),
-    npcs: context.gmNPCs.map(entry => ({ id: entry.id, x: entry.gridX, y: entry.gridY, level: entry.level, name: entry.name, role: entry.state?.role })).sort((a, b) => a.id.localeCompare(b.id))
+    npcs: context.gmNPCs.map(entry => ({ id: entry.id, x: entry.gridX, y: entry.gridY, level: entry.level, name: entry.name, role: entry.state?.role })).sort((a, b) => a.id.localeCompare(b.id)),
+    mapPieces: context.gmMapPieces.map(entry => ({ id: entry.id, bounds: entry.bounds, connectors: entry.connectors })).sort((a, b) => a.id.localeCompare(b.id))
   };
+}
+
+function mapPieceBounds(api, id) {
+  const piece = api.getGMMapPieces().find(entry => entry.id === id);
+  assert.ok(piece, `missing map piece ${id}`);
+  return piece.bounds;
+}
+
+function addRepresentativeStartingVillageObstacles(context) {
+  const addFloorRect = (x1, y1, x2, y2) => {
+    for (let x = x1; x <= x2; x++) {
+      for (let y = y1; y <= y2; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+    }
+  };
+  addFloorRect(8, 6, 13, 10);
+  addFloorRect(24, 6, 29, 10);
+  addFloorRect(24, 16, 29, 20);
+  addFloorRect(10, 18, 20, 26);
+  for (let x = 7; x <= 30; x++) {
+    for (let y = 12; y <= 14; y++) context.pathTiles.push({ x, y });
+  }
+  context.allWalls['0'].push(
+    { x: 8, y: 6, dir: 'N', type: 'white' },
+    { x: 24, y: 6, dir: 'N', type: 'white' },
+    { x: 24, y: 16, dir: 'N', type: 'white' },
+    { x: 10, y: 18, dir: 'N', type: 'stone' }
+  );
+}
+
+function generatedSettlementEntries(context) {
+  return [
+    ...context.gmFloors,
+    ...context.gmWalls,
+    ...context.gmObjects,
+    ...context.gmNPCs.map(entry => ({ ...entry, x: entry.gridX, y: entry.gridY }))
+  ];
+}
+
+function entryInsideBounds(entry, bounds) {
+  return entry.level === '0' && entry.x >= bounds.minX && entry.x <= bounds.maxX && entry.y >= bounds.minY && entry.y <= bounds.maxY;
+}
+
+function assertNoGeneratedEntryInsideBounds(context, bounds) {
+  const offenders = generatedSettlementEntries(context).filter(entry => entryInsideBounds(entry, bounds));
+  assert.equal(offenders.length, 0, `generated entries overlap parent bounds: ${JSON.stringify(offenders.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level })))}`);
 }
 
 function loadActionRequestBoundary(overrides = {}) {
@@ -1373,7 +1447,79 @@ test('create_settlement placement is deterministic for the same blueprint', () =
   const second = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
   assert.equal(first.api.createGMSettlement(settlementBlueprint()), true);
   assert.equal(second.api.createGMSettlement(settlementBlueprint()), true);
-  assert.deepEqual(settlementPrimitiveSnapshot(first.context), settlementPrimitiveSnapshot(second.context));
+  assert.deepEqual(JSON.parse(JSON.stringify(settlementPrimitiveSnapshot(first.context))), JSON.parse(JSON.stringify(settlementPrimitiveSnapshot(second.context))));
+});
+
+test('base starting_village map piece exists with bounds and connectors', () => {
+  const { api } = loadTerrainBoundary();
+  const piece = api.getGMMapPieces().find(entry => entry.id === 'starting_village');
+  assert.ok(piece);
+  assert.equal(piece.level, '0');
+  assert.deepEqual(JSON.parse(JSON.stringify(piece.bounds)), { minX: 4, minY: 6, maxX: 30, maxY: 26 });
+  assert.equal(piece.connectors.some(connector => connector.id === 'east_road' && connector.side === 'east' && connector.x === 30 && connector.y === 13), true);
+  assert.equal(piece.connectors.some(connector => connector.id === 'west_road' && connector.side === 'west'), true);
+  assert.equal(piece.connectors.some(connector => connector.id === 'south_temple' && connector.side === 'south'), true);
+});
+
+test('default create_settlement attaches edge-to-edge to starting_village', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  addRepresentativeStartingVillageObstacles(context);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Attached Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const parent = mapPieceBounds(api, 'starting_village');
+  const child = mapPieceBounds(api, 'gm_settlement_riverside');
+  assert.equal(child.minX, parent.maxX + 1);
+  assert.equal(context.gmFloors.some(entry => entry.id.startsWith('gm_settlement_riverside_connector_east_')), true);
+  assertNoGeneratedEntryInsideBounds(context, parent);
+});
+
+test('explicit attachTo and side east place child edge against parent edge', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  addRepresentativeStartingVillageObstacles(context);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ attachTo: 'starting_village', side: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'East Attached Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const parent = mapPieceBounds(api, 'starting_village');
+  const child = mapPieceBounds(api, 'gm_settlement_riverside');
+  assert.equal(child.minX, parent.maxX + 1);
+  assertNoGeneratedEntryInsideBounds(context, parent);
+});
+
+test('generated settlement registers a map piece with connector metadata', () => {
+  const { api } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Registry Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const piece = api.getGMMapPieces().find(entry => entry.id === 'gm_settlement_riverside');
+  assert.ok(piece);
+  assert.equal(piece.parentId, 'starting_village');
+  assert.equal(piece.connectors.some(connector => connector.targetPieceId === 'starting_village' && connector.side === 'west'), true);
+});
+
+test('second settlement can attach to a generated settlement', () => {
+  const { api } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  assert.equal(api.createGMSettlement(settlementBlueprint({ id: 'gm_settlement_first', name: 'First Piece', side: 'south', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'First Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ id: 'gm_settlement_second', name: 'Second Piece', attachTo: 'gm_settlement_first', side: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Second Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const first = mapPieceBounds(api, 'gm_settlement_first');
+  const second = mapPieceBounds(api, 'gm_settlement_second');
+  assert.equal(second.minX, first.maxX + 1);
+});
+
+test('blocked attachment side tries another side deterministically', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 31; x <= 38; x++) {
+    for (let y = 9; y <= 16; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ side: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Fallback Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const parent = mapPieceBounds(api, 'starting_village');
+  const child = mapPieceBounds(api, 'gm_settlement_riverside');
+  assert.notEqual(child.minX, parent.maxX + 1);
+  assert.equal(child.minY === parent.maxY + 1 || child.maxY === parent.minY - 1 || child.maxX === parent.minX - 1, true);
+});
+
+test('no available attachment side fails without partial world mutation', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 0; x < context.GRID_SIZE; x++) {
+    for (let y = 0; y < context.GRID_SIZE; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Blocked Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), false);
+  assert.equal(context.gmFloors.length + context.gmWalls.length + context.gmObjects.length + context.gmNPCs.length, 0);
+  assert.equal(context.gmMapPieces.length, 0);
 });
 
 test('create_settlement near player chooses a clean parcel away from occupied village area', () => {
@@ -1388,22 +1534,22 @@ test('create_settlement near player chooses a clean parcel away from occupied vi
   assert.equal(generated.some(entry => entry.x >= 16 && entry.x <= 24 && entry.y >= 16 && entry.y <= 24), false);
 });
 
-test('create_settlement defaults to frontier placement outside existing world bounds', () => {
+test('create_settlement placement frontier still places outside existing world bounds', () => {
   const { api, context } = loadTerrainBoundary({ playerGridX: 18, playerGridY: 18 });
   for (let x = 12; x <= 24; x++) {
     for (let y = 12; y <= 24; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
   }
-  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Frontier Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'frontier', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Frontier Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
   const settlementParts = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => !entry.id.endsWith('_direction_sign'))];
   assert.equal(settlementParts.every(entry => entry.x < 12 || entry.x > 24 || entry.y < 12 || entry.y > 24), true);
 });
 
-test('create_settlement direction east places east of current bounds', () => {
+test('create_settlement placement frontier direction east places east of current bounds', () => {
   const { api, context } = loadTerrainBoundary({ playerGridX: 18, playerGridY: 18 });
   for (let x = 12; x <= 24; x++) {
     for (let y = 12; y <= 24; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
   }
-  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'East Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'frontier', direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'East Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
   const xs = context.gmFloors.map(entry => entry.x);
   assert.equal(Math.min(...xs) > 24, true);
 });
@@ -1414,7 +1560,7 @@ test('create_settlement near a crowded player succeeds by choosing a farther saf
     for (let y = 6; y <= 30; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
   }
   delete context.floorHeights['0,20,14'];
-  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Far Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'frontier', direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Far Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
   const generated = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => !entry.id.endsWith('_direction_sign'))];
   assert.equal(generated.some(entry => entry.x >= 6 && entry.x <= 30 && entry.y >= 6 && entry.y <= 30), false);
   assert.equal(context.gmObjects.some(entry => entry.id === 'gm_settlement_riverside_direction_sign' && entry.state?.kind === 'settlement_direction_sign'), true);
@@ -1441,7 +1587,7 @@ test('create_settlement fit expand preserves requested footprint before shrinkin
   for (let x = 10; x <= 20; x++) {
     for (let y = 10; y <= 20; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
   }
-  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', fit: 'expand', width: 16, depth: 16, buildings: [{ id: 'hall', name: 'Full Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'frontier', direction: 'east', fit: 'expand', width: 16, depth: 16, buildings: [{ id: 'hall', name: 'Full Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
   assert.equal(context.worldMemory.facts.some(fact => /footprint 16x16/i.test(fact)), true);
 });
 
@@ -1450,7 +1596,7 @@ test('create_settlement fit strict fails instead of shrinking', () => {
   for (let x = 6; x <= 30; x++) {
     for (let y = 6; y <= 30; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
   }
-  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', fit: 'strict', width: 24, depth: 24, buildings: [{ id: 'hall', name: 'Strict Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), false);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'frontier', direction: 'east', fit: 'strict', width: 24, depth: 24, buildings: [{ id: 'hall', name: 'Strict Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), false);
   assert.equal(context.gmFloors.length + context.gmWalls.length + context.gmObjects.length + context.gmNPCs.length, 0);
 });
 
@@ -1466,7 +1612,7 @@ test('create_settlement explicit unsafe coordinates fail only when adjustment is
   for (let x = 16; x <= 24; x++) {
     for (let y = 16; y <= 24; y++) adjustable.context.floorHeights[`0,${x},${y}`] = 0.05;
   }
-  assert.equal(adjustable.api.createGMSettlement(settlementBlueprint({ x: 20, y: 20, width: 8, depth: 8, buildings: [], npcs: [], features: [] })), true);
+  assert.equal(adjustable.api.createGMSettlement(settlementBlueprint({ placement: 'infill', x: 20, y: 20, width: 8, depth: 8, buildings: [], npcs: [], features: [] })), true);
   assert.equal(adjustable.context.gmFloors.some(entry => entry.x >= 16 && entry.x <= 24 && entry.y >= 16 && entry.y <= 24), false);
 });
 
@@ -1493,7 +1639,7 @@ test('create_settlement clamps width and depth to bounded ranges', () => {
 test('create_settlement skips protected occupied and blocked tiles safely', () => {
   const { api, context } = loadTerrainBoundary({ playerGridX: 6, playerGridY: 6 });
   context.gmObjects.push({ id: 'existing_crate', x: 6, y: 6, level: '0' });
-  assert.equal(api.createGMSettlement(settlementBlueprint({ x: 6, y: 6, width: 12, depth: 12 })), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'infill', x: 6, y: 6, width: 12, depth: 12 })), true);
   const generated = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => entry.id !== 'existing_crate'), ...context.gmNPCs.map(entry => ({ ...entry, x: entry.gridX, y: entry.gridY }))];
   assert.equal(generated.some(entry => entry.x < 4), false);
   assert.equal(generated.some(entry => entry.x === 5 && entry.y === 5 && entry.level === '0'), false);
@@ -1517,11 +1663,19 @@ test('undo restores the world before a generated settlement', () => {
   assert.equal(api.storeGMUndoSnapshot('before_settlement'), true);
   assert.equal(api.createGMSettlement(settlementBlueprint()), true);
   assert.equal(context.gmFloors.length > 0 || context.gmWalls.length > 0 || context.gmObjects.length > 0 || context.gmNPCs.length > 0, true);
+  assert.equal(context.gmMapPieces.some(piece => piece.id === 'gm_settlement_riverside'), true);
+  const save = api.buildGMWorldSave();
+  assert.equal(save.mapPieces.some(piece => piece.id === 'gm_settlement_riverside'), true);
+  context.localStorage.setItem(context.GM_SAVE_KEY, JSON.stringify(save));
+  context.gmMapPieces.length = 0;
+  assert.equal(context.loadGMWorld(true), true);
+  assert.equal(context.gmMapPieces.some(piece => piece.id === 'gm_settlement_riverside'), true);
   assert.equal(api.undoLastGMApply(), true);
   assert.equal(context.gmFloors.length, 0);
   assert.equal(context.gmWalls.length, 0);
   assert.equal(context.gmObjects.length, 0);
   assert.equal(context.gmNPCs.length, 0);
+  assert.equal(context.gmMapPieces.length, 0);
   assert.equal(context.worldMemory.facts.length, 0);
 });
 

@@ -1156,6 +1156,7 @@
     const gmTerrain = [];
     const gmTransitions = [];
     const gmNPCs = [];
+    const gmMapPieces = [];
     const gmItemDefs = {};
     let gmItemInstanceSerial = 0;
     const removedBaseGroundItemIds = new Set();
@@ -2048,6 +2049,7 @@
             },
             flags,
             recentEvents: getEventsSinceLastGM().slice(-12).map(event => copyActionContextValue(event)),
+            mapPieces: getGMMapPieces(level).map(piece => copyActionContextValue(piece)).slice(0, 12),
             generatedRegions: getGMGeneratedSettlementSummaries(),
             acceptedProposalProtocol: {
                 protocol: 'gm_proposal_v1',
@@ -4468,7 +4470,7 @@
                 set_npc_state: { id: 'string', name: 'optional string', note: 'optional string', state: 'object merged into NPC state' },
                 create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest | hole | debris | rubble | stairs | ladder | pillar | plank', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb', blocksMovement: 'optional boolean for barricades, rubble, pillars, etc.' },
                 create_structure: { id: 'string group id', name: 'optional display name', structure: 'bridge | platform | room | barricade | wall_line | rubble_field | ramp', near: 'optional world anchor id', x: 'optional center/start x', y: 'optional center/start y', level: '-1 | 0 | 2', width: 'tiles, default depends on structure', depth: 'tiles for platforms/rooms', length: 'tiles for bridges/barricades/wall lines/ramps', dir: 'N | S | E | W direction/orientation', color: '#rrggbb', blocksMovement: 'for barricades/rubble, default true' },
-                create_settlement: { id: 'string group id prefix', name: 'display name', near: 'player | player_nearby | world anchor id', x: 'optional center x', y: 'optional center y', level: '0', width: '8 to 24 tiles', depth: '8 to 24 tiles', style: 'osrs_town', buildings: [{ id: 'local building id', name: 'display name', size: 'small | medium', floors: '1 | 2', role: 'inn | shop | house | hall' }], npcs: [{ id: 'local npc id', name: 'display name', role: 'mayor | merchant | guard | villager', nearBuilding: 'building id' }], features: ['well', 'notice_board', 'market_stalls'] },
+                create_settlement: { id: 'string group id prefix', name: 'display name', placement: 'attach default | infill | frontier | exact', attachTo: 'map piece id, default starting_village', side: 'north | south | east | west; direction is accepted as an alias', connector: 'optional parent connector id', near: 'player | player_nearby | world anchor id', x: 'optional center x', y: 'optional center y', level: '0', width: '8 to 24 tiles', depth: '8 to 24 tiles', style: 'osrs_town', buildings: [{ id: 'local building id', name: 'display name', size: 'small | medium', floors: '1 | 2', role: 'inn | shop | house | hall' }], npcs: [{ id: 'local npc id', name: 'display name', role: 'mayor | merchant | guard | villager', nearBuilding: 'building id' }], features: ['well', 'notice_board', 'market_stalls'] },
                 remove_structure: { id: 'structure group id; removes any GM-created parts with this id prefix' },
                 move_prop: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near' },
                 remove_prop: { id: 'string' },
@@ -6738,6 +6740,12 @@
         [...gmHotspots].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMHotspot(e.id, true)) removed++; });
         [...gmMarkers].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMMarker(e.id, true)) removed++; });
         [...gmNPCs].filter(e => e.id === id || e.id.startsWith(prefix)).forEach(e => { if (removeGMNPC(e.id, true)) removed++; });
+        for (let index = gmMapPieces.length - 1; index >= 0; index--) {
+            if (gmMapPieces[index].id === id || gmMapPieces[index].id.startsWith(prefix)) {
+                gmMapPieces.splice(index, 1);
+                removed++;
+            }
+        }
         if (removed > 0) {
             if (!silent) {
                 addLogMessage(`Structure removed: ${id}.`);
@@ -6766,8 +6774,10 @@
     function normalizeGMSettlementPlacementMode(value, hasExplicitCoordinates = false, adjust = true) {
         if (adjust === false || value === 'exact') return 'exact';
         const mode = normalizeSettlementFeature(value);
-        if (mode === 'infill' || mode === 'exact' || mode === 'frontier') return mode;
-        return 'frontier';
+        if (mode === 'infill' || mode === 'exact' || mode === 'frontier' || mode === 'attach' || mode === 'attachment' || mode === 'piece') {
+            return mode === 'attachment' || mode === 'piece' ? 'attach' : mode;
+        }
+        return 'attach';
     }
 
     function normalizeGMSettlementFitMode(value) {
@@ -6778,6 +6788,120 @@
     function normalizeGMSettlementDirection(value) {
         const direction = normalizeSettlementFeature(value);
         return ['north', 'south', 'east', 'west'].includes(direction) ? direction : null;
+    }
+
+    const GM_BASE_MAP_PIECES = [{
+        id: 'starting_village',
+        name: 'Starting Village',
+        level: '0',
+        bounds: { minX: 4, minY: 6, maxX: 30, maxY: 26 },
+        connectors: [
+            { id: 'east_road', side: 'east', x: 30, y: 13, level: '0', kind: 'road' },
+            { id: 'west_road', side: 'west', x: 4, y: 13, level: '0', kind: 'road' },
+            { id: 'south_temple', side: 'south', x: 15, y: 26, level: '0', kind: 'path' }
+        ],
+        source: 'base'
+    }];
+
+    function normalizeGMMapPieceBounds(bounds) {
+        if (!bounds || typeof bounds !== 'object') return null;
+        const minX = Math.round(Number(bounds.minX));
+        const minY = Math.round(Number(bounds.minY));
+        const maxX = Math.round(Number(bounds.maxX));
+        const maxY = Math.round(Number(bounds.maxY));
+        if (![minX, minY, maxX, maxY].every(Number.isFinite) || minX > maxX || minY > maxY) return null;
+        return { minX, minY, maxX, maxY };
+    }
+
+    function normalizeGMMapPieceConnector(connector, piece) {
+        if (!connector || typeof connector !== 'object') return null;
+        const side = normalizeGMSettlementDirection(connector.side || connector.direction);
+        const x = Math.round(Number(connector.x));
+        const y = Math.round(Number(connector.y));
+        const level = String(connector.level ?? piece?.level ?? currentLevel);
+        if (!side || !Number.isFinite(x) || !Number.isFinite(y) || !LEVELS[level]) return null;
+        return {
+            id: normalizeStructureId(connector.id || `${side}_connector`) || `${side}_connector`,
+            side,
+            x,
+            y,
+            level,
+            kind: normalizeSettlementFeature(connector.kind || 'road') || 'road',
+            targetPieceId: connector.targetPieceId || null
+        };
+    }
+
+    function cloneGMMapPiece(piece) {
+        const bounds = normalizeGMMapPieceBounds(piece?.bounds);
+        if (!piece || !bounds) return null;
+        const level = String(piece.level ?? currentLevel);
+        return {
+            id: normalizeStructureId(piece.id),
+            name: typeof piece.name === 'string' && piece.name.trim() ? piece.name.trim().slice(0, 80) : normalizeStructureId(piece.id),
+            level,
+            bounds,
+            connectors: (Array.isArray(piece.connectors) ? piece.connectors : [])
+                .map(connector => normalizeGMMapPieceConnector(connector, { level }))
+                .filter(Boolean)
+                .slice(0, 8),
+            source: piece.source === 'base' ? 'base' : 'gm',
+            parentId: piece.parentId || null
+        };
+    }
+
+    function getGMMapPieces(level = null) {
+        const pieces = [...GM_BASE_MAP_PIECES, ...gmMapPieces]
+            .map(cloneGMMapPiece)
+            .filter(Boolean);
+        return pieces
+            .filter(piece => level === null || String(piece.level) === String(level))
+            .sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    function getGMMapPieceById(id, level = null) {
+        const cleanId = normalizeStructureId(id);
+        if (!cleanId) return null;
+        return getGMMapPieces(level).find(piece => piece.id === cleanId) || null;
+    }
+
+    function serializeGMMapPieces() {
+        return gmMapPieces.map(cloneGMMapPiece).filter(Boolean);
+    }
+
+    function clearGMMapPieces() {
+        gmMapPieces.length = 0;
+    }
+
+    function restoreGMMapPieces(pieces) {
+        clearGMMapPieces();
+        if (!Array.isArray(pieces)) return;
+        pieces.map(cloneGMMapPiece).filter(piece => piece && piece.source !== 'base').forEach(piece => gmMapPieces.push(piece));
+    }
+
+    function registerGMMapPiece(piece) {
+        const normalized = cloneGMMapPiece({ ...piece, source: 'gm' });
+        if (!normalized || !normalized.id) return false;
+        const index = gmMapPieces.findIndex(entry => entry.id === normalized.id);
+        if (index >= 0) gmMapPieces[index] = normalized;
+        else gmMapPieces.push(normalized);
+        return true;
+    }
+
+    function getGMMapPieceConnector(piece, side = null, connectorId = null) {
+        if (!piece) return null;
+        const cleanConnectorId = normalizeStructureId(connectorId);
+        const normalizedSide = normalizeGMSettlementDirection(side);
+        const connectors = Array.isArray(piece.connectors) ? piece.connectors : [];
+        if (cleanConnectorId) {
+            const exact = connectors.find(connector => normalizeStructureId(connector.id) === cleanConnectorId);
+            if (exact && (!normalizedSide || exact.side === normalizedSide)) return exact;
+        }
+        if (normalizedSide) return connectors.find(connector => connector.side === normalizedSide) || null;
+        return connectors[0] || null;
+    }
+
+    function oppositeGMSettlementSide(side) {
+        return { north: 'south', south: 'north', east: 'west', west: 'east' }[side] || null;
     }
 
     function getGMSettlementFootprintCandidates(width, depth, fit = 'expand') {
@@ -6999,11 +7123,96 @@
         return bestRejected;
     }
 
+    function getGMSettlementAttachmentSideOrder(parentPiece, requestedSide = null, connectorId = null, seed = 0) {
+        const explicit = normalizeGMSettlementDirection(requestedSide);
+        const ordered = [];
+        const add = side => {
+            const normalized = normalizeGMSettlementDirection(side);
+            if (normalized && !ordered.includes(normalized)) ordered.push(normalized);
+        };
+        if (explicit) add(explicit);
+        const connector = getGMMapPieceConnector(parentPiece, explicit, connectorId);
+        if (connector) add(connector.side);
+        (Array.isArray(parentPiece?.connectors) ? parentPiece.connectors : []).forEach(entry => add(entry.side));
+        getGMSettlementDirectionOrder(null, seed).forEach(add);
+        return ordered;
+    }
+
+    function makeGMSettlementAttachmentCandidate(parentPiece, side, width, depth, connector = null) {
+        const bounds = normalizeGMMapPieceBounds(parentPiece?.bounds);
+        if (!bounds) return null;
+        const anchorX = Number.isFinite(Number(connector?.x)) ? Math.round(Number(connector.x)) : Math.round((bounds.minX + bounds.maxX) / 2);
+        const anchorY = Number.isFinite(Number(connector?.y)) ? Math.round(Number(connector.y)) : Math.round((bounds.minY + bounds.maxY) / 2);
+        let startX;
+        let startY;
+        if (side === 'east') {
+            startX = bounds.maxX + 1;
+            startY = anchorY - Math.floor(depth / 2);
+        } else if (side === 'west') {
+            startX = bounds.minX - width;
+            startY = anchorY - Math.floor(depth / 2);
+        } else if (side === 'south') {
+            startX = anchorX - Math.floor(width / 2);
+            startY = bounds.maxY + 1;
+        } else if (side === 'north') {
+            startX = anchorX - Math.floor(width / 2);
+            startY = bounds.minY - depth;
+        } else return null;
+
+        if (side === 'east' || side === 'west') {
+            startY = Math.max(0, Math.min(GRID_SIZE - depth, startY));
+        } else {
+            startX = Math.max(0, Math.min(GRID_SIZE - width, startX));
+        }
+
+        return {
+            side,
+            x: startX + Math.floor(width / 2),
+            y: startY + Math.floor(depth / 2),
+            minX: startX,
+            minY: startY,
+            maxX: startX + width - 1,
+            maxY: startY + depth - 1,
+            connector: connector || null,
+            parentPieceId: parentPiece.id
+        };
+    }
+
+    function findGMSettlementAttachmentParcel(centerX, centerY, level, width, depth, options = {}) {
+        const blocked = options.blocked || getGMSettlementBlockedTileSets();
+        const fit = normalizeGMSettlementFitMode(options.fit);
+        const seed = options.seed || 0;
+        const parentPiece = options.parentPiece || getGMMapPieceById(options.attachTo || 'starting_village', level);
+        if (!parentPiece) return { x: null, y: null, score: Infinity, skippedReason: 'missing_parent_piece', blocked, parentPiece: null };
+        const requestedSide = normalizeGMSettlementDirection(options.side || options.direction);
+        const sideOrder = getGMSettlementAttachmentSideOrder(parentPiece, requestedSide, options.connector, seed);
+        const footprints = getGMSettlementFootprintCandidates(width, depth, fit);
+        let bestRejected = { x: null, y: null, score: Infinity, skippedReason: 'no_attachment', blocked, parentPiece, direction: sideOrder[0] || null };
+
+        for (let footprintIndex = 0; footprintIndex < footprints.length; footprintIndex++) {
+            const footprint = footprints[footprintIndex];
+            for (let sideIndex = 0; sideIndex < sideOrder.length; sideIndex++) {
+                const side = sideOrder[sideIndex];
+                const connector = getGMMapPieceConnector(parentPiece, side, options.connector);
+                const candidate = makeGMSettlementAttachmentCandidate(parentPiece, side, footprint.width, footprint.depth, connector);
+                if (!candidate) continue;
+                const evaluation = evaluateGMSettlementParcel(candidate.x, candidate.y, level, footprint.width, footprint.depth, blocked);
+                const outOfBounds = candidate.minX < 0 || candidate.minY < 0 || candidate.maxX >= GRID_SIZE || candidate.maxY >= GRID_SIZE;
+                const score = footprintIndex * 100000 + sideIndex * 1000 + (connector ? 0 : 100) + Math.hypot(candidate.x - centerX, candidate.y - centerY) + evaluation.blockedCount;
+                const skippedReason = outOfBounds ? 'bounds' : evaluation.skippedReason;
+                if (score < bestRejected.score) bestRejected = { ...candidate, width: footprint.width, depth: footprint.depth, score, skippedReason, blocked, parentPiece, direction: side };
+                if (!outOfBounds && evaluation.valid) return { ...candidate, width: footprint.width, depth: footprint.depth, score, skippedReason: null, blocked, parentPiece, direction: side };
+            }
+        }
+        return bestRejected;
+    }
+
     function createGMSettlement(cmd) {
         const id = normalizeStructureId(cmd.id || cmd.settlementId || cmd.name);
         const prefix = `${id}_`;
         const existing = [...gmObjects, ...gmFloors, ...gmWalls, ...gmTerrain, ...gmTransitions, ...gmHotspots, ...gmMarkers, ...gmNPCs]
-            .some(entity => entity && typeof entity.id === 'string' && (entity.id === id || entity.id.startsWith(prefix)));
+            .some(entity => entity && typeof entity.id === 'string' && (entity.id === id || entity.id.startsWith(prefix)))
+            || gmMapPieces.some(piece => piece.id === id);
         if (existing) { if (!cmd.silent) addLogMessage(`Settlement already exists: ${id}`); return false; }
 
         const near = String(cmd.near || cmd.anchor || '').trim().toLowerCase();
@@ -7033,6 +7242,19 @@
                 ? { x: requestedCenterX, y: requestedCenterY, width, depth, score: 0, skippedReason: null, blocked, placementMode: 'infill' }
                 : findGMSettlementParcel(requestedCenterX, requestedCenterY, level, width, depth, { blocked, maxRadius: cmd.searchRadius, footprints: getGMSettlementFootprintCandidates(width, depth, fitMode) });
             parcel.placementMode = 'infill';
+        } else if (placementMode === 'attach') {
+            const attachTo = normalizeStructureId(cmd.attachTo || cmd.parentPiece || 'starting_village');
+            const parentPiece = getGMMapPieceById(attachTo, level);
+            parcel = findGMSettlementAttachmentParcel(requestedCenterX, requestedCenterY, level, width, depth, {
+                blocked,
+                attachTo,
+                parentPiece,
+                side: cmd.side || cmd.direction,
+                connector: cmd.connector,
+                fit: fitMode,
+                seed
+            });
+            parcel.placementMode = 'attach';
         } else {
             parcel = findGMSettlementFrontierParcel(requestedCenterX, requestedCenterY, level, width, depth, { blocked, direction: cmd.direction, fit: fitMode, seed });
             parcel.placementMode = 'frontier';
@@ -7228,6 +7450,35 @@
             return false;
         }
 
+        const connectorInfo = { type: null, id: null, x: null, y: null, direction: parcel.direction || null, parentPieceId: parcel.parentPiece?.id || null };
+        if (placementMode === 'attach' && parcel.parentPiece && parcel.direction) {
+            const parentBounds = normalizeGMMapPieceBounds(parcel.parentPiece.bounds);
+            const side = parcel.direction;
+            const connector = parcel.connector || getGMMapPieceConnector(parcel.parentPiece, side, cmd.connector);
+            const anchorX = Number.isFinite(Number(connector?.x)) ? Math.round(Number(connector.x)) : Math.round((parentBounds.minX + parentBounds.maxX) / 2);
+            const anchorY = Number.isFinite(Number(connector?.y)) ? Math.round(Number(connector.y)) : Math.round((parentBounds.minY + parentBounds.maxY) / 2);
+            const path = [];
+            if (side === 'east') {
+                const y = Math.max(startY, Math.min(endY, anchorY));
+                path.push({ x: startX, y }, { x: Math.min(endX, startX + 1), y });
+            } else if (side === 'west') {
+                const y = Math.max(startY, Math.min(endY, anchorY));
+                path.push({ x: endX, y }, { x: Math.max(startX, endX - 1), y });
+            } else if (side === 'south') {
+                const x = Math.max(startX, Math.min(endX, anchorX));
+                path.push({ x, y: startY }, { x, y: Math.min(endY, startY + 1) });
+            } else if (side === 'north') {
+                const x = Math.max(startX, Math.min(endX, anchorX));
+                path.push({ x, y: endY }, { x, y: Math.max(startY, endY - 1) });
+            }
+            path.forEach((tile, index) => tryFloor(`connector_${side}_${index}`, tile.x, tile.y, {
+                name: `${name} connector`,
+                color: '#7b6f5a',
+                state: { kind: 'piece_connector_road', parentPieceId: parcel.parentPiece.id, side }
+            }));
+            if (path.length > 0) Object.assign(connectorInfo, { type: 'road', id: makeId(`connector_${side}_0`), x: path[0].x, y: path[0].y });
+        }
+
         for (let x = startX; x <= endX; x++) tryFloor(`road_east_west_${x - startX}`, x, centerY, { name: `${name} road`, color: '#7b6f5a', state: { kind: 'road' } });
         for (let y = startY; y <= endY; y++) tryFloor(`road_north_south_${y - startY}`, centerX, y, { name: `${name} road`, color: '#7b6f5a', state: { kind: 'road' } });
 
@@ -7262,8 +7513,7 @@
             });
         });
 
-        const connectorInfo = { type: null, id: null, x: null, y: null, direction: parcel.direction || null };
-        if (Math.hypot(centerX - requestedCenterX, centerY - requestedCenterY) > 12 || placementMode === 'frontier') {
+        if (placementMode !== 'attach' && (Math.hypot(centerX - requestedCenterX, centerY - requestedCenterY) > 12 || placementMode === 'frontier')) {
             const signSpot = findFreeNear(requestedCenterX, requestedCenterY, 6);
             if (signSpot) tryProp('direction_sign', signSpot.x, signSpot.y, {
                 name: `${name} Signpost`,
@@ -7276,12 +7526,33 @@
         }
 
         if (created.length === 0) { if (!cmd.silent) addLogMessage('No settlement parts could be created.'); return false; }
-        addWorldMemoryFact(`${name} is a generated local settlement near (${centerX}, ${centerY}, level ${level}) with footprint ${width}x${depth} and ${buildingAnchors.size} building${buildingAnchors.size === 1 ? '' : 's'}${connectorInfo.type ? `; a ${connectorInfo.type} points toward it from (${connectorInfo.x}, ${connectorInfo.y})` : ''}.`);
+        const pieceConnectors = [];
+        if (placementMode === 'attach' && parcel.parentPiece && parcel.direction) {
+            pieceConnectors.push({
+                id: `to_${parcel.parentPiece.id}`,
+                side: oppositeGMSettlementSide(parcel.direction),
+                x: connectorInfo.x ?? centerX,
+                y: connectorInfo.y ?? centerY,
+                level,
+                kind: connectorInfo.type || 'road',
+                targetPieceId: parcel.parentPiece.id
+            });
+        }
+        registerGMMapPiece({
+            id,
+            name,
+            level,
+            bounds: { minX: startX, minY: startY, maxX: endX, maxY: endY },
+            connectors: pieceConnectors,
+            parentId: parcel.parentPiece?.id || null
+        });
+        addWorldMemoryFact(`${name} is a generated local settlement near (${centerX}, ${centerY}, level ${level}) with footprint ${width}x${depth} and ${buildingAnchors.size} building${buildingAnchors.size === 1 ? '' : 's'}${placementMode === 'attach' && parcel.parentPiece ? ` attached to ${parcel.parentPiece.id} on the ${parcel.direction}` : ''}${connectorInfo.type ? `; a ${connectorInfo.type} connects from (${connectorInfo.x}, ${connectorInfo.y})` : ''}.`);
         if (!cmd.silent) {
             addLogMessage(`Settlement created: ${name}.`);
             addLogMessage(`Settlement parcel center: (${centerX}, ${centerY}, level ${level})${centerX !== requestedCenterX || centerY !== requestedCenterY ? ` adjusted from (${requestedCenterX}, ${requestedCenterY}).` : '.'}`);
+            if (placementMode === 'attach' && parcel.parentPiece) addLogMessage(`Settlement attached to ${parcel.parentPiece.id} on the ${parcel.direction}.`);
             if (failed.length > 0) addLogMessage(`Settlement partial placement: ${failed.length} part(s) skipped.`);
-            recordGMEvent('settlement_created', { id, name, x: centerX, y: centerY, requestedX: requestedCenterX, requestedY: requestedCenterY, adjusted: centerX !== requestedCenterX || centerY !== requestedCenterY, level, width, depth, requestedWidth: clampSettlementSize(cmd.width, 16), requestedDepth: clampSettlementSize(cmd.depth, 16), placement: placementMode, fit: fitMode, direction: parcel.direction || normalizeGMSettlementDirection(cmd.direction), connector: connectorInfo.type ? connectorInfo : null, buildings: buildingAnchors.size, parts: created.length, failed: failed.length, parcelScore: parcel.score, anchor: placement.anchorId || cmd.anchor || null });
+            recordGMEvent('settlement_created', { id, name, x: centerX, y: centerY, requestedX: requestedCenterX, requestedY: requestedCenterY, adjusted: centerX !== requestedCenterX || centerY !== requestedCenterY, level, width, depth, requestedWidth: clampSettlementSize(cmd.width, 16), requestedDepth: clampSettlementSize(cmd.depth, 16), placement: placementMode, fit: fitMode, direction: parcel.direction || normalizeGMSettlementDirection(cmd.direction), attachTo: parcel.parentPiece?.id || null, bounds: { minX: startX, minY: startY, maxX: endX, maxY: endY }, connector: connectorInfo.type ? connectorInfo : null, buildings: buildingAnchors.size, parts: created.length, failed: failed.length, parcelScore: parcel.score, anchor: placement.anchorId || cmd.anchor || null });
         }
         return true;
     }
@@ -8024,6 +8295,7 @@
             inventory: getInventorySnapshot(),
             groundItems: getPersistentGroundItemsSnapshot(),
             removedBaseGroundItems: Array.from(removedBaseGroundItemIds),
+            mapPieces: serializeGMMapPieces(),
             markers: gmMarkers.map(marker => ({
                 id: marker.id,
                 name: marker.name,
@@ -8186,6 +8458,7 @@
             clearGMNPCs();
             clearPersistentGroundItems();
             clearGMItemDefs();
+            clearGMMapPieces();
             removedBaseGroundItemIds.clear();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
@@ -8244,6 +8517,7 @@
                 renderWorldMemoryUI();
             }
             if (Array.isArray(save.removedWalls)) save.removedWalls.forEach(wall => applySavedRemovedWall(wall));
+            restoreGMMapPieces(save.mapPieces);
             if (Array.isArray(save.markers)) save.markers.forEach(marker => createGMMarker({ ...marker, silent: true }));
             if (Array.isArray(save.hotspots)) save.hotspots.forEach(hotspot => createGMHotspot({ ...hotspot, silent: true }));
             if (Array.isArray(save.objects)) save.objects.forEach(obj => createGMObject({ ...obj, silent: true }));
@@ -8264,6 +8538,7 @@
             clearGMNPCs();
             clearPersistentGroundItems();
             clearGMItemDefs();
+            clearGMMapPieces();
             removedBaseGroundItemIds.clear();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
@@ -8291,6 +8566,7 @@
         clearGMNPCs();
         clearPersistentGroundItems();
         clearGMItemDefs();
+        clearGMMapPieces();
         removedBaseGroundItemIds.clear();
         gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
