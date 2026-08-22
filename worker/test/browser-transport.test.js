@@ -9,14 +9,14 @@ const end = html.indexOf('    function setGMTransportDiagnostics', start);
 assert.ok(start > 0 && end > start, 'transport adapter source is present');
 
 function loadAdapter() {
-  const context = { AbortController, setTimeout, clearTimeout, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }) };
+  const context = { AbortController, setTimeout, clearTimeout, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }), validateGMOutcomeAgainstCheck: () => ({ valid: true, errors: [] }) };
   vm.createContext(context);
   vm.runInContext(`let externalGMRequestPending = false;\n${html.slice(start, end)}\nthis.requestExternalGMOutcome = requestExternalGMOutcome;`, context);
   return context.requestExternalGMOutcome;
 }
 
 function loadAdapterWithTimers(setTimeoutImpl, clearTimeoutImpl = () => {}, contextOverrides = {}) {
-  const context = { AbortController, setTimeout: setTimeoutImpl, clearTimeout: clearTimeoutImpl, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }), ...contextOverrides };
+  const context = { AbortController, setTimeout: setTimeoutImpl, clearTimeout: clearTimeoutImpl, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }), validateGMOutcomeAgainstCheck: () => ({ valid: true, errors: [] }), ...contextOverrides };
   vm.createContext(context);
   vm.runInContext(`let externalGMRequestPending = false;\n${html.slice(start, end)}\nthis.requestExternalGMOutcome = requestExternalGMOutcome;`, context);
   return context.requestExternalGMOutcome;
@@ -125,4 +125,21 @@ test('fresh manual prose ignores stale interaction target but preserves active u
     targetId: null, toolId: null, routing: { mode: 'unknown', reason: null }
   });
   assert.equal(build({ id: 'base_shovel_01', name: 'Shovel' }).toolId, 'base_shovel_01');
+});
+
+test('transport supports adjudication then authoritative checked resolution with one action ID', async () => {
+  const calls = [];
+  const adapter = loadAdapterWithTimers(setTimeout, clearTimeout, {
+    validateGMAdjudication: value => ({ valid: value.actionId === 'action-1', errors: [] }),
+    validateGMOutcomeAgainstCheck: (value, check) => ({ valid: value.resolution?.result === check.result, errors: [] })
+  });
+  const adjudication = { protocol: 'gm_adjudication_v1', actionId: 'action-1', mode: 'check', reason: 'Uncertain.', check: { label: 'athletics', difficulty: 'moderate' } };
+  const checkResult = { protocol: 'gm_check_result_v1', actionId: 'action-1', label: 'athletics', difficulty: 'moderate', dc: 15, roll: 15, modifier: 0, total: 15, result: 'success' };
+  const fetchImpl = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return calls.length === 1 ? response({ ok: true, adjudication }) : response({ ok: true, outcome: { ...outcome, resolution: { result: 'success' } } }); };
+  const adjudicated = await adapter(request, { ...config(fetchImpl), adjudicate: true });
+  assert.equal(adjudicated.ok, true);
+  const resolved = await adapter(request, { ...config(fetchImpl), adjudication, checkResult });
+  assert.equal(resolved.ok, true); assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /\/adjudicate-action$/); assert.deepEqual(calls[0].body, { request });
+  assert.deepEqual(calls[1].body, { request, adjudication, checkResult });
 });
