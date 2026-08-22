@@ -118,7 +118,7 @@ function makeSceneNode() {
   return {
     children: [],
     position: { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } },
-    rotation: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } },
     userData: {},
     visible: true,
     add(child) { this.children.push(child); },
@@ -148,6 +148,7 @@ function loadTerrainBoundary(overrides = {}) {
     gmHotspots: [],
     gmTransitions: [],
     levelGroups: { '-1': makeSceneNode(), '0': makeSceneNode(), '2': makeSceneNode() },
+    walkables: { '-1': [], '0': [], '2': [] },
     interactables: [],
     gmNPCs: [],
     npcs: [],
@@ -162,8 +163,12 @@ function loadTerrainBoundary(overrides = {}) {
     baseTransitions: [],
     doors: [],
     allWalls: { '0': [], '2': [], '-1': [] },
+    scene: { background: null },
+    ambientLight: { intensity: 0, color: { value: null, set(value) { this.value = value; } } },
+    dirLight: { intensity: 0, color: { value: null, set(value) { this.value = value; } } },
     worldFlags: {},
     worldMemory: { summary: '', facts: [], quests: {} },
+    gmEvents: [{ type: 'memory_fact_added', level: '0', playerTile: { x: 10, y: 10 }, detail: { text: 'Sage noticed the shell.' } }],
     GM_MEMORY_LIMIT: 40,
     GM_OUTCOME_APPLICATION_PROTOCOL: 'gm_outcome_application_v1',
     removedBaseGroundItemIds: new Set(),
@@ -209,6 +214,7 @@ function loadTerrainBoundary(overrides = {}) {
     getItemDefsSnapshot: () => [],
     getInventorySnapshot: () => [],
     getPersistentGroundItemsSnapshot: () => [],
+    getEventsSinceLastGM: () => context.gmEvents,
     recordGMEvent: () => {},
     addLogMessage: () => {},
     renderWorldMemoryUI: () => {},
@@ -216,6 +222,36 @@ function loadTerrainBoundary(overrides = {}) {
     restoreBaseTerrainHeights: () => true,
     rebuildTerrainMesh: () => true,
     getGridWorldPos: (x, y, level = '0') => ({ x, y: context.LEVELS[String(level)]?.h || 0, z: y }),
+    buildWall: (wall, level, height) => {
+      const mesh = makeSceneNode();
+      mesh.userData = { wall, sourceLevel: level, height };
+      wall.mesh = mesh;
+      context.levelGroups[level].add(mesh);
+      return mesh;
+    },
+    spawnNPC: (id, name, x, y, level, type, options = {}) => {
+      const npc = {
+        id,
+        name,
+        type,
+        gridX: x,
+        gridY: y,
+        level,
+        gmCreated: !!options.gmCreated,
+        note: options.note || '',
+        state: options.state || {},
+        mesh: makeSceneNode(),
+        hitbox: makeSceneNode(),
+        pathQueue: [],
+        isMoving: false
+      };
+      npc.hitbox.userData = { npcId: id, sourceLevel: level, interactX: x, interactY: y };
+      context.npcs.push(npc);
+      context.levelGroups[level].add(npc.mesh);
+      context.interactables.push(npc.hitbox);
+      return npc;
+    },
+    DIALOGUES: {},
     recordGMCommandHistory: () => {},
     hasGMUndoSnapshot: () => true,
     getGMOutcomeApplicationDiagnostics: () => ({}),
@@ -223,19 +259,32 @@ function loadTerrainBoundary(overrides = {}) {
       const raw = context.localStorage.getItem(context.GM_SAVE_KEY);
       if (!raw) return false;
       const save = JSON.parse(raw);
+      Object.keys(context.worldFlags).forEach(key => delete context.worldFlags[key]);
+      if (save.flags && typeof save.flags === 'object') Object.assign(context.worldFlags, save.flags);
+      if (context.worldFlags.scene_time && typeof context.applyGMSceneTimeVisuals === 'function') context.applyGMSceneTimeVisuals(context.worldFlags.scene_time);
+      else if (typeof context.resetGMSceneTimeVisuals === 'function') context.resetGMSceneTimeVisuals();
       context.gmTerrain.splice(0, context.gmTerrain.length, ...(save.terrain || []));
+      context.gmObjects.splice(0, context.gmObjects.length, ...(save.objects || []));
+      context.gmWalls.splice(0, context.gmWalls.length, ...(save.walls || []));
+      context.gmFloors.splice(0, context.gmFloors.length, ...(save.floors || []));
+      context.gmNPCs.splice(0, context.gmNPCs.length, ...(save.npcs || []));
+      context.npcs.splice(0, context.npcs.length, ...(save.npcs || []).map(npc => ({ ...npc, gridX: npc.x, gridY: npc.y, gmCreated: true, state: npc.state || {} })));
+      context.worldMemory.facts.splice(0, context.worldMemory.facts.length, ...((save.memory && save.memory.facts) || []));
       return true;
     },
     THREE: {
       Group: function Group() { return makeSceneNode(); },
       Mesh: function Mesh() { return makeSceneNode(); },
-      MeshLambertMaterial: function MeshLambertMaterial(options = {}) { return { ...options }; },
-      MeshBasicMaterial: function MeshBasicMaterial(options = {}) { return { ...options }; },
+      MeshLambertMaterial: function MeshLambertMaterial(options = {}) { return { ...options, clone() { return { ...this, clone: this.clone }; } }; },
+      MeshBasicMaterial: function MeshBasicMaterial(options = {}) { return { ...options, clone() { return { ...this, clone: this.clone }; } }; },
       BoxGeometry: function BoxGeometry() { return {}; },
       CylinderGeometry: function CylinderGeometry() { return {}; },
       ConeGeometry: function ConeGeometry() { return {}; },
       TorusGeometry: function TorusGeometry() { return {}; },
       CircleGeometry: function CircleGeometry() { return {}; },
+      PlaneGeometry: function PlaneGeometry() { return {}; },
+      DodecahedronGeometry: function DodecahedronGeometry() { return {}; },
+      SphereGeometry: function SphereGeometry() { return {}; },
       Color: function Color(value) { return { value }; },
       DoubleSide: 'DoubleSide'
     }
@@ -249,6 +298,9 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('canModifyVertex'),
     functionSource('isTileOccupiedByGM'),
     functionSource('isTileUnwalkable'),
+    functionSource('addUnwalkableTile'),
+    functionSource('removeUnwalkableTile'),
+    functionSource('setGMObjectBlocking'),
     functionSource('isTilePlaceableForGM'),
     functionSource('findNearbyFreeTileFrom'),
     functionSource('normalizeAnchorId'),
@@ -305,6 +357,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('getOriginatingToolCandidate'),
     functionSource('isDiggingToolCandidate'),
     functionSource('getAuthoritativeDiggingToolCandidate'),
+    functionSource('getInventorySnapshot'),
     functionSource('normalizeGMOutcomeMemory'),
     functionSource('translateGMOutcomeEffects'),
     functionSource('validateGMOutcomeApplication'),
@@ -313,8 +366,51 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('applyGMOutcome'),
     functionSource('normalizeMarkerColor'),
     functionSource('parseMarkerColor'),
+    functionSource('buildGMObjectVisual'),
+    functionSource('addGMObjectHighlight'),
+    functionSource('createGMObject'),
+    functionSource('normalizeWallDir'),
+    functionSource('createGMWall'),
+    functionSource('createGMFloor'),
+    functionSource('normalizeStructureId'),
+    functionSource('hashGMSettlementSeed'),
+    functionSource('clampSettlementSize'),
+    functionSource('normalizeGMSettlementPlacementMode'),
+    functionSource('normalizeGMSettlementFitMode'),
+    functionSource('normalizeGMSettlementDirection'),
+    functionSource('getGMSettlementFootprintCandidates'),
+    functionSource('normalizeSettlementFeature'),
+    functionSource('getGMSettlementBlockedTileSets'),
+    functionSource('getGMSettlementKnownWorldBounds'),
+    functionSource('getGMSettlementTileBlockReason'),
+    functionSource('isGMSettlementSourceTileSafe'),
+    functionSource('evaluateGMSettlementParcel'),
+    functionSource('findGMSettlementParcel'),
+    functionSource('getGMSettlementDirectionOrder'),
+    functionSource('makeGMSettlementFrontierCandidates'),
+    functionSource('findGMSettlementFrontierParcel'),
+    functionSource('createGMSettlement'),
+    `const GM_SCENE_TIME_PROFILES = {
+        day: { bg: 0x87ceeb, ambient: 0xffffff, ambientIntensity: 0.65, directional: 0xffffff, directionalIntensity: 0.6 },
+        dawn: { bg: 0xd8b07a, ambient: 0xffdfba, ambientIntensity: 0.48, directional: 0xffc27a, directionalIntensity: 0.45 },
+        dusk: { bg: 0x6d587d, ambient: 0xb89ac9, ambientIntensity: 0.38, directional: 0xff9a66, directionalIntensity: 0.32 },
+        night: { bg: 0x141a33, ambient: 0x8390c8, ambientIntensity: 0.22, directional: 0x8fa8ff, directionalIntensity: 0.18 }
+    };`,
+    functionSource('normalizeGMSceneTime'),
+    functionSource('setLightColor'),
+    functionSource('applyGMSceneTimeVisuals'),
+    functionSource('resetGMSceneTimeVisuals'),
+    functionSource('setGMSceneTime'),
+    functionSource('normalizeGMVisitorTheme'),
+    functionSource('resolveGMVisitorTarget'),
+    functionSource('isGMVisitorTileSafe'),
+    functionSource('findGMVisitorTiles'),
+    functionSource('getGMVisitorName'),
+    functionSource('getGMVisitorRole'),
+    functionSource('spawnGMVisitors'),
     functionSource('buildGMTransitionVisual'),
     functionSource('createGMTransition'),
+    functionSource('createGMNPC'),
     functionSource('normalizeGameAction'),
     functionSource('createGameAction'),
     functionSource('createTerrainAction'),
@@ -332,6 +428,15 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('getCanvasEntitySnapshot'),
     functionSource('getAllCanvasEntities'),
     functionSource('getNearbyCanvasEntities'),
+    functionSource('getGMMapNPCGlyphs'),
+    functionSource('makeGMMapExportTileKey'),
+    functionSource('setGMMapGlyph'),
+    functionSource('getGMGeneratedSettlementSummaries'),
+    functionSource('buildGMMapExport'),
+    functionSource('copyGMMapExport'),
+    functionSource('compactGMWorldContextEntity'),
+    functionSource('buildGMWorldContextExport'),
+    functionSource('copyGMWorldContextExport'),
     `const ACTION_CONTEXT_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
     functionSource('compactNPCDialogueState'),
     functionSource('toActionContextEntity'),
@@ -339,7 +444,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('buildGMWorldSave'),
     functionSource('storeGMUndoSnapshot'),
     functionSource('undoLastGMApply'),
-    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact, createGMTransition };'
+    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact, createGMTransition, createGMSettlement, setGMSceneTime, spawnGMVisitors, buildGMMapExport, copyGMMapExport, buildGMWorldContextExport, copyGMWorldContextExport };'
   ].join('\n'), context);
   return { api: context.api, context };
 }
@@ -487,6 +592,37 @@ function itemNPCOutcome(overrides = {}) {
     effects: [],
     memory: [],
     ...overrides
+  };
+}
+
+function settlementBlueprint(overrides = {}) {
+  return {
+    op: 'create_settlement',
+    id: 'gm_settlement_riverside',
+    name: 'Riverside Hamlet',
+    near: 'player',
+    level: '0',
+    width: 16,
+    depth: 16,
+    style: 'osrs_town',
+    buildings: [
+      { id: 'inn', name: 'The Copper Kettle', size: 'small', floors: 2, role: 'inn' },
+      { id: 'shop', name: 'River Shop', size: 'medium', floors: 1, role: 'shop' }
+    ],
+    npcs: [
+      { id: 'john', name: 'John', role: 'mayor', nearBuilding: 'inn' }
+    ],
+    features: ['well', 'notice_board', 'market_stalls'],
+    ...overrides
+  };
+}
+
+function settlementPrimitiveSnapshot(context) {
+  return {
+    floors: context.gmFloors.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, color: entry.color })).sort((a, b) => a.id.localeCompare(b.id)),
+    walls: context.gmWalls.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, dir: entry.dir, height: entry.height })).sort((a, b) => a.id.localeCompare(b.id)),
+    objects: context.gmObjects.map(entry => ({ id: entry.id, x: entry.x, y: entry.y, level: entry.level, shape: entry.shape, name: entry.name })).sort((a, b) => a.id.localeCompare(b.id)),
+    npcs: context.gmNPCs.map(entry => ({ id: entry.id, x: entry.gridX, y: entry.gridY, level: entry.level, name: entry.name, role: entry.state?.role })).sort((a, b) => a.id.localeCompare(b.id))
   };
 }
 
@@ -1069,6 +1205,333 @@ test('deterministic shovel actions do not call Action GM or live transport build
     functionSource('createTerrainAction')
   ].join('\n');
   assert.doesNotMatch(deterministicSource, /buildManualActionGMRequest|buildGMRequest|requestExternalGMOutcome|resolveManualActionWithAI|applyGMOutcome/);
+});
+
+function extractGMMapGrid(text) {
+  const lines = text.split('\n');
+  const legend = lines.findIndex(line => line.startsWith('Legend:'));
+  const npcs = lines.findIndex(line => line === 'NPCs:');
+  return lines.slice(legend + 2, npcs - 1);
+}
+
+test('GM map export includes player marker, nearby semantics, inventory, and memory compactly', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 10, playerGridY: 10 });
+  context.npcs.push({ id: 'sage', name: 'Sage', type: 'human', level: '0', gridX: 11, gridY: 10, state: { role: 'sage' } });
+  context.gmObjects.push({ id: 'odd_stone', name: 'Odd Stone', shape: 'stone', x: 9, y: 10, level: '0', state: {} });
+  context.gmTransitions.push({ id: 'cellar_stairs', name: 'Cellar Stairs', shape: 'stairs', x: 10, y: 11, level: '0', targetLevel: '-1', spawnX: 10, spawnY: 10, state: {} });
+  context.worldMemory.summary = 'The village has old temple rumors.';
+  context.worldMemory.facts = ['Sage noticed the odd shell.', 'A cellar may be hidden nearby.'];
+  context.worldFlags.temple_hint_seen = true;
+
+  const text = api.buildGMMapExport({ radius: 4 });
+  const grid = extractGMMapGrid(text);
+  assert.equal(grid.length, 9);
+  assert.equal(grid.every(line => line.length === 9), true);
+  assert.match(grid.join('\n'), /@/);
+  assert.match(grid.join('\n'), /S/);
+  assert.match(grid.join('\n'), /p/);
+  assert.match(grid.join('\n'), />/);
+  assert.match(text, /S sage "Sage" role=sage @ \(11, 10, level 0\)/);
+  assert.match(text, /prop odd_stone "Odd Stone" @ \(9, 10, level 0\) shape=stone/);
+  assert.match(text, /transition cellar_stairs "Cellar Stairs" @ \(10, 11, level 0\) shape=stairs -> level -1/);
+  assert.match(text, /base_shovel_01 "Shovel"/);
+  assert.match(text, /summary: The village has old temple rumors\./);
+  assert.match(text, /fact: Sage noticed the odd shell\./);
+  assert.match(text, /temple_hint_seen=true/);
+  assert.doesNotMatch(text, /token|endpoint|secret|gm-access-token|gm-endpoint/i);
+});
+
+test('GM map export respects current level', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  context.currentLevel = '2';
+  context.npcs.push({ id: 'surface_sage', name: 'Surface Sage', type: 'human', level: '0', gridX: 20, gridY: 20, state: { role: 'sage' } });
+  context.npcs.push({ id: 'island_sage', name: 'Island Sage', type: 'human', level: '2', gridX: 21, gridY: 20, state: { role: 'sage' } });
+  context.gmObjects.push({ id: 'surface_marker', name: 'Surface Marker', shape: 'sign', x: 20, y: 19, level: '0', state: {} });
+  context.gmObjects.push({ id: 'island_marker', name: 'Island Marker', shape: 'sign', x: 20, y: 19, level: '2', state: {} });
+
+  const text = api.buildGMMapExport({ radius: 3 });
+  assert.match(text, /level: 2/);
+  assert.match(text, /island_sage "Island Sage"/);
+  assert.match(text, /island_marker "Island Marker"/);
+  assert.doesNotMatch(text, /surface_sage|Surface Sage|surface_marker|Surface Marker/);
+});
+
+test('GM world context export is bounded, stable, semantic, and secret-free', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 10, playerGridY: 10 });
+  context.npcs.push({ id: 'sage', name: 'Sage', type: 'human', level: '0', gridX: 11, gridY: 10, state: { role: 'sage', trust: 'cautious' } });
+  context.npcs.push({ id: 'distant_npc', name: 'Distant NPC', type: 'human', level: '0', gridX: 30, gridY: 30, state: { role: 'traveler' } });
+  context.gmObjects.push({ id: 'odd_stone', name: 'Odd Stone', shape: 'stone', x: 9, y: 10, level: '0', state: { clue: true }, note: 'A marked stone.' });
+  context.gmObjects.push({ id: 'distant_prop', name: 'Distant Prop', shape: 'crate', x: 30, y: 30, level: '0', state: {} });
+  context.gmTransitions.push({ id: 'cellar_stairs', name: 'Cellar Stairs', shape: 'stairs', x: 10, y: 11, level: '0', targetLevel: '-1', spawnX: 10, spawnY: 10, state: {} });
+  context.worldMemory.summary = 'The village has old temple rumors.';
+  context.worldMemory.facts = ['Sage noticed the odd shell.', 'A cellar may be hidden nearby.'];
+  context.worldFlags.temple_hint_seen = true;
+  context.gmFloors.push({ id: 'gm_settlement_riverside_road_0', name: 'Riverside road', x: 8, y: 8, level: '0', state: { settlementId: 'gm_settlement_riverside', kind: 'road' } });
+
+  const exported = api.buildGMWorldContextExport(4);
+  const text = JSON.stringify(exported);
+  assert.equal(exported.protocol, 'gm_world_context_v1');
+  assert.deepEqual(exported.player.tile, { x: 10, y: 10 });
+  assert.equal(exported.scope.radius, 4);
+  assert.equal(exported.nearby.npcs.some(npc => npc.id === 'sage' && npc.x === 11 && npc.y === 10 && npc.state.trust === 'cautious'), true);
+  assert.equal(exported.nearby.npcs.some(npc => npc.id === 'distant_npc'), false);
+  assert.equal(exported.nearby.entities.some(entity => entity.id === 'odd_stone' && entity.x === 9 && entity.y === 10 && entity.state.clue === true), true);
+  assert.equal(exported.nearby.entities.some(entity => entity.id === 'distant_prop'), false);
+  assert.equal(exported.inventory.some(item => item.id === 'base_shovel_01' && item.name === 'Shovel'), true);
+  assert.equal(exported.memory.facts.includes('Sage noticed the odd shell.'), true);
+  assert.equal(exported.flags.temple_hint_seen, true);
+  assert.equal(exported.recentEvents.length, 1);
+  assert.equal(exported.generatedRegions.some(region => region.id === 'gm_settlement_riverside'), true);
+  assert.match(exported.acceptedProposalProtocol.shape.dialogue, /array/);
+  assert.doesNotMatch(text, /endpoint|token|secret|gm-access-token|gm-endpoint/i);
+});
+
+test('set_scene_time accepts valid values, rejects invalid values, persists, and records', () => {
+  const { api, context } = loadTerrainBoundary();
+  const logs = [];
+  const events = [];
+  context.addLogMessage = value => logs.push(String(value));
+  context.recordGMEvent = (type, detail) => events.push({ type, detail });
+  assert.equal(api.setGMSceneTime({ time: 'dusk', reason: 'Festival begins.' }), true);
+  assert.equal(context.worldFlags.scene_time, 'dusk');
+  assert.equal(context.worldFlags.scene_time_note, 'Festival begins.');
+  assert.equal(context.scene.background.value, 0x6d587d);
+  assert.equal(context.ambientLight.intensity, 0.38);
+  assert.equal(events.some(event => event.type === 'scene_time_set' && event.detail.time === 'dusk'), true);
+  assert.equal(logs.some(line => /Scene time set to dusk/.test(line)), true);
+  const save = api.buildGMWorldSave();
+  assert.equal(save.flags.scene_time, 'dusk');
+
+  context.worldFlags.scene_time = 'day';
+  context.localStorage.setItem(context.GM_SAVE_KEY, JSON.stringify(save));
+  assert.equal(context.loadGMWorld(true), true);
+  assert.equal(context.worldFlags.scene_time, 'dusk');
+  assert.equal(context.scene.background.value, 0x6d587d);
+
+  assert.equal(api.setGMSceneTime({ time: 'midmorning' }), false);
+  assert.equal(context.worldFlags.scene_time, 'dusk');
+});
+
+test('spawn_visitors creates deterministic prefixed NPCs, clamps count, avoids occupied/protected tiles, and does not duplicate', () => {
+  const first = loadTerrainBoundary({ playerGridX: 10, playerGridY: 10 });
+  const second = loadTerrainBoundary({ playerGridX: 10, playerGridY: 10 });
+  first.context.npcs.push({ id: 'sage', name: 'Sage', type: 'human', level: '0', gridX: 10, gridY: 10, state: {} });
+  second.context.npcs.push({ id: 'sage', name: 'Sage', type: 'human', level: '0', gridX: 10, gridY: 10, state: {} });
+  first.context.gmObjects.push({ id: 'occupied_crate', name: 'Crate', shape: 'crate', x: 11, y: 10, level: '0', state: {} });
+  second.context.gmObjects.push({ id: 'occupied_crate', name: 'Crate', shape: 'crate', x: 11, y: 10, level: '0', state: {} });
+  first.context.pathTiles.push({ x: 10, y: 11 });
+  second.context.pathTiles.push({ x: 10, y: 11 });
+  const command = { id: 'mistwood_festival_visitors', count: 99, target: 'player', theme: 'festival' };
+  assert.equal(first.api.spawnGMVisitors(command), true);
+  assert.equal(second.api.spawnGMVisitors(command), true);
+  assert.equal(first.context.gmNPCs.length, 12);
+  assert.equal(first.context.gmNPCs.every(npc => npc.id.startsWith('mistwood_festival_visitors_')), true);
+  assert.equal(first.context.gmNPCs.some(npc => npc.gridX === 10 && npc.gridY === 10), false);
+  assert.equal(first.context.gmNPCs.some(npc => npc.gridX === 11 && npc.gridY === 10), false);
+  assert.equal(first.context.gmNPCs.some(npc => npc.gridX === 10 && npc.gridY === 11), false);
+  assert.deepEqual(settlementPrimitiveSnapshot(first.context).npcs, settlementPrimitiveSnapshot(second.context).npcs);
+  assert.equal(first.api.spawnGMVisitors(command), false);
+  assert.equal(first.context.gmNPCs.length, 12);
+});
+
+test('staging commands are undoable through GM undo', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 10, playerGridY: 10 });
+  assert.equal(api.storeGMUndoSnapshot('before_staging'), true);
+  assert.equal(api.setGMSceneTime({ time: 'night', silent: true }), true);
+  assert.equal(api.spawnGMVisitors({ id: 'night_market_visitors', count: 3, theme: 'market', target: { x: 10, y: 10, level: '0' }, silent: true }), true);
+  assert.equal(context.worldFlags.scene_time, 'night');
+  assert.equal(context.gmNPCs.length, 3);
+  assert.equal(api.undoLastGMApply(), true);
+  assert.equal(context.worldFlags.scene_time, undefined);
+  assert.equal(context.gmNPCs.length, 0);
+});
+
+test('local staging commands do not call Action GM transport', () => {
+  const stagingSource = [
+    functionSource('setGMSceneTime'),
+    functionSource('spawnGMVisitors'),
+    functionSource('applyLLMCommands')
+  ].join('\n');
+  assert.doesNotMatch(stagingSource, /requestExternalGMOutcome|resolveManualActionWithAI|buildGMRequest|buildManualActionGMRequest|Workers AI|applyGMOutcome/);
+});
+
+test('create_settlement creates prefixed floors walls props and NPCs', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  const created = api.createGMSettlement(settlementBlueprint());
+  assert.equal(created, true);
+  assert.equal(context.gmFloors.length > 0, true);
+  assert.equal(context.gmWalls.length > 0, true);
+  assert.equal(context.gmObjects.length > 0, true);
+  assert.equal(context.gmNPCs.length, 1);
+  const allIds = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects, ...context.gmNPCs].map(entry => entry.id);
+  assert.equal(allIds.every(id => id.startsWith('gm_settlement_riverside_')), true);
+  assert.equal(context.worldMemory.facts.some(fact => /Riverside Hamlet is a generated local settlement/i.test(fact)), true);
+});
+
+test('create_settlement placement is deterministic for the same blueprint', () => {
+  const first = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  const second = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  assert.equal(first.api.createGMSettlement(settlementBlueprint()), true);
+  assert.equal(second.api.createGMSettlement(settlementBlueprint()), true);
+  assert.deepEqual(settlementPrimitiveSnapshot(first.context), settlementPrimitiveSnapshot(second.context));
+});
+
+test('create_settlement near player chooses a clean parcel away from occupied village area', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 16; x <= 24; x++) {
+    for (let y = 16; y <= 24; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  context.pathTiles.push({ x: 20, y: 20 }, { x: 21, y: 20 });
+  context.allWalls['0'].push({ x: 19, y: 19, dir: 'N', type: 'white' });
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'infill', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Clean Parcel Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const generated = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects, ...context.gmNPCs.map(entry => ({ ...entry, x: entry.gridX, y: entry.gridY }))];
+  assert.equal(generated.some(entry => entry.x >= 16 && entry.x <= 24 && entry.y >= 16 && entry.y <= 24), false);
+});
+
+test('create_settlement defaults to frontier placement outside existing world bounds', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 18, playerGridY: 18 });
+  for (let x = 12; x <= 24; x++) {
+    for (let y = 12; y <= 24; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Frontier Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const settlementParts = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => !entry.id.endsWith('_direction_sign'))];
+  assert.equal(settlementParts.every(entry => entry.x < 12 || entry.x > 24 || entry.y < 12 || entry.y > 24), true);
+});
+
+test('create_settlement direction east places east of current bounds', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 18, playerGridY: 18 });
+  for (let x = 12; x <= 24; x++) {
+    for (let y = 12; y <= 24; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'East Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const xs = context.gmFloors.map(entry => entry.x);
+  assert.equal(Math.min(...xs) > 24, true);
+});
+
+test('create_settlement near a crowded player succeeds by choosing a farther safe parcel', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 6; x <= 30; x++) {
+    for (let y = 6; y <= 30; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  delete context.floorHeights['0,20,14'];
+  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Far Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const generated = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => !entry.id.endsWith('_direction_sign'))];
+  assert.equal(generated.some(entry => entry.x >= 6 && entry.x <= 30 && entry.y >= 6 && entry.y <= 30), false);
+  assert.equal(context.gmObjects.some(entry => entry.id === 'gm_settlement_riverside_direction_sign' && entry.state?.kind === 'settlement_direction_sign'), true);
+});
+
+test('create_settlement oversized footprint falls back to a smaller actual parcel', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 4; x < context.GRID_SIZE; x++) {
+    for (let y = 0; y < context.GRID_SIZE; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  for (let x = 30; x <= 37; x++) {
+    for (let y = 30; y <= 37; y++) delete context.floorHeights[`0,${x},${y}`];
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ placement: 'infill', width: 24, depth: 24, buildings: [{ id: 'hall', name: 'Compact Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  const xs = context.gmFloors.map(entry => entry.x);
+  const ys = context.gmFloors.map(entry => entry.y);
+  assert.equal(Math.max(...xs) - Math.min(...xs) + 1 <= 8, true);
+  assert.equal(Math.max(...ys) - Math.min(...ys) + 1 <= 8, true);
+  assert.equal(context.worldMemory.facts.some(fact => /footprint 8x8/i.test(fact)), true);
+});
+
+test('create_settlement fit expand preserves requested footprint before shrinking', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 18, playerGridY: 18 });
+  for (let x = 10; x <= 20; x++) {
+    for (let y = 10; y <= 20; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', fit: 'expand', width: 16, depth: 16, buildings: [{ id: 'hall', name: 'Full Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), true);
+  assert.equal(context.worldMemory.facts.some(fact => /footprint 16x16/i.test(fact)), true);
+});
+
+test('create_settlement fit strict fails instead of shrinking', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 6; x <= 30; x++) {
+    for (let y = 6; y <= 30; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ direction: 'east', fit: 'strict', width: 24, depth: 24, buildings: [{ id: 'hall', name: 'Strict Hall', size: 'medium', floors: 1, role: 'hall' }], npcs: [], features: [] })), false);
+  assert.equal(context.gmFloors.length + context.gmWalls.length + context.gmObjects.length + context.gmNPCs.length, 0);
+});
+
+test('create_settlement explicit unsafe coordinates fail only when adjustment is disabled', () => {
+  const blocked = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 16; x <= 24; x++) {
+    for (let y = 16; y <= 24; y++) blocked.context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(blocked.api.createGMSettlement(settlementBlueprint({ x: 20, y: 20, width: 8, depth: 8, buildings: [], npcs: [], features: [], adjust: false })), false);
+  assert.equal(blocked.context.gmFloors.length + blocked.context.gmWalls.length + blocked.context.gmObjects.length + blocked.context.gmNPCs.length, 0);
+
+  const adjustable = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 16; x <= 24; x++) {
+    for (let y = 16; y <= 24; y++) adjustable.context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(adjustable.api.createGMSettlement(settlementBlueprint({ x: 20, y: 20, width: 8, depth: 8, buildings: [], npcs: [], features: [] })), true);
+  assert.equal(adjustable.context.gmFloors.some(entry => entry.x >= 16 && entry.x <= 24 && entry.y >= 16 && entry.y <= 24), false);
+});
+
+test('create_settlement success requires at least one generated building', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  const originalCreateGMFloor = context.createGMFloor;
+  context.createGMFloor = command => command?.state?.kind === 'building_floor' ? false : originalCreateGMFloor(command);
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [{ id: 'hall', name: 'Failed Hall', size: 'small', floors: 1, role: 'hall' }], npcs: [], features: [] })), false);
+  assert.equal(context.gmFloors.length, 0);
+  assert.equal(context.gmWalls.length, 0);
+  assert.equal(context.gmObjects.length, 0);
+  assert.equal(context.gmNPCs.length, 0);
+});
+
+test('create_settlement clamps width and depth to bounded ranges', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 99, depth: 2, buildings: [], npcs: [], features: [] })), true);
+  const xs = context.gmFloors.map(entry => entry.x);
+  const ys = context.gmFloors.map(entry => entry.y);
+  assert.equal(Math.max(...xs) - Math.min(...xs) + 1 <= 24, true);
+  assert.equal(Math.max(...ys) - Math.min(...ys) + 1 <= 8, true);
+});
+
+test('create_settlement skips protected occupied and blocked tiles safely', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 6, playerGridY: 6 });
+  context.gmObjects.push({ id: 'existing_crate', x: 6, y: 6, level: '0' });
+  assert.equal(api.createGMSettlement(settlementBlueprint({ x: 6, y: 6, width: 12, depth: 12 })), true);
+  const generated = [...context.gmFloors, ...context.gmWalls, ...context.gmObjects.filter(entry => entry.id !== 'existing_crate'), ...context.gmNPCs.map(entry => ({ ...entry, x: entry.gridX, y: entry.gridY }))];
+  assert.equal(generated.some(entry => entry.x < 4), false);
+  assert.equal(generated.some(entry => entry.x === 5 && entry.y === 5 && entry.level === '0'), false);
+  assert.equal(generated.some(entry => entry.x === 6 && entry.y === 6 && entry.level === '0'), false);
+});
+
+test('create_settlement creates nothing when no viable parcel exists', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  for (let x = 0; x < context.GRID_SIZE; x++) {
+    for (let y = 0; y < context.GRID_SIZE; y++) context.floorHeights[`0,${x},${y}`] = 0.05;
+  }
+  assert.equal(api.createGMSettlement(settlementBlueprint({ width: 8, depth: 8, buildings: [], npcs: [], features: [] })), false);
+  assert.equal(context.gmFloors.length, 0);
+  assert.equal(context.gmWalls.length, 0);
+  assert.equal(context.gmObjects.length, 0);
+  assert.equal(context.gmNPCs.length, 0);
+});
+
+test('undo restores the world before a generated settlement', () => {
+  const { api, context } = loadTerrainBoundary({ playerGridX: 20, playerGridY: 20 });
+  assert.equal(api.storeGMUndoSnapshot('before_settlement'), true);
+  assert.equal(api.createGMSettlement(settlementBlueprint()), true);
+  assert.equal(context.gmFloors.length > 0 || context.gmWalls.length > 0 || context.gmObjects.length > 0 || context.gmNPCs.length > 0, true);
+  assert.equal(api.undoLastGMApply(), true);
+  assert.equal(context.gmFloors.length, 0);
+  assert.equal(context.gmWalls.length, 0);
+  assert.equal(context.gmObjects.length, 0);
+  assert.equal(context.gmNPCs.length, 0);
+  assert.equal(context.worldMemory.facts.length, 0);
+});
+
+test('settlement compiler is local and does not call Action GM transport', () => {
+  const source = [
+    functionSource('createGMSettlement'),
+    functionSource('applyLLMCommands')
+  ].join('\n');
+  assert.match(source, /create_settlement/);
+  assert.doesNotMatch(source, /requestExternalGMOutcome|resolveManualActionWithAI|buildGMRequest|buildManualActionGMRequest|applyGMOutcome/);
 });
 
 test('search narration-only outcome validates through preflight as a no-op', () => {

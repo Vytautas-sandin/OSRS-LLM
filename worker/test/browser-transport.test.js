@@ -8,6 +8,18 @@ const start = html.indexOf('    function makeGMTransportError');
 const end = html.indexOf('    function setGMTransportDiagnostics', start);
 assert.ok(start > 0 && end > start, 'transport adapter source is present');
 
+function functionSource(name) {
+  const sourceStart = html.indexOf(`    function ${name}(`);
+  assert.ok(sourceStart >= 0, `${name} source is present`);
+  const bodyStart = html.indexOf(') {', sourceStart) + 2;
+  let depth = 0;
+  for (let index = bodyStart; index < html.length; index++) {
+    if (html[index] === '{') depth++;
+    if (html[index] === '}' && --depth === 0) return html.slice(sourceStart, index + 1);
+  }
+  throw new Error(`Could not extract ${name}`);
+}
+
 function loadAdapter() {
   const context = { AbortController, setTimeout, clearTimeout, validateGMRequest: () => ({ valid: true, errors: [] }), validateGMOutcome: outcome => ({ valid: outcome.protocol === 'gm_outcome_v1', errors: ['invalid outcome'], warnings: [] }), validateGMOutcomeAgainstCheck: () => ({ valid: true, errors: [] }) };
   vm.createContext(context);
@@ -97,42 +109,201 @@ test('live bridge reuses manual builder and keeps manual controls', () => {
   assert.match(html, /route\.mode === 'local'/);
 });
 
-test('dev panel presents Action GM as the normal AI-facing workflow', () => {
+test('dev panel presents Local World Builder by default and keeps AI advanced', () => {
   const panelStart = html.indexOf('<div id="dev-panel">');
+  const localStart = html.indexOf('<details id="local-world-builder-section"', panelStart);
+  const actionStart = html.indexOf('<summary>Action GM · gm_request_v1 / gm_outcome_v1</summary>', panelStart);
+  const transportStart = html.indexOf('<summary>External AI Transport</summary>', panelStart);
+  const worldStateStart = html.indexOf('<summary>World State</summary>', panelStart);
   const legacyStart = html.indexOf('<details id="legacy-gm-section"', panelStart);
-  const legacyEnd = html.indexOf('</details>', legacyStart);
-  assert.ok(panelStart > 0 && legacyStart > panelStart && legacyEnd > legacyStart);
+  assert.ok(panelStart > 0 && localStart > panelStart);
+  assert.ok(localStart < actionStart && actionStart < transportStart && transportStart < worldStateStart);
 
-  const normalPanel = html.slice(panelStart, legacyStart);
-  const legacyPanel = html.slice(legacyStart, legacyEnd);
-  assert.match(normalPanel, /Action GM Panel/);
-  assert.match(normalPanel, /<summary>Action GM · gm_request_v1 \/ gm_outcome_v1<\/summary>/);
-  assert.match(normalPanel, /<summary>Live Transport<\/summary>/);
-  assert.match(normalPanel, /id="player-action"/);
-  assert.match(normalPanel, /id="search-nearby-action"/);
-  assert.match(normalPanel, /id="talk-nearby-action"/);
-  assert.match(normalPanel, /id="copy-action-gm-request"/);
-  assert.match(normalPanel, /id="resolve-action-ai"/);
-  assert.match(normalPanel, /id="apply-action-gm-outcome"/);
-  assert.match(normalPanel, /id="action-gm-io"/);
-  assert.match(normalPanel, /id="save-world-state"/);
-  assert.match(normalPanel, /id="load-world-state"/);
-  assert.match(normalPanel, /id="undo-gm-apply"/);
-  assert.match(normalPanel, /id="look-around-dev"/);
-  assert.match(normalPanel, /id="world-summary"/);
-  assert.match(normalPanel, /id="world-memory"/);
-  assert.match(normalPanel, /id="gm-trace-count"/);
-  assert.doesNotMatch(normalPanel, /id="copy-gm-payload"|id="copy-gm-prompt"|id="copy-adventure-seed"|id="apply-llm-json"|id="validate-llm-json"|id="llm-io"/);
+  const localEnd = html.indexOf('</details>', localStart);
+  const localPanel = html.slice(localStart, localEnd);
+  assert.match(html.slice(panelStart, panelStart + 80), /World Lab/);
+  assert.match(localPanel, /<summary>Local World Builder<\/summary>/);
+  assert.match(localPanel, /open>/);
+  assert.match(localPanel, /id="llm-io"/);
+  assert.match(localPanel, /id="validate-llm-json"/);
+  assert.match(localPanel, /id="apply-llm-json"/);
+  assert.match(localPanel, /id="undo-gm-apply"/);
+  assert.match(localPanel, /id="save-world-state"/);
+  assert.match(localPanel, /id="load-world-state"/);
+  assert.match(localPanel, /id="insert-settlement-blueprint"/);
+  assert.match(localPanel, /id="copy-gm-map"/);
+  assert.match(localPanel, /id="copy-gm-context"/);
+  assert.match(localPanel, /id="clear-world-builder-input"/);
 
-  assert.match(legacyPanel, /hidden/);
-  assert.match(legacyPanel, /Deprecated Legacy GM/);
-  assert.match(legacyPanel, /id="copy-gm-payload"/);
-  assert.match(legacyPanel, /id="copy-gm-prompt"/);
-  assert.match(legacyPanel, /id="copy-adventure-seed"/);
-  assert.match(legacyPanel, /id="apply-llm-json"/);
-  assert.match(legacyPanel, /id="validate-llm-json"/);
-  assert.match(legacyPanel, /id="llm-io"/);
+  const actionDetailsStart = html.lastIndexOf('<details', actionStart);
+  const actionOpenTag = html.slice(actionDetailsStart, html.indexOf('>', actionDetailsStart) + 1);
+  assert.doesNotMatch(actionOpenTag, /\sopen\b/);
+  const actionPanel = html.slice(actionDetailsStart, transportStart);
+  assert.match(actionPanel, /id="player-action"/);
+  assert.match(actionPanel, /id="search-nearby-action"/);
+  assert.match(actionPanel, /id="talk-nearby-action"/);
+  assert.match(actionPanel, /id="copy-action-gm-request"/);
+  assert.match(actionPanel, /id="apply-action-gm-outcome"/);
+  assert.match(actionPanel, /id="action-gm-io"/);
+
+  const transportDetailsStart = html.lastIndexOf('<details', transportStart);
+  const transportOpenTag = html.slice(transportDetailsStart, html.indexOf('>', transportDetailsStart) + 1);
+  const transportPanel = html.slice(transportDetailsStart, worldStateStart);
+  assert.doesNotMatch(transportOpenTag, /\sopen\b/);
+  assert.match(transportPanel, /id="gm-endpoint"/);
+  assert.match(transportPanel, /id="gm-access-token"/);
+  assert.match(transportPanel, /id="resolve-action-ai"/);
+
+  assert.match(html, /id="look-around-dev"/);
+  assert.match(html, /id="world-summary"/);
+  assert.match(html, /id="world-memory"/);
+  assert.match(html, /id="gm-trace-count"/);
+  assert.match(html.slice(legacyStart, html.indexOf('</details>', legacyStart)), /hidden/);
+  assert.doesNotMatch(html, /Deprecated Legacy GM/);
   assert.match(html, /legacygm/);
+});
+
+test('local JSON parser accepts a single command object as one command', () => {
+  const parserStart = html.indexOf('    function normalizeGMOp');
+  const parserEnd = html.indexOf('    function validateLLMCommands', parserStart);
+  assert.ok(parserStart > 0 && parserEnd > parserStart);
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext([
+    html.slice(parserStart, parserEnd),
+    "const parsed = parseGMCommandPayload('{\"op\":\"create_settlement\",\"id\":\"gm_settlement_test\"}');",
+    'this.parsed = parsed;',
+    'this.summary = summarizeGMCommands(parsed.commands);'
+  ].join('\n'), context);
+  assert.equal(context.parsed.ok, true);
+  assert.equal(context.parsed.commands.length, 1);
+  assert.equal(context.summary.total, 1);
+  assert.equal(context.summary.supported, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.summary.ops)), { create_settlement: 1 });
+});
+
+test('Local World Builder accepts gm_proposal_v1 narration dialogue and commands', () => {
+  const parserStart = html.indexOf('    function normalizeGMOp');
+  const applyEnd = html.indexOf('    const devToggle = document.getElementById', parserStart);
+  assert.ok(parserStart > 0 && applyEnd > parserStart);
+  const proposal = {
+    protocol: 'gm_proposal_v1',
+    narration: 'Sage studies the map and nods.',
+    dialogue: { speaker: 'Sage', text: 'This road leads beyond the known coast.' },
+    commands: [{ op: 'add_memory', text: 'Sage identified the frontier road.' }]
+  };
+  const llmIO = { value: JSON.stringify(proposal) };
+  const narration = { textContent: '' };
+  const logs = [];
+  const events = [];
+  const dialogues = [];
+  const memories = [];
+  const context = {
+    document: { getElementById: id => id === 'llm-io' ? llmIO : id === 'action-gm-narration' ? narration : null },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addLogMessage: value => logs.push(String(value)),
+    recordGMEvent: (type, detail) => events.push({ type, detail }),
+    showDialogueMessage: (speaker, text) => dialogues.push({ speaker, text }),
+    addWorldMemoryFact: text => { memories.push(text); return true; },
+    buildGMWorldSave: () => ({}),
+    saveGMWorld: () => true,
+    markGMResponseResolved: () => {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(parserStart, applyEnd)}\nthis.parsed = parseGMCommandPayload(document.getElementById('llm-io').value);\napplyLLMCommands();`, context);
+  assert.equal(context.parsed.ok, true);
+  assert.equal(context.parsed.payload.protocol, 'gm_proposal_v1');
+  assert.equal(context.parsed.commands.length, 1);
+  assert.equal(narration.textContent, proposal.narration);
+  assert.deepEqual(JSON.parse(JSON.stringify(dialogues)), [proposal.dialogue]);
+  assert.deepEqual(memories, ['Sage identified the frontier road.']);
+  assert.equal(events.some(event => event.type === 'gm_response_started' && event.detail.protocol === 'gm_proposal_v1' && event.detail.hasDialogue === true), true);
+  assert.equal(logs.some(line => line.includes('GM narration received')), true);
+});
+
+test('Local World Builder accepts gm_proposal_v1 dialogue arrays in order', () => {
+  const parserStart = html.indexOf('    function normalizeGMOp');
+  const applyEnd = html.indexOf('    const devToggle = document.getElementById', parserStart);
+  assert.ok(parserStart > 0 && applyEnd > parserStart);
+  const proposal = {
+    protocol: 'gm_proposal_v1',
+    dialogue: [
+      { speaker: 'Sage', text: 'The tracks are fresh.' },
+      'ignore this',
+      { title: 'Fisherman', message: 'The tide will carry them east.' },
+      { speaker: 'Silent' }
+    ],
+    commands: []
+  };
+  const llmIO = { value: JSON.stringify(proposal) };
+  const dialogues = [];
+  const events = [];
+  const context = {
+    document: { getElementById: id => id === 'llm-io' ? llmIO : id === 'action-gm-narration' ? { textContent: '' } : null },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addLogMessage: () => {},
+    recordGMEvent: (type, detail) => events.push({ type, detail }),
+    showDialogueMessage: (speaker, text) => dialogues.push({ speaker, text }),
+    addWorldMemoryFact: () => true,
+    buildGMWorldSave: () => ({}),
+    saveGMWorld: () => true,
+    markGMResponseResolved: () => {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(parserStart, applyEnd)}\napplyLLMCommands();`, context);
+  assert.deepEqual(JSON.parse(JSON.stringify(dialogues)), [
+    { speaker: 'Sage', text: 'The tracks are fresh.' },
+    { speaker: 'Fisherman', text: 'The tide will carry them east.' }
+  ]);
+  assert.equal(events.filter(event => event.type === 'gm_proposal_dialogue_shown').length, 2);
+  assert.equal(events.some(event => event.type === 'gm_response_started' && event.detail.protocol === 'gm_proposal_v1' && event.detail.hasDialogue === true), true);
+});
+
+test('Local World Builder accepts gm_proposal_v1 staging commands with dialogue array', () => {
+  const parserStart = html.indexOf('    function normalizeGMOp');
+  const applyEnd = html.indexOf('    const devToggle = document.getElementById', parserStart);
+  assert.ok(parserStart > 0 && applyEnd > parserStart);
+  const proposal = {
+    protocol: 'gm_proposal_v1',
+    narration: 'The festival begins as dusk settles over the road.',
+    dialogue: [
+      { speaker: 'Sage', text: 'Lanterns are being lit.' },
+      { speaker: 'Visitor', text: 'The market is opening.' }
+    ],
+    commands: [
+      { op: 'set_scene_time', time: 'dusk', reason: 'festival opening' },
+      { op: 'spawn_visitors', id: 'mistwood_festival_visitors', count: 4, target: 'player', theme: 'festival' }
+    ]
+  };
+  const llmIO = { value: JSON.stringify(proposal) };
+  const narration = { textContent: '' };
+  const dialogues = [];
+  const events = [];
+  const sceneTimes = [];
+  const visitors = [];
+  const context = {
+    document: { getElementById: id => id === 'llm-io' ? llmIO : id === 'action-gm-narration' ? narration : null },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addLogMessage: () => {},
+    recordGMEvent: (type, detail) => events.push({ type, detail }),
+    showDialogueMessage: (speaker, text) => dialogues.push({ speaker, text }),
+    addWorldMemoryFact: () => true,
+    setGMSceneTime: cmd => { sceneTimes.push(cmd); return true; },
+    spawnGMVisitors: cmd => { visitors.push(cmd); return true; },
+    buildGMWorldSave: () => ({}),
+    saveGMWorld: () => true,
+    markGMResponseResolved: () => {}
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(parserStart, applyEnd)}\napplyLLMCommands();`, context);
+  assert.equal(narration.textContent, proposal.narration);
+  assert.deepEqual(JSON.parse(JSON.stringify(dialogues)), proposal.dialogue);
+  assert.equal(sceneTimes.length, 1);
+  assert.equal(sceneTimes[0].time, 'dusk');
+  assert.equal(visitors.length, 1);
+  assert.equal(visitors[0].theme, 'festival');
+  assert.equal(visitors[0].count, 4);
+  assert.equal(events.some(event => event.type === 'gm_response_started' && event.detail.protocol === 'gm_proposal_v1' && event.detail.hasDialogue === true), true);
 });
 
 test('Search Nearby button fills action text without resolving or applying', () => {

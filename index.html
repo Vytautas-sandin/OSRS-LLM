@@ -123,8 +123,26 @@
 
     <div id="dev-toggle" title="Toggle Dev / LLM Panel">🛠️ Dev</div>
     <div id="dev-panel">
-        <div id="dev-panel-title">Action GM Panel</div>
-        <details class="dev-details" open>
+        <div id="dev-panel-title">World Lab</div>
+        <details id="local-world-builder-section" class="dev-details" open>
+            <summary>Local World Builder</summary>
+            <div class="dev-label">Local JSON commands / blueprints</div>
+            <textarea id="llm-io" spellcheck="false" placeholder='Accepted formats: { "protocol": "gm_proposal_v1", "narration": "...", "commands": [ ... ] }, { "commands": [ ... ] }, [ { "op": "create_settlement", ... } ], or a single command object.'></textarea>
+            <div class="dev-row">
+                <button id="insert-settlement-blueprint" class="dev-btn">Insert Settlement Blueprint</button>
+                <button id="copy-gm-map" class="dev-btn">Copy GM Map</button>
+                <button id="copy-gm-context" class="dev-btn">Copy GM Context</button>
+                <button id="clear-world-builder-input" class="dev-btn">Clear Input</button>
+            </div>
+            <div class="dev-row">
+                <button id="validate-llm-json" class="dev-btn">Validate JSON</button>
+                <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
+                <button id="undo-gm-apply" class="dev-btn">Undo</button>
+                <button id="save-world-state" class="dev-btn">Save</button>
+                <button id="load-world-state" class="dev-btn">Load</button>
+            </div>
+        </details>
+        <details class="dev-details">
             <summary>Action GM · gm_request_v1 / gm_outcome_v1</summary>
             <div class="dev-label">Uses the current action text and explicit selection. Paste the correlated outcome below.</div>
             <div class="dev-label">Player action / question for the GM</div>
@@ -141,8 +159,8 @@
             <div class="dev-label">GM narration (separate from physical effects)</div>
             <div id="action-gm-narration">—</div>
         </details>
-        <details class="dev-details" open>
-            <summary>Live Transport</summary>
+        <details class="dev-details">
+            <summary>External AI Transport</summary>
             <div class="dev-row"><input id="gm-endpoint" class="dev-input" type="url" aria-label="GM endpoint" placeholder="https://your-worker.example/resolve-action"></div>
             <div class="dev-row">
                 <input id="gm-access-token" class="dev-input" type="password" autocomplete="off" aria-label="Prototype access token" placeholder="Prototype access token (session only)">
@@ -153,11 +171,8 @@
         <details class="dev-details">
             <summary>World State</summary>
             <div class="dev-row">
-                <button id="save-world-state" class="dev-btn">Save</button>
-                <button id="load-world-state" class="dev-btn">Load</button>
                 <button id="reset-world-state" class="dev-btn">Reset</button>
                 <button id="look-around-dev" class="dev-btn">Inspect</button>
-                <button id="undo-gm-apply" class="dev-btn">Undo</button>
             </div>
             <div class="dev-row">
                 <button id="export-world-save" class="dev-btn">Export Save</button>
@@ -180,18 +195,12 @@
             </div>
         </details>
         <details id="legacy-gm-section" class="dev-details" hidden>
-            <summary>Deprecated Legacy GM</summary>
+            <summary>Legacy Prompt Export</summary>
             <div class="dev-row">
                 <button id="copy-gm-payload" class="dev-btn">Copy Payload</button>
                 <button id="copy-gm-prompt" class="dev-btn">Copy GM Prompt</button>
                 <button id="copy-adventure-seed" class="dev-btn">Copy Scene Prompt</button>
-                <button id="apply-llm-json" class="dev-btn">Apply JSON</button>
             </div>
-            <div class="dev-row">
-                <button id="validate-llm-json" class="dev-btn">Validate Legacy JSON</button>
-            </div>
-            <div class="dev-label">LLM JSON / copied payload</div>
-            <textarea id="llm-io" spellcheck="false" placeholder="Deprecated legacy gm_payload_v0 JSON workflow. Use ?legacygm=1 only for historical debugging."></textarea>
         </details>
     </div>
 
@@ -351,6 +360,7 @@
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
     dirLight.position.set(10, 20, 10);
     scene.add(dirLight);
+    let activeGMSceneTime = null;
 
     // --- 3. ENVIRONMENT DATA & TERRAIN GENERATION ---
     const levelGroups = { '-1': new THREE.Group(), '0': new THREE.Group(), '2': new THREE.Group() };
@@ -1778,6 +1788,284 @@
             }))
             .filter(entity => entity.dist <= radius)
             .sort((a, b) => a.dist - b.dist || String(a.kind).localeCompare(String(b.kind)));
+    }
+
+    function getGMMapNPCGlyphs(npcsForLevel) {
+        const used = new Set(['@', '#', 'D', 'i', 'p', 'r']);
+        const glyphs = new Map();
+        npcsForLevel
+            .slice()
+            .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)) || String(a.id).localeCompare(String(b.id)))
+            .forEach(npc => {
+                const label = String(npc.name || npc.id || 'N').replace(/[^a-z]/gi, '').toUpperCase();
+                const preferred = label[0] || 'N';
+                let glyph = preferred;
+                if (used.has(glyph)) glyph = 'N';
+                if (used.has(glyph)) {
+                    for (const candidate of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+                        if (!used.has(candidate)) { glyph = candidate; break; }
+                    }
+                }
+                used.add(glyph);
+                glyphs.set(npc.id, glyph);
+            });
+        return glyphs;
+    }
+
+    function makeGMMapExportTileKey(x, y) {
+        return `${Math.round(Number(x))}:${Math.round(Number(y))}`;
+    }
+
+    function setGMMapGlyph(grid, minX, minY, x, y, glyph, priority, priorities) {
+        const gx = Math.round(Number(x)) - minX;
+        const gy = Math.round(Number(y)) - minY;
+        if (!grid[gy] || grid[gy][gx] === undefined) return;
+        const key = `${gx}:${gy}`;
+        if ((priorities.get(key) || 0) <= priority) {
+            grid[gy][gx] = glyph;
+            priorities.set(key, priority);
+        }
+    }
+
+    function getGMGeneratedSettlementSummaries() {
+        const settlements = new Map();
+        const add = entity => {
+            const id = entity?.state?.settlementId;
+            if (!id) return;
+            const entry = settlements.get(id) || { id, tiles: 0, buildings: new Set(), npcs: 0, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+            const x = Math.round(Number(entity.x ?? entity.gridX));
+            const y = Math.round(Number(entity.y ?? entity.gridY));
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                entry.minX = Math.min(entry.minX, x);
+                entry.minY = Math.min(entry.minY, y);
+                entry.maxX = Math.max(entry.maxX, x);
+                entry.maxY = Math.max(entry.maxY, y);
+            }
+            entry.tiles++;
+            if (entity.state?.building) entry.buildings.add(entity.state.building);
+            if (entity.gridX !== undefined) entry.npcs++;
+            settlements.set(id, entry);
+        };
+        [...gmFloors, ...gmWalls, ...gmObjects, ...gmHotspots, ...gmMarkers, ...gmTransitions, ...gmNPCs].forEach(add);
+        return Array.from(settlements.values())
+            .map(entry => ({
+                id: entry.id,
+                parts: entry.tiles,
+                buildings: entry.buildings.size,
+                npcs: entry.npcs,
+                bounds: Number.isFinite(entry.minX) ? `${entry.minX},${entry.minY}..${entry.maxX},${entry.maxY}` : 'unknown'
+            }))
+            .sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    function buildGMMapExport(options = {}) {
+        const radius = Math.max(4, Math.min(20, Math.round(Number(options.radius) || 12)));
+        const level = String(options.level ?? currentLevel);
+        const centerX = Math.round(Number(options.x ?? playerGridX));
+        const centerY = Math.round(Number(options.y ?? playerGridY));
+        const minX = centerX - radius;
+        const maxX = centerX + radius;
+        const minY = centerY - radius;
+        const maxY = centerY + radius;
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+        const grid = Array.from({ length: height }, () => Array.from({ length: width }, () => ' '));
+        const priorities = new Map();
+        const within = (x, y, entryLevel = level) => String(entryLevel) === level && x >= minX && x <= maxX && y >= minY && y <= maxY;
+        const baseWalls = (allWalls[level] || []).filter(wall => within(wall.x, wall.y, level));
+        const baseDoors = doors.filter(door => within(door.x, door.y, door.level));
+        const baseLevelTransitions = baseTransitions.filter(transition => within(transition.x ?? transition.gridX, transition.y ?? transition.gridY, transition.level ?? '0'));
+        const levelNPCs = npcs.filter(npc => within(npc.gridX, npc.gridY, npc.level));
+        const npcGlyphs = getGMMapNPCGlyphs(levelNPCs);
+
+        for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+                const glyph = !isValidTile(x, y, level) ? ' ' : (level === '0' && x < 4 ? '~' : '.');
+                setGMMapGlyph(grid, minX, minY, x, y, glyph, 1, priorities);
+                if (level === '0' && pathTiles.some(tile => tile.x === x && tile.y === y)) setGMMapGlyph(grid, minX, minY, x, y, 'r', 2, priorities);
+            }
+        }
+
+        gmFloors.filter(floor => within(floor.x, floor.y, floor.level)).forEach(floor => setGMMapGlyph(grid, minX, minY, floor.x, floor.y, 'r', 3, priorities));
+        baseWalls.forEach(wall => setGMMapGlyph(grid, minX, minY, wall.x, wall.y, '#', 4, priorities));
+        gmWalls.filter(wall => within(wall.x, wall.y, wall.level)).forEach(wall => setGMMapGlyph(grid, minX, minY, wall.x, wall.y, '#', 4, priorities));
+        baseDoors.forEach(door => setGMMapGlyph(grid, minX, minY, door.x, door.y, 'D', 5, priorities));
+        gmObjects.filter(obj => within(obj.x, obj.y, obj.level)).forEach(obj => setGMMapGlyph(grid, minX, minY, obj.x, obj.y, 'p', 5, priorities));
+        gmHotspots.filter(hotspot => within(hotspot.x, hotspot.y, hotspot.level)).forEach(hotspot => setGMMapGlyph(grid, minX, minY, hotspot.x, hotspot.y, 'p', 5, priorities));
+        gmMarkers.filter(marker => within(marker.x, marker.y, marker.level)).forEach(marker => setGMMapGlyph(grid, minX, minY, marker.x, marker.y, 'p', 5, priorities));
+        getGroundItemEntitySnapshots().filter(item => within(item.x, item.y, item.level)).forEach(item => setGMMapGlyph(grid, minX, minY, item.x, item.y, 'i', 6, priorities));
+        baseLevelTransitions.forEach(transition => setGMMapGlyph(grid, minX, minY, transition.x ?? transition.gridX, transition.y ?? transition.gridY, '>', 7, priorities));
+        gmTransitions.filter(transition => within(transition.x, transition.y, transition.level)).forEach(transition => setGMMapGlyph(grid, minX, minY, transition.x, transition.y, '>', 7, priorities));
+        levelNPCs.forEach(npc => setGMMapGlyph(grid, minX, minY, npc.gridX, npc.gridY, npcGlyphs.get(npc.id) || 'N', 8, priorities));
+        if (within(centerX, centerY, level)) setGMMapGlyph(grid, minX, minY, centerX, centerY, '@', 9, priorities);
+
+        const nearbyEntities = getNearbyCanvasEntities(radius)
+            .filter(entity => entity.level === level)
+            .slice(0, 32);
+        const nearbyNPCs = levelNPCs
+            .map(npc => ({ id: npc.id, name: npc.name || npc.id, role: npc.state?.role || npc.type || '', x: npc.gridX, y: npc.gridY, glyph: npcGlyphs.get(npc.id) || 'N' }))
+            .sort((a, b) => Math.max(Math.abs(a.x - centerX), Math.abs(a.y - centerY)) - Math.max(Math.abs(b.x - centerX), Math.abs(b.y - centerY)) || a.name.localeCompare(b.name))
+            .slice(0, 16);
+        const flags = Object.entries(worldFlags)
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .slice(0, 16)
+            .map(([key, value]) => `${key}=${JSON.stringify(value)}`);
+        const memoryFacts = normalizeMemoryFacts(worldMemory.facts).slice(-8);
+        const settlements = getGMGeneratedSettlementSummaries().slice(0, 8);
+
+        const lines = [
+            'GM Map Export v1',
+            `level: ${level}`,
+            `center: player @ (${centerX}, ${centerY})`,
+            `radius: ${radius}`,
+            `bounds: x ${minX}..${maxX}, y ${minY}..${maxY}`,
+            '',
+            'Legend: @ player, A-Z nearby named NPCs, # walls/buildings, D doors, >/< transitions, i items, p props, r roads/floors/paths, ~ water, . walkable ground',
+            '',
+            grid.map(row => row.join('')).join('\n'),
+            '',
+            'NPCs:',
+            ...(nearbyNPCs.length ? nearbyNPCs.map(npc => `${npc.glyph} ${npc.id} "${npc.name}"${npc.role ? ` role=${npc.role}` : ''} @ (${npc.x}, ${npc.y}, level ${level})`) : ['none nearby']),
+            '',
+            'Objects / Props / Transitions / Items:',
+            ...(nearbyEntities.length ? nearbyEntities.map(entity => `${entity.kind} ${entity.id} "${entity.name}" @ (${entity.x}, ${entity.y}, level ${entity.level})${entity.shape ? ` shape=${entity.shape}` : ''}${entity.targetLevel ? ` -> level ${entity.targetLevel}` : ''}`) : ['none nearby']),
+            '',
+            'Inventory:',
+            ...(getInventorySnapshot().length ? getInventorySnapshot().map(item => `${item.id} "${item.name}" type=${item.type || item.baseType || 'item'}${(item.tags || []).length ? ` tags=${item.tags.join(',')}` : ''}`) : ['empty']),
+            '',
+            'Memory:',
+            ...(worldMemory.summary ? [`summary: ${safeMemoryText(worldMemory.summary, 500)}`] : []),
+            ...(memoryFacts.length ? memoryFacts.map(fact => `fact: ${fact}`) : ['none']),
+            '',
+            'Flags:',
+            ...(flags.length ? flags : ['none']),
+            '',
+            'Generated Settlements / Regions:',
+            ...(settlements.length ? settlements.map(settlement => `${settlement.id}: parts=${settlement.parts}, buildings=${settlement.buildings}, npcs=${settlement.npcs}, bounds=${settlement.bounds}`) : ['none'])
+        ];
+        return lines.join('\n');
+    }
+
+    function copyGMMapExport() {
+        const text = buildGMMapExport();
+        const io = document.getElementById('llm-io');
+        if (io) io.value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('GM map copied.'))
+            .catch(() => addLogMessage('GM map created in the panel. Copy it manually.'));
+        return text;
+    }
+
+    function compactGMWorldContextEntity(entity) {
+        if (!entity || typeof entity !== 'object') return null;
+        const compact = {
+            kind: entity.kind || 'entity',
+            id: entity.id || null,
+            name: entity.name || entity.id || entity.kind || 'Entity',
+            level: entity.level ?? null,
+            x: Number.isFinite(Number(entity.x)) ? Number(entity.x) : null,
+            y: Number.isFinite(Number(entity.y)) ? Number(entity.y) : null
+        };
+        if (entity.shape) compact.shape = entity.shape;
+        if (entity.type) compact.type = entity.type;
+        if (entity.dir) compact.dir = entity.dir;
+        if (entity.surface) compact.surface = entity.surface;
+        if (entity.targetLevel) compact.targetLevel = entity.targetLevel;
+        if (entity.spawnX !== undefined && entity.spawnY !== undefined) compact.spawn = { x: entity.spawnX, y: entity.spawnY };
+        if (entity.walkable !== undefined) compact.walkable = entity.walkable !== false;
+        if (entity.blocksMovement !== undefined) compact.blocksMovement = !!entity.blocksMovement;
+        if (entity.mode) compact.mode = entity.mode;
+        if (entity.radius !== undefined) compact.radius = entity.radius;
+        if (entity.state && typeof entity.state === 'object') compact.state = copyActionContextValue(entity.state);
+        if (entity.note) compact.note = safeMemoryText(entity.note, 180);
+        if (entity.dist !== undefined) compact.distance = Math.round(Number(entity.dist) * 10) / 10;
+        if (entity.direction) compact.direction = entity.direction;
+        return compact;
+    }
+
+    function buildGMWorldContextExport(radius = 12) {
+        const boundedRadius = Math.max(4, Math.min(20, Math.round(Number(radius) || 12)));
+        const level = String(currentLevel);
+        const nearbyEntities = getNearbyCanvasEntities(boundedRadius)
+            .filter(entity => entity.level === level)
+            .slice(0, 48)
+            .map(compactGMWorldContextEntity)
+            .filter(Boolean);
+        const nearbyNPCs = getNearbyNPCs(boundedRadius)
+            .slice(0, 24)
+            .map(npc => copyActionContextValue({
+                id: npc.id,
+                name: npc.name,
+                role: npc.state?.role || npc.type || null,
+                type: npc.type || null,
+                level,
+                x: npc.x,
+                y: npc.y,
+                state: compactNPCDialogueState(npc.state || {}),
+                note: safeMemoryText(npc.note || '', 180)
+            }));
+        const memory = serializeWorldMemory();
+        const flags = Object.fromEntries(Object.entries(worldFlags).sort((a, b) => a[0].localeCompare(b[0])).slice(0, 32));
+        return copyActionContextValue({
+            protocol: 'gm_world_context_v1',
+            generatedAt: new Date().toISOString(),
+            scope: {
+                level,
+                radius: boundedRadius,
+                center: { x: playerGridX, y: playerGridY },
+                bounds: { minX: playerGridX - boundedRadius, maxX: playerGridX + boundedRadius, minY: playerGridY - boundedRadius, maxY: playerGridY + boundedRadius }
+            },
+            player: {
+                id: 'player',
+                level,
+                tile: { x: playerGridX, y: playerGridY }
+            },
+            inventory: getInventorySnapshot().map(item => copyActionContextValue({
+                id: item.id,
+                name: item.name,
+                type: item.type || item.baseType || 'item',
+                category: item.category || null,
+                tags: Array.isArray(item.tags) ? item.tags.slice(0, 12) : [],
+                description: safeMemoryText(item.description || '', 180)
+            })),
+            nearby: {
+                npcs: nearbyNPCs,
+                entities: nearbyEntities,
+                counts: {
+                    npcs: nearbyNPCs.length,
+                    entities: nearbyEntities.length
+                }
+            },
+            memory: {
+                summary: safeMemoryText(memory.summary || '', 800),
+                facts: normalizeMemoryFacts(memory.facts).slice(-12),
+                quests: (Array.isArray(memory.quests) ? memory.quests : Object.values(memory.quests || {})).slice(-6).map(quest => copyActionContextValue({
+                    id: quest.id,
+                    title: quest.title,
+                    status: quest.status,
+                    note: safeMemoryText(quest.note || '', 240)
+                }))
+            },
+            flags,
+            recentEvents: getEventsSinceLastGM().slice(-12).map(event => copyActionContextValue(event)),
+            generatedRegions: getGMGeneratedSettlementSummaries(),
+            acceptedProposalProtocol: {
+                protocol: 'gm_proposal_v1',
+                shape: { narration: 'optional text', dialogue: '{ speaker, text } or array of those objects, optional', commands: 'array of local JSON commands' },
+                preferredCommands: ['set_scene_time', 'spawn_visitors', 'create_settlement', 'create_prop', 'create_transition', 'set_flag', 'add_memory']
+            }
+        });
+    }
+
+    function copyGMWorldContextExport() {
+        const context = buildGMWorldContextExport(12);
+        const text = JSON.stringify(context, null, 2);
+        const io = document.getElementById('llm-io');
+        if (io) io.value = text;
+        copyTextToClipboard(text)
+            .then(() => addLogMessage('GM context copied.'))
+            .catch(() => addLogMessage('GM context created in the panel. Copy it manually.'));
+        return context;
     }
 
     // --- 5C. ACTION CONTEXT V1 ---
@@ -4180,6 +4468,7 @@
                 set_npc_state: { id: 'string', name: 'optional string', note: 'optional string', state: 'object merged into NPC state' },
                 create_prop: { id: 'string', name: 'string', note: 'optional short label/metadata', shape: 'crate | stone | orb | scroll | sign | chest | hole | debris | rubble | stairs | ladder | pillar | plank', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near', color: '#rrggbb', blocksMovement: 'optional boolean for barricades, rubble, pillars, etc.' },
                 create_structure: { id: 'string group id', name: 'optional display name', structure: 'bridge | platform | room | barricade | wall_line | rubble_field | ramp', near: 'optional world anchor id', x: 'optional center/start x', y: 'optional center/start y', level: '-1 | 0 | 2', width: 'tiles, default depends on structure', depth: 'tiles for platforms/rooms', length: 'tiles for bridges/barricades/wall lines/ramps', dir: 'N | S | E | W direction/orientation', color: '#rrggbb', blocksMovement: 'for barricades/rubble, default true' },
+                create_settlement: { id: 'string group id prefix', name: 'display name', near: 'player | player_nearby | world anchor id', x: 'optional center x', y: 'optional center y', level: '0', width: '8 to 24 tiles', depth: '8 to 24 tiles', style: 'osrs_town', buildings: [{ id: 'local building id', name: 'display name', size: 'small | medium', floors: '1 | 2', role: 'inn | shop | house | hall' }], npcs: [{ id: 'local npc id', name: 'display name', role: 'mayor | merchant | guard | villager', nearBuilding: 'building id' }], features: ['well', 'notice_board', 'market_stalls'] },
                 remove_structure: { id: 'structure group id; removes any GM-created parts with this id prefix' },
                 move_prop: { id: 'string', x: 'optional integer', y: 'optional integer', level: '-1 | 0 | 2', near: 'optional world anchor id', nearPlayer: 'optional boolean', radius: 'optional search radius around near' },
                 remove_prop: { id: 'string' },
@@ -4849,7 +5138,7 @@
             '- Failed or impossible actions usually need narration only; add a flag/memory only if the failed attempt matters later.',
             '- Use update_entity/transform_entity/set_entity_state/hide_entity/reveal_entity/set_blocking/set_color/rename_entity/damage_entity/repair_entity before creating duplicates.',
             '- Use create_prop/create_object for visible physical props; create_hotspot only for tappable environmental targets; create_npc for visible characters/creatures whose dialogue stays in chat.',
-            '- Use create_wall/remove_wall/create_floor/remove_floor for single-tile structural changes; create_structure for bridges, platforms, rooms, barricades, wall lines, rubble fields, or ramps.',
+            '- Use create_wall/remove_wall/create_floor/remove_floor for single-tile structural changes; create_structure for bridges, platforms, rooms, barricades, wall lines, rubble fields, or ramps. Use create_settlement only for local manual blueprint compilation into existing floors, walls, props, NPCs, and memory.',
             '- Use set_terrain/raise_terrain/lower_terrain/dig_tile/fill_tile for true ground deformation. Use create_transition for passages the player can enter.',
             '- Use unique item objects with give_item/spawn_item; spawned/dropped ground items persist until picked up or removed.',
             '- Prefer named anchors from payload.worldAnchors instead of raw coordinates.',
@@ -4901,6 +5190,44 @@
         copyTextToClipboard(text)
             .then(() => addLogMessage('Adventure seed prompt copied.'))
             .catch(() => addLogMessage('Adventure seed prompt created in the panel. Copy it manually.'));
+    }
+
+    function insertSettlementBlueprint() {
+        const io = document.getElementById('llm-io');
+        if (!io) return false;
+        const blueprint = {
+            op: 'create_settlement',
+            id: 'gm_settlement_riverside',
+            name: 'Riverside Hamlet',
+            near: 'player',
+            level: '0',
+            width: 16,
+            depth: 16,
+            style: 'osrs_town',
+            buildings: [
+                { id: 'inn', name: 'The Copper Kettle', size: 'medium', floors: 2, role: 'inn' },
+                { id: 'shop', name: 'Riverside Goods', size: 'small', floors: 1, role: 'shop' },
+                { id: 'house', name: 'Willow House', size: 'small', floors: 1, role: 'house' }
+            ],
+            npcs: [
+                { id: 'mayor', name: 'Mara', role: 'mayor', nearBuilding: 'inn' },
+                { id: 'merchant', name: 'Tobin', role: 'merchant', nearBuilding: 'shop' }
+            ],
+            features: ['well', 'notice_board', 'market_stalls']
+        };
+        io.value = JSON.stringify(blueprint, null, 2);
+        io.focus();
+        addLogMessage('Settlement blueprint inserted.');
+        return true;
+    }
+
+    function clearWorldBuilderInput() {
+        const io = document.getElementById('llm-io');
+        if (!io) return false;
+        io.value = '';
+        io.focus();
+        addLogMessage('World Builder input cleared.');
+        return true;
     }
 
     function isValidTile(x, y, level) {
@@ -6422,6 +6749,728 @@
         return false;
     }
 
+    function hashGMSettlementSeed(value) {
+        const text = String(value || '');
+        let hash = 2166136261;
+        for (let i = 0; i < text.length; i++) {
+            hash ^= text.charCodeAt(i);
+            hash = Math.imul(hash, 16777619) >>> 0;
+        }
+        return hash >>> 0;
+    }
+
+    function clampSettlementSize(value, fallback = 16) {
+        return Math.max(8, Math.min(24, Math.round(Number(value) || fallback)));
+    }
+
+    function normalizeGMSettlementPlacementMode(value, hasExplicitCoordinates = false, adjust = true) {
+        if (adjust === false || value === 'exact') return 'exact';
+        const mode = normalizeSettlementFeature(value);
+        if (mode === 'infill' || mode === 'exact' || mode === 'frontier') return mode;
+        return 'frontier';
+    }
+
+    function normalizeGMSettlementFitMode(value) {
+        const mode = normalizeSettlementFeature(value);
+        return mode === 'strict' || mode === 'compact' || mode === 'expand' ? mode : 'expand';
+    }
+
+    function normalizeGMSettlementDirection(value) {
+        const direction = normalizeSettlementFeature(value);
+        return ['north', 'south', 'east', 'west'].includes(direction) ? direction : null;
+    }
+
+    function getGMSettlementFootprintCandidates(width, depth, fit = 'expand') {
+        const requested = { width: clampSettlementSize(width, 16), depth: clampSettlementSize(depth, 16) };
+        if (fit === 'strict') return [requested];
+        const candidates = [];
+        const add = (candidateWidth, candidateDepth) => {
+            const next = {
+                width: Math.min(requested.width, clampSettlementSize(candidateWidth, 16)),
+                depth: Math.min(requested.depth, clampSettlementSize(candidateDepth, 16))
+            };
+            const key = `${next.width}x${next.depth}`;
+            if (!candidates.some(candidate => candidate.key === key)) candidates.push({ ...next, key });
+        };
+        add(requested.width, requested.depth);
+        add(16, 16);
+        add(12, 12);
+        add(8, 8);
+        return candidates.map(({ key, ...candidate }) => candidate);
+    }
+
+    function normalizeSettlementFeature(value) {
+        return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    }
+
+    function getGMSettlementBlockedTileSets() {
+        return {
+            occupied: new Set([
+                ...gmObjects.map(entity => `${entity.level}:${entity.x}:${entity.y}`),
+                ...gmHotspots.map(entity => `${entity.level}:${entity.x}:${entity.y}`),
+                ...gmMarkers.map(entity => `${entity.level}:${entity.x}:${entity.y}`),
+                ...gmTransitions.map(entity => `${entity.level}:${entity.x}:${entity.y}`),
+                ...gmNPCs.map(entity => `${entity.level}:${entity.gridX}:${entity.gridY}`),
+                ...gmFloors.map(entity => `${entity.level}:${entity.x}:${entity.y}`),
+                ...gmWalls.map(entity => `${entity.level}:${entity.x}:${entity.y}`)
+            ]),
+            floorHeights: new Set(Object.keys(floorHeights)),
+            wallTiles: new Set(Object.entries(allWalls).flatMap(([level, walls]) => (walls || []).map(wall => `${level}:${wall.x}:${wall.y}`)))
+        };
+    }
+
+    function getGMSettlementKnownWorldBounds(level) {
+        const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0 };
+        const add = (x, y, entryLevel = level) => {
+            if (String(entryLevel) !== String(level)) return;
+            const tx = Math.round(Number(x));
+            const ty = Math.round(Number(y));
+            if (!Number.isFinite(tx) || !Number.isFinite(ty) || !isValidTile(tx, ty, level)) return;
+            bounds.minX = Math.min(bounds.minX, tx);
+            bounds.minY = Math.min(bounds.minY, ty);
+            bounds.maxX = Math.max(bounds.maxX, tx);
+            bounds.maxY = Math.max(bounds.maxY, ty);
+            bounds.count++;
+        };
+        pathTiles.forEach(tile => add(tile.x, tile.y, '0'));
+        Object.keys(floorHeights).forEach(key => {
+            const [entryLevel, x, y] = key.split(',');
+            add(x, y, entryLevel);
+        });
+        Object.entries(allWalls).forEach(([entryLevel, walls]) => (walls || []).forEach(wall => add(wall.x, wall.y, entryLevel)));
+        baseArchitecturalProps.forEach(prop => add(prop.x ?? prop.gridX, prop.y ?? prop.gridY, prop.level ?? '0'));
+        baseTransitions.forEach(transition => add(transition.x ?? transition.gridX, transition.y ?? transition.gridY, transition.level ?? '0'));
+        gmObjects.forEach(entity => add(entity.x, entity.y, entity.level));
+        gmHotspots.forEach(entity => add(entity.x, entity.y, entity.level));
+        gmMarkers.forEach(entity => add(entity.x, entity.y, entity.level));
+        gmTransitions.forEach(entity => add(entity.x, entity.y, entity.level));
+        gmNPCs.forEach(entity => add(entity.gridX, entity.gridY, entity.level));
+        gmFloors.forEach(entity => add(entity.x, entity.y, entity.level));
+        gmWalls.forEach(entity => add(entity.x, entity.y, entity.level));
+        add(playerGridX, playerGridY, currentLevel);
+        if (bounds.count === 0) add(playerGridX, playerGridY, currentLevel);
+        return bounds;
+    }
+
+    function getGMSettlementTileBlockReason(x, y, level, blocked) {
+        const key = `${level}:${x}:${y}`;
+        if (!isValidTile(x, y, level)) return 'invalid';
+        if (blocked.occupied.has(key)) return 'occupied';
+        if (blocked.floorHeights.has(`${level},${x},${y}`)) return 'floor';
+        if (level === '0' && x < 4) return 'water';
+        if (pathTiles.some(tile => tile.x === x && tile.y === y)) return 'path';
+        if (isTileUnwalkable(level, x, y)) return 'blocked';
+        if (blocked.wallTiles.has(key)) return 'wall';
+        return null;
+    }
+
+    function isGMSettlementSourceTileSafe(x, y, level, blocked) {
+        return !getGMSettlementTileBlockReason(x, y, level, blocked);
+    }
+
+    function evaluateGMSettlementParcel(centerX, centerY, level, width, depth, blocked) {
+        const startX = centerX - Math.floor(width / 2);
+        const startY = centerY - Math.floor(depth / 2);
+        const reasons = {};
+        let blockedCount = 0;
+        for (let x = startX; x < startX + width; x++) {
+            for (let y = startY; y < startY + depth; y++) {
+                const reason = getGMSettlementTileBlockReason(x, y, level, blocked);
+                if (reason) {
+                    reasons[reason] = (reasons[reason] || 0) + 1;
+                    blockedCount++;
+                }
+            }
+        }
+        return {
+            valid: blockedCount === 0,
+            blockedCount,
+            skippedReason: Object.entries(reasons).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+            reasons
+        };
+    }
+
+    function findGMSettlementParcel(centerX, centerY, level, width, depth, options = {}) {
+        const blocked = options.blocked || getGMSettlementBlockedTileSets();
+        const maxRadius = Math.max(0, Math.min(Math.ceil(Math.hypot(GRID_SIZE, GRID_SIZE)), Math.round(Number(options.maxRadius) || Math.ceil(Math.hypot(GRID_SIZE, GRID_SIZE)))));
+        const baseX = Math.round(Number(centerX));
+        const baseY = Math.round(Number(centerY));
+        if (!Number.isFinite(baseX) || !Number.isFinite(baseY) || !LEVELS[level]) return { x: null, y: null, score: Infinity, skippedReason: 'invalid_origin', blocked };
+        let bestRejected = { x: baseX, y: baseY, score: Infinity, skippedReason: null, blocked };
+        const footprints = options.footprints || getGMSettlementFootprintCandidates(width, depth);
+        for (let radius = 0; radius <= maxRadius; radius++) {
+            const candidates = [];
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dy = -radius; dy <= radius; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+                    candidates.push({ x: baseX + dx, y: baseY + dy, distance: Math.hypot(dx, dy) });
+                }
+            }
+            candidates.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
+            for (const candidate of candidates) {
+                for (let footprintIndex = 0; footprintIndex < footprints.length; footprintIndex++) {
+                    const footprint = footprints[footprintIndex];
+                    const evaluation = evaluateGMSettlementParcel(candidate.x, candidate.y, level, footprint.width, footprint.depth, blocked);
+                    const score = candidate.distance * 1000 + footprintIndex * 10 + evaluation.blockedCount;
+                    if (score < bestRejected.score) bestRejected = { x: candidate.x, y: candidate.y, width: footprint.width, depth: footprint.depth, score, skippedReason: evaluation.skippedReason, blocked };
+                    if (evaluation.valid) return { x: candidate.x, y: candidate.y, width: footprint.width, depth: footprint.depth, score, skippedReason: null, blocked };
+                }
+            }
+        }
+        return bestRejected;
+    }
+
+    function getGMSettlementDirectionOrder(direction, seed = 0) {
+        if (direction) return [direction];
+        const directions = ['east', 'south', 'north', 'west'];
+        const offset = Math.abs(Math.round(Number(seed) || 0)) % directions.length;
+        return directions.map((_, index) => directions[(index + offset) % directions.length]);
+    }
+
+    function makeGMSettlementFrontierCandidates(bounds, direction, width, depth, originX, originY) {
+        const candidates = [];
+        const add = (x, y, outward) => candidates.push({ x, y, outward, distance: Math.hypot(x - originX, y - originY) });
+        const sortedRange = (center, min = 0, max = GRID_SIZE - 1) => Array.from({ length: max - min + 1 }, (_, index) => min + index)
+            .sort((a, b) => Math.abs(a - center) - Math.abs(b - center) || a - b);
+        const centerX = Math.round((bounds.minX + bounds.maxX) / 2);
+        const centerY = Math.round((bounds.minY + bounds.maxY) / 2);
+        const anchorX = Number.isFinite(originX) ? originX : centerX;
+        const anchorY = Number.isFinite(originY) ? originY : centerY;
+        if (direction === 'east' || direction === 'west') {
+            const yValues = sortedRange(anchorY);
+            for (let outward = 0; outward <= GRID_SIZE; outward++) {
+                const x = direction === 'east'
+                    ? bounds.maxX + 1 + Math.floor(width / 2) + outward
+                    : bounds.minX - width + Math.floor(width / 2) - outward;
+                yValues.forEach(y => add(x, y, outward));
+            }
+        } else {
+            const xValues = sortedRange(anchorX);
+            for (let outward = 0; outward <= GRID_SIZE; outward++) {
+                const y = direction === 'south'
+                    ? bounds.maxY + 1 + Math.floor(depth / 2) + outward
+                    : bounds.minY - depth + Math.floor(depth / 2) - outward;
+                xValues.forEach(x => add(x, y, outward));
+            }
+        }
+        return candidates.sort((a, b) => a.outward - b.outward || a.distance - b.distance || a.x - b.x || a.y - b.y);
+    }
+
+    function findGMSettlementFrontierParcel(centerX, centerY, level, width, depth, options = {}) {
+        const blocked = options.blocked || getGMSettlementBlockedTileSets();
+        const fit = normalizeGMSettlementFitMode(options.fit);
+        const seed = options.seed || 0;
+        const direction = normalizeGMSettlementDirection(options.direction);
+        const directions = getGMSettlementDirectionOrder(direction, seed);
+        const bounds = options.bounds || getGMSettlementKnownWorldBounds(level);
+        if (!bounds || bounds.count === 0) return findGMSettlementParcel(centerX, centerY, level, width, depth, { ...options, blocked });
+        const footprints = getGMSettlementFootprintCandidates(width, depth, fit);
+        let bestRejected = { x: null, y: null, score: Infinity, skippedReason: 'no_frontier', blocked, bounds, direction: directions[0] || null };
+        const compactCandidates = [];
+        if (fit === 'compact') {
+            directions.forEach(dir => {
+                footprints.forEach((footprint, footprintIndex) => {
+                    makeGMSettlementFrontierCandidates(bounds, dir, footprint.width, footprint.depth, centerX, centerY)
+                        .forEach(candidate => compactCandidates.push({ ...candidate, direction: dir, footprint, footprintIndex }));
+                });
+            });
+            compactCandidates.sort((a, b) => a.outward - b.outward || a.distance - b.distance || a.footprintIndex - b.footprintIndex || a.x - b.x || a.y - b.y);
+            for (const candidate of compactCandidates) {
+                const evaluation = evaluateGMSettlementParcel(candidate.x, candidate.y, level, candidate.footprint.width, candidate.footprint.depth, blocked);
+                const score = candidate.outward * 10000 + candidate.distance * 10 + candidate.footprintIndex + evaluation.blockedCount;
+                if (score < bestRejected.score) bestRejected = { x: candidate.x, y: candidate.y, width: candidate.footprint.width, depth: candidate.footprint.depth, score, skippedReason: evaluation.skippedReason, blocked, bounds, direction: candidate.direction };
+                if (evaluation.valid) return { x: candidate.x, y: candidate.y, width: candidate.footprint.width, depth: candidate.footprint.depth, score, skippedReason: null, blocked, bounds, direction: candidate.direction };
+            }
+            return bestRejected;
+        }
+
+        for (let footprintIndex = 0; footprintIndex < footprints.length; footprintIndex++) {
+            const footprint = footprints[footprintIndex];
+            for (const dir of directions) {
+                const candidates = makeGMSettlementFrontierCandidates(bounds, dir, footprint.width, footprint.depth, centerX, centerY);
+                for (const candidate of candidates) {
+                    const evaluation = evaluateGMSettlementParcel(candidate.x, candidate.y, level, footprint.width, footprint.depth, blocked);
+                    const score = footprintIndex * 1000000 + candidate.outward * 10000 + candidate.distance * 10 + evaluation.blockedCount;
+                    if (score < bestRejected.score) bestRejected = { x: candidate.x, y: candidate.y, width: footprint.width, depth: footprint.depth, score, skippedReason: evaluation.skippedReason, blocked, bounds, direction: dir };
+                    if (evaluation.valid) return { x: candidate.x, y: candidate.y, width: footprint.width, depth: footprint.depth, score, skippedReason: null, blocked, bounds, direction: dir };
+                }
+            }
+        }
+        return bestRejected;
+    }
+
+    function createGMSettlement(cmd) {
+        const id = normalizeStructureId(cmd.id || cmd.settlementId || cmd.name);
+        const prefix = `${id}_`;
+        const existing = [...gmObjects, ...gmFloors, ...gmWalls, ...gmTerrain, ...gmTransitions, ...gmHotspots, ...gmMarkers, ...gmNPCs]
+            .some(entity => entity && typeof entity.id === 'string' && (entity.id === id || entity.id.startsWith(prefix)));
+        if (existing) { if (!cmd.silent) addLogMessage(`Settlement already exists: ${id}`); return false; }
+
+        const near = String(cmd.near || cmd.anchor || '').trim().toLowerCase();
+        const placement = resolveGMPlacement({ ...cmd, near: near === 'player' ? 'player_nearby' : cmd.near, adjust: false }, currentLevel, 3);
+        const level = String(placement.level);
+        let width = clampSettlementSize(cmd.width, 16);
+        let depth = clampSettlementSize(cmd.depth, 16);
+        const requestedCenterX = placement.x;
+        const requestedCenterY = placement.y;
+        if (level !== '0' || !isValidTile(requestedCenterX, requestedCenterY, level)) { if (!cmd.silent) addLogMessage('Invalid create_settlement command.'); return false; }
+
+        const hasExplicitCoordinates = Number.isFinite(Number(cmd.x)) && Number.isFinite(Number(cmd.y));
+        const placementMode = normalizeGMSettlementPlacementMode(cmd.placement, hasExplicitCoordinates, cmd.adjust);
+        const fitMode = normalizeGMSettlementFitMode(cmd.fit);
+        const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim() : id.replace(/_/g, ' ');
+        const seed = hashGMSettlementSeed(`${id}:${name}`);
+        const blocked = getGMSettlementBlockedTileSets();
+        const exactParcel = evaluateGMSettlementParcel(requestedCenterX, requestedCenterY, level, width, depth, blocked);
+        const canAdjustParcel = cmd.adjust !== false;
+        let parcel;
+        if (!canAdjustParcel || placementMode === 'exact') {
+            parcel = exactParcel.valid
+                ? { x: requestedCenterX, y: requestedCenterY, width, depth, score: 0, skippedReason: null, blocked, placementMode: 'exact' }
+                : { x: requestedCenterX, y: requestedCenterY, width, depth, score: Infinity, skippedReason: exactParcel.skippedReason, blocked, placementMode: 'exact' };
+        } else if (placementMode === 'infill') {
+            parcel = exactParcel.valid
+                ? { x: requestedCenterX, y: requestedCenterY, width, depth, score: 0, skippedReason: null, blocked, placementMode: 'infill' }
+                : findGMSettlementParcel(requestedCenterX, requestedCenterY, level, width, depth, { blocked, maxRadius: cmd.searchRadius, footprints: getGMSettlementFootprintCandidates(width, depth, fitMode) });
+            parcel.placementMode = 'infill';
+        } else {
+            parcel = findGMSettlementFrontierParcel(requestedCenterX, requestedCenterY, level, width, depth, { blocked, direction: cmd.direction, fit: fitMode, seed });
+            parcel.placementMode = 'frontier';
+        }
+        if (!parcel || parcel.skippedReason) {
+            if (!cmd.silent) addLogMessage('No suitable settlement parcel found.');
+            return false;
+        }
+
+        const centerX = parcel.x;
+        const centerY = parcel.y;
+        width = parcel.width || width;
+        depth = parcel.depth || depth;
+        const startX = centerX - Math.floor(width / 2);
+        const startY = centerY - Math.floor(depth / 2);
+        const endX = startX + width - 1;
+        const endY = startY + depth - 1;
+        const created = [];
+        const failed = [];
+        const buildingAnchors = new Map();
+        const initialBlocked = parcel.blocked || blocked;
+        const reservedSolidTiles = new Set();
+        const reservedBuildingTiles = new Set();
+        const floorTiles = new Set();
+        const makeId = suffix => `${id}_${normalizeStructureId(suffix)}`;
+        const tileKey = (x, y) => `${level}:${x}:${y}`;
+        const canUseTile = (x, y, { solid = false } = {}) => {
+            const key = tileKey(x, y);
+            if (!isGMSettlementSourceTileSafe(x, y, level, initialBlocked)) return false;
+            if (solid && reservedSolidTiles.has(key)) return false;
+            return true;
+        };
+        const remember = (ok, partId, label) => {
+            if (ok) created.push(partId);
+            else failed.push(label || partId);
+            return ok;
+        };
+        const tryFloor = (suffix, x, y, options = {}) => {
+            if (!canUseTile(x, y)) return remember(false, makeId(suffix), suffix);
+            const key = tileKey(x, y);
+            if (floorTiles.has(key)) return true;
+            const partId = makeId(suffix);
+            const ok = createGMFloor({
+                id: partId, name: options.name || `${name} ${suffix.replace(/_/g, ' ')}`,
+                x, y, level, color: options.color || '#8d826c',
+                height: options.height !== undefined ? options.height : getWalkableHeight(x, y, level),
+                walkable: options.walkable !== false, adjust: false,
+                state: { settlementId: id, ...(options.state || {}) },
+                silent: true
+            });
+            if (ok) floorTiles.add(key);
+            return remember(ok, partId, suffix);
+        };
+        const tryWall = (suffix, x, y, dir, options = {}) => {
+            if (!canUseTile(x, y)) return remember(false, makeId(suffix), suffix);
+            const partId = makeId(suffix);
+            return remember(createGMWall({
+                id: partId, name: options.name || `${name} ${suffix.replace(/_/g, ' ')}`,
+                x, y, level, dir, type: options.type || 'wood',
+                color: options.color || '#7b5a3d',
+                height: options.height || 1.6,
+                adjust: false,
+                state: { settlementId: id, ...(options.state || {}) },
+                silent: true
+            }), partId, suffix);
+        };
+        const tryProp = (suffix, x, y, options = {}) => {
+            if (!canUseTile(x, y, { solid: true })) return remember(false, makeId(suffix), suffix);
+            const key = tileKey(x, y);
+            const partId = makeId(suffix);
+            const ok = createGMObject({
+                id: partId, name: options.name || `${name} ${suffix.replace(/_/g, ' ')}`,
+                note: options.note || '', shape: options.shape || 'crate',
+                x, y, level, color: options.color || '#a38354',
+                blocksMovement: !!options.blocksMovement,
+                adjust: false,
+                state: { settlementId: id, ...(options.state || {}) },
+                silent: true
+            });
+            if (ok) reservedSolidTiles.add(key);
+            return remember(ok, partId, suffix);
+        };
+        const tryNPC = (suffix, x, y, options = {}) => {
+            if (!canUseTile(x, y, { solid: true })) return remember(false, makeId(suffix), suffix);
+            const key = tileKey(x, y);
+            const partId = makeId(suffix);
+            const ok = createGMNPC({
+                id: partId, name: options.name || suffix.replace(/_/g, ' '),
+                note: options.note || '', type: options.type || 'human',
+                x, y, level, color: options.color || '#6688cc',
+                adjust: false,
+                state: { settlementId: id, role: options.role || 'villager', nearBuilding: options.nearBuilding || null },
+                silent: true
+            });
+            if (ok) reservedSolidTiles.add(key);
+            return remember(ok, partId, suffix);
+        };
+        const findFreeNear = (originX, originY, maxRadius = 3) => {
+            for (let r = 0; r <= maxRadius; r++) {
+                for (let dx = -r; dx <= r; dx++) {
+                    for (let dy = -r; dy <= r; dy++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                        const x = originX + dx;
+                        const y = originY + dy;
+                        if (canUseTile(x, y, { solid: true })) return { x, y };
+                    }
+                }
+            }
+            return null;
+        };
+        const buildingFits = (x0, y0, size) => {
+            for (let ix = 0; ix < size; ix++) {
+                for (let iy = 0; iy < size; iy++) {
+                    const x = x0 + ix;
+                    const y = y0 + iy;
+                    const key = tileKey(x, y);
+                    if (!canUseTile(x, y) || reservedBuildingTiles.has(key)) return false;
+                }
+            }
+            return true;
+        };
+        const reserveBuildingTiles = (x0, y0, size) => {
+            for (let ix = 0; ix < size; ix++) {
+                for (let iy = 0; iy < size; iy++) reservedBuildingTiles.add(tileKey(x0 + ix, y0 + iy));
+            }
+        };
+
+        const buildings = (Array.isArray(cmd.buildings) ? cmd.buildings : []).slice(0, 8);
+        const buildingList = buildings.length ? buildings : [{ id: 'hall', name: `${name} Hall`, size: 'medium', floors: 1, role: 'hall' }];
+        const rawSlots = [
+            { x: startX + 1, y: startY + 1, door: 'S' },
+            { x: endX - 4, y: startY + 1, door: 'S' },
+            { x: startX + 1, y: endY - 4, door: 'N' },
+            { x: endX - 4, y: endY - 4, door: 'N' },
+            { x: startX + 1, y: centerY - 2, door: 'E' },
+            { x: endX - 4, y: centerY - 2, door: 'W' },
+            { x: centerX - 2, y: startY + 1, door: 'S' },
+            { x: centerX - 2, y: endY - 4, door: 'N' }
+        ];
+        const slotOffset = rawSlots.length ? seed % rawSlots.length : 0;
+        const slots = rawSlots.map((_, index) => rawSlots[(index + slotOffset) % rawSlots.length]);
+        buildingList.forEach((building, index) => {
+            const localId = normalizeStructureId(building?.id || building?.role || `building_${index + 1}`);
+            const role = normalizeSettlementFeature(building?.role || 'house') || 'house';
+            const bName = typeof building?.name === 'string' && building.name.trim() ? building.name.trim() : localId.replace(/_/g, ' ');
+            const preferredSize = normalizeSettlementFeature(building?.size) === 'medium' ? 4 : 3;
+            const floors = Math.max(1, Math.min(2, Math.round(Number(building?.floors) || 1)));
+            let chosen = null;
+            const sizeOptions = preferredSize === 4 ? [4, 3] : [3];
+            for (const size of sizeOptions) {
+                for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
+                    const slot = slots[(index + slotIndex) % slots.length];
+                    const x0 = Math.max(startX, Math.min(endX - size + 1, slot.x));
+                    const y0 = Math.max(startY, Math.min(endY - size + 1, slot.y));
+                    if (buildingFits(x0, y0, size)) {
+                        chosen = { x0, y0, size, doorSide: slot.door };
+                        break;
+                    }
+                }
+                if (chosen) break;
+            }
+            if (!chosen) { failed.push(`building_${localId}`); return; }
+            const { x0, y0, size, doorSide } = chosen;
+            reserveBuildingTiles(x0, y0, size);
+            const doorX = x0 + Math.floor(size / 2);
+            const doorY = y0 + Math.floor(size / 2);
+            let floorCount = 0;
+            for (let ix = 0; ix < size; ix++) for (let iy = 0; iy < size; iy++) {
+                if (tryFloor(`building_${localId}_floor_${ix}_${iy}`, x0 + ix, y0 + iy, { name: `${bName} floor`, color: role === 'shop' ? '#9b8462' : '#8f7f62', state: { kind: 'building_floor', building: localId, role } })) floorCount++;
+            }
+            if (floorCount === 0) return;
+            for (let ix = 0; ix < size; ix++) {
+                const x = x0 + ix;
+                if (!(doorSide === 'N' && x === doorX)) tryWall(`building_${localId}_wall_n_${ix}`, x, y0, 'N', { name: `${bName} wall`, height: floors === 2 ? 2.8 : 1.6 });
+                if (!(doorSide === 'S' && x === doorX)) tryWall(`building_${localId}_wall_s_${ix}`, x, y0 + size - 1, 'S', { name: `${bName} wall`, height: floors === 2 ? 2.8 : 1.6 });
+            }
+            for (let iy = 0; iy < size; iy++) {
+                const y = y0 + iy;
+                if (!(doorSide === 'W' && y === doorY)) tryWall(`building_${localId}_wall_w_${iy}`, x0, y, 'W', { name: `${bName} wall`, height: floors === 2 ? 2.8 : 1.6 });
+                if (!(doorSide === 'E' && y === doorY)) tryWall(`building_${localId}_wall_e_${iy}`, x0 + size - 1, y, 'E', { name: `${bName} wall`, height: floors === 2 ? 2.8 : 1.6 });
+            }
+            const doorTile = doorSide === 'N' ? { x: doorX, y: y0 - 1 }
+                : doorSide === 'S' ? { x: doorX, y: y0 + size }
+                : doorSide === 'W' ? { x: x0 - 1, y: doorY }
+                : { x: x0 + size, y: doorY };
+            tryProp(`building_${localId}_door`, doorTile.x, doorTile.y, { name: `${bName} Door`, shape: 'sign', color: '#6b4c3a', note: `Entrance to ${bName}.`, state: { kind: 'door_hint', building: localId, role } });
+            if (floors === 2) tryProp(`building_${localId}_upper_hint`, x0 + size - 1, y0 + size - 1, { name: `${bName} Upper Storey`, shape: 'pillar', color: '#8a6a46', state: { kind: 'second_storey_hint', building: localId } });
+            buildingAnchors.set(localId, { x: doorTile.x, y: doorTile.y, name: bName, role });
+        });
+
+        if (buildingAnchors.size === 0) {
+            if (!cmd.silent) addLogMessage('No settlement building could be placed.');
+            return false;
+        }
+
+        for (let x = startX; x <= endX; x++) tryFloor(`road_east_west_${x - startX}`, x, centerY, { name: `${name} road`, color: '#7b6f5a', state: { kind: 'road' } });
+        for (let y = startY; y <= endY; y++) tryFloor(`road_north_south_${y - startY}`, centerX, y, { name: `${name} road`, color: '#7b6f5a', state: { kind: 'road' } });
+
+        (Array.isArray(cmd.features) ? cmd.features : []).slice(0, 8).forEach((feature, index) => {
+            const type = normalizeSettlementFeature(feature);
+            const candidates = [
+                { x: centerX + 1 + index, y: centerY + 1 },
+                { x: centerX - 1 - index, y: centerY + 1 },
+                { x: centerX + 1, y: centerY - 1 - index },
+                { x: centerX - 1, y: centerY - 1 - index }
+            ];
+            const spot = candidates.map(candidate => findFreeNear(candidate.x, candidate.y, 1)).find(Boolean);
+            if (!spot) { failed.push(`feature_${type || index}`); return; }
+            if (type === 'well') tryProp(`feature_well_${index}`, spot.x, spot.y, { name: `${name} Well`, shape: 'stone', color: '#6f7880', note: 'A small village well.', state: { feature: type } });
+            else if (type === 'notice_board') tryProp(`feature_notice_board_${index}`, spot.x, spot.y, { name: `${name} Notice Board`, shape: 'sign', color: '#8b5a2b', note: 'A board for local notices.', state: { feature: type } });
+            else if (type === 'market_stalls') tryProp(`feature_market_stall_${index}`, spot.x, spot.y, { name: `${name} Market Stall`, shape: 'crate', color: '#b48a4a', note: 'A simple market stall.', state: { feature: type } });
+            else tryProp(`feature_${type || `prop_${index}`}`, spot.x, spot.y, { name: `${name} ${type.replace(/_/g, ' ') || 'Feature'}`, shape: 'stone', state: { feature: type || 'feature' } });
+        });
+
+        (Array.isArray(cmd.npcs) ? cmd.npcs : []).slice(0, 12).forEach((npc, index) => {
+            const localId = normalizeStructureId(npc?.id || npc?.role || `npc_${index + 1}`);
+            const role = normalizeSettlementFeature(npc?.role || 'villager') || 'villager';
+            const anchor = buildingAnchors.get(normalizeStructureId(npc?.nearBuilding)) || buildingAnchors.values().next().value || { x: centerX, y: centerY };
+            const spot = findFreeNear(anchor.x, anchor.y, 3);
+            if (!spot) { failed.push(`npc_${localId}`); return; }
+            tryNPC(`npc_${localId}`, spot.x, spot.y, {
+                name: typeof npc?.name === 'string' && npc.name.trim() ? npc.name.trim() : localId.replace(/_/g, ' '),
+                role,
+                nearBuilding: normalizeStructureId(npc?.nearBuilding) || null,
+                note: npc?.note || `${role.replace(/_/g, ' ')} of ${name}.`,
+                color: role === 'guard' ? '#8899aa' : role === 'merchant' ? '#aa8844' : '#6688cc'
+            });
+        });
+
+        const connectorInfo = { type: null, id: null, x: null, y: null, direction: parcel.direction || null };
+        if (Math.hypot(centerX - requestedCenterX, centerY - requestedCenterY) > 12 || placementMode === 'frontier') {
+            const signSpot = findFreeNear(requestedCenterX, requestedCenterY, 6);
+            if (signSpot) tryProp('direction_sign', signSpot.x, signSpot.y, {
+                name: `${name} Signpost`,
+                shape: 'sign',
+                color: '#8b6a35',
+                note: `${name} lies ${centerX > requestedCenterX ? 'east' : centerX < requestedCenterX ? 'west' : ''}${centerY > requestedCenterY ? ' south' : centerY < requestedCenterY ? ' north' : ''} from here.`.replace(/\s+/g, ' ').trim(),
+                state: { kind: 'settlement_direction_sign', pointsTo: { x: centerX, y: centerY, level } }
+            }) && Object.assign(connectorInfo, { type: 'signpost', id: makeId('direction_sign'), x: signSpot.x, y: signSpot.y });
+            else failed.push('direction_sign');
+        }
+
+        if (created.length === 0) { if (!cmd.silent) addLogMessage('No settlement parts could be created.'); return false; }
+        addWorldMemoryFact(`${name} is a generated local settlement near (${centerX}, ${centerY}, level ${level}) with footprint ${width}x${depth} and ${buildingAnchors.size} building${buildingAnchors.size === 1 ? '' : 's'}${connectorInfo.type ? `; a ${connectorInfo.type} points toward it from (${connectorInfo.x}, ${connectorInfo.y})` : ''}.`);
+        if (!cmd.silent) {
+            addLogMessage(`Settlement created: ${name}.`);
+            addLogMessage(`Settlement parcel center: (${centerX}, ${centerY}, level ${level})${centerX !== requestedCenterX || centerY !== requestedCenterY ? ` adjusted from (${requestedCenterX}, ${requestedCenterY}).` : '.'}`);
+            if (failed.length > 0) addLogMessage(`Settlement partial placement: ${failed.length} part(s) skipped.`);
+            recordGMEvent('settlement_created', { id, name, x: centerX, y: centerY, requestedX: requestedCenterX, requestedY: requestedCenterY, adjusted: centerX !== requestedCenterX || centerY !== requestedCenterY, level, width, depth, requestedWidth: clampSettlementSize(cmd.width, 16), requestedDepth: clampSettlementSize(cmd.depth, 16), placement: placementMode, fit: fitMode, direction: parcel.direction || normalizeGMSettlementDirection(cmd.direction), connector: connectorInfo.type ? connectorInfo : null, buildings: buildingAnchors.size, parts: created.length, failed: failed.length, parcelScore: parcel.score, anchor: placement.anchorId || cmd.anchor || null });
+        }
+        return true;
+    }
+
+    const GM_SCENE_TIME_PROFILES = {
+        day: { bg: 0x87ceeb, ambient: 0xffffff, ambientIntensity: 0.65, directional: 0xffffff, directionalIntensity: 0.6 },
+        dawn: { bg: 0xd8b07a, ambient: 0xffdfba, ambientIntensity: 0.48, directional: 0xffc27a, directionalIntensity: 0.45 },
+        dusk: { bg: 0x6d587d, ambient: 0xb89ac9, ambientIntensity: 0.38, directional: 0xff9a66, directionalIntensity: 0.32 },
+        night: { bg: 0x141a33, ambient: 0x8390c8, ambientIntensity: 0.22, directional: 0x8fa8ff, directionalIntensity: 0.18 }
+    };
+
+    function normalizeGMSceneTime(value) {
+        const time = normalizeSettlementFeature(value);
+        return Object.prototype.hasOwnProperty.call(GM_SCENE_TIME_PROFILES, time) ? time : null;
+    }
+
+    function setLightColor(light, color) {
+        if (!light) return;
+        if (light.color && typeof light.color.set === 'function') light.color.set(color);
+        else light.color = new THREE.Color(color);
+    }
+
+    function applyGMSceneTimeVisuals(time) {
+        const normalized = normalizeGMSceneTime(time);
+        const profile = normalized ? GM_SCENE_TIME_PROFILES[normalized] : GM_SCENE_TIME_PROFILES.day;
+        activeGMSceneTime = normalized;
+        scene.background = new THREE.Color(profile.bg);
+        ambientLight.intensity = profile.ambientIntensity;
+        dirLight.intensity = profile.directionalIntensity;
+        setLightColor(ambientLight, profile.ambient);
+        setLightColor(dirLight, profile.directional);
+        return !!normalized;
+    }
+
+    function resetGMSceneTimeVisuals() {
+        activeGMSceneTime = null;
+        scene.background = new THREE.Color(LEVELS[currentLevel].bg);
+        ambientLight.intensity = GM_SCENE_TIME_PROFILES.day.ambientIntensity;
+        dirLight.intensity = GM_SCENE_TIME_PROFILES.day.directionalIntensity;
+        setLightColor(ambientLight, GM_SCENE_TIME_PROFILES.day.ambient);
+        setLightColor(dirLight, GM_SCENE_TIME_PROFILES.day.directional);
+    }
+
+    function setGMSceneTime(cmd = {}) {
+        const time = normalizeGMSceneTime(cmd.time || cmd.value);
+        if (!time) {
+            if (!cmd.silent) addLogMessage('Invalid set_scene_time command.');
+            return false;
+        }
+        worldFlags.scene_time = time;
+        if (cmd.reason || cmd.note) worldFlags.scene_time_note = safeMemoryText(cmd.reason || cmd.note, 240);
+        applyGMSceneTimeVisuals(time);
+        if (!cmd.silent) {
+            addLogMessage(`Scene time set to ${time}.`);
+            recordGMEvent('scene_time_set', { time, note: worldFlags.scene_time_note || null });
+        }
+        return true;
+    }
+
+    function normalizeGMVisitorTheme(value) {
+        const theme = normalizeSettlementFeature(value || 'travelers');
+        return ['festival', 'market', 'pilgrims', 'workers', 'guards', 'travelers'].includes(theme) ? theme : 'travelers';
+    }
+
+    function resolveGMVisitorTarget(target) {
+        if (!target || target === 'player') return { x: playerGridX, y: playerGridY, level: currentLevel, id: 'player', kind: 'player' };
+        if (typeof target === 'object') {
+            const x = Math.round(Number(target.x));
+            const y = Math.round(Number(target.y));
+            const level = String(target.level ?? currentLevel);
+            return isValidTile(x, y, level) ? { x, y, level, id: target.id || null, kind: 'tile' } : null;
+        }
+        const id = normalizeStructureId(target);
+        const settlement = getGMGeneratedSettlementSummaries().find(entry => entry.id === id);
+        if (settlement && settlement.bounds !== 'unknown') {
+            const match = /^(-?\d+),(-?\d+)\.\.(-?\d+),(-?\d+)$/.exec(settlement.bounds);
+            if (match) {
+                const [, minX, minY, maxX, maxY] = match.map(Number);
+                return { x: Math.round((minX + maxX) / 2), y: Math.round((minY + maxY) / 2), level: currentLevel, id, kind: 'settlement' };
+            }
+        }
+        const npc = npcs.find(entry => normalizeStructureId(entry.id) === id || normalizeStructureId(entry.name) === id);
+        if (npc) return { x: npc.gridX, y: npc.gridY, level: npc.level, id: npc.id, kind: 'npc' };
+        const entity = getAllCanvasEntities().find(entry => normalizeStructureId(entry.id) === id || normalizeStructureId(entry.name) === id);
+        if (entity) return { x: entity.x, y: entity.y, level: entity.level, id: entity.id, kind: entity.kind };
+        return null;
+    }
+
+    function isGMVisitorTileSafe(x, y, level, reserved = new Set()) {
+        const key = `${level}:${x}:${y}`;
+        if (reserved.has(key)) return false;
+        if (level === currentLevel && x === playerGridX && y === playerGridY) return false;
+        if (isTileProtected(x, y, level)) return false;
+        if (!isTilePlaceableForGM(x, y, level, false)) return false;
+        if (npcs.some(npc => npc.level === level && npc.gridX === x && npc.gridY === y)) return false;
+        return true;
+    }
+
+    function findGMVisitorTiles(originX, originY, level, count, seed = 0) {
+        const tiles = [];
+        const reserved = new Set();
+        for (let r = 0; r <= 8 && tiles.length < count; r++) {
+            const candidates = [];
+            for (let dx = -r; dx <= r; dx++) {
+                for (let dy = -r; dy <= r; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                    candidates.push({ x: originX + dx, y: originY + dy, score: Math.hypot(dx, dy) * 100 + ((dx + 17) * 31 + (dy + 19) * 17 + seed) % 23 });
+                }
+            }
+            candidates.sort((a, b) => a.score - b.score || a.x - b.x || a.y - b.y);
+            candidates.forEach(candidate => {
+                if (tiles.length >= count) return;
+                if (isGMVisitorTileSafe(candidate.x, candidate.y, level, reserved)) {
+                    tiles.push({ x: candidate.x, y: candidate.y });
+                    reserved.add(`${level}:${candidate.x}:${candidate.y}`);
+                }
+            });
+        }
+        return tiles;
+    }
+
+    function getGMVisitorName(theme, index, names = []) {
+        if (typeof names[index] === 'string' && names[index].trim()) return names[index].trim().slice(0, 60);
+        const defaults = {
+            festival: ['Mira', 'Tobin', 'Lena', 'Corin', 'Pella', 'Jory', 'Nessa', 'Bran', 'Kira', 'Oren', 'Tala', 'Venn'],
+            market: ['Vendor Mara', 'Trader Pell', 'Hawker Jon', 'Buyer Ana'],
+            pilgrims: ['Pilgrim Ash', 'Pilgrim Reed', 'Pilgrim Vale', 'Pilgrim Ora'],
+            workers: ['Worker Bram', 'Worker Nia', 'Worker Cole', 'Worker Tess'],
+            guards: ['Guard Hal', 'Guard Wynn', 'Guard Sol', 'Guard Mira'],
+            travelers: ['Traveler Ivo', 'Traveler Sera', 'Traveler Dain', 'Traveler Lysa']
+        };
+        const list = defaults[theme] || defaults.travelers;
+        return list[index % list.length];
+    }
+
+    function getGMVisitorRole(theme, index, roles = []) {
+        if (typeof roles[index] === 'string' && roles[index].trim()) return normalizeSettlementFeature(roles[index]) || 'visitor';
+        const defaults = {
+            festival: ['dancer', 'musician', 'reveler', 'vendor'],
+            market: ['merchant', 'customer', 'hawker'],
+            pilgrims: ['pilgrim', 'attendant'],
+            workers: ['worker', 'porter', 'builder'],
+            guards: ['guard', 'watcher'],
+            travelers: ['traveler', 'visitor']
+        };
+        const list = defaults[theme] || defaults.travelers;
+        return list[index % list.length];
+    }
+
+    function spawnGMVisitors(cmd = {}) {
+        const groupId = normalizeStructureId(cmd.groupId || cmd.id || cmd.name);
+        if (!groupId) { if (!cmd.silent) addLogMessage('Invalid spawn_visitors command.'); return false; }
+        const count = Math.max(1, Math.min(12, Math.round(Number(cmd.count) || 1)));
+        const theme = normalizeGMVisitorTheme(cmd.theme);
+        const target = resolveGMVisitorTarget(cmd.target || 'player');
+        if (!target) { if (!cmd.silent) addLogMessage('Invalid spawn_visitors target.'); return false; }
+        const existing = gmNPCs.filter(npc => npc.id === groupId || npc.id.startsWith(`${groupId}_`));
+        const seed = hashGMSettlementSeed(`${groupId}:${theme}:${target.x}:${target.y}:${target.level}`);
+        const names = Array.isArray(cmd.names) ? cmd.names : [];
+        const roles = Array.isArray(cmd.roles) ? cmd.roles : [];
+        const tiles = findGMVisitorTiles(target.x, target.y, target.level, count, seed);
+        let created = 0;
+        for (let index = 0; index < count; index++) {
+            const memberId = `${groupId}_${String(index + 1).padStart(2, '0')}`;
+            if (existing.some(npc => npc.id === memberId) || gmNPCs.some(npc => npc.id === memberId)) continue;
+            const tile = tiles[index];
+            if (!tile) continue;
+            const role = getGMVisitorRole(theme, index, roles);
+            if (createGMNPC({
+                id: memberId,
+                name: getGMVisitorName(theme, index, names),
+                type: role === 'guard' ? 'guard' : 'human',
+                x: tile.x,
+                y: tile.y,
+                level: target.level,
+                color: theme === 'festival' ? '#cc77aa' : theme === 'guards' ? '#8899aa' : '#6688cc',
+                note: `${role.replace(/_/g, ' ')} visiting for ${theme.replace(/_/g, ' ')} staging.`,
+                state: { groupId, theme, role, targetId: target.id, targetKind: target.kind },
+                silent: true
+            })) created++;
+        }
+        if (!cmd.silent) {
+            if (created > 0) addLogMessage(`Visitors staged: ${created}/${count} ${theme.replace(/_/g, ' ')} visitor(s).`);
+            else addLogMessage(`Visitor group already staged: ${groupId}.`);
+            recordGMEvent('visitors_spawned', { groupId, requested: count, created, target, theme });
+        }
+        return created > 0;
+    }
+
 
     function buildGMTransitionVisual(shape, color) {
         const group = new THREE.Group();
@@ -7140,6 +8189,7 @@
             removedBaseGroundItemIds.clear();
             gmRemovedWalls.length = 0;
             Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+            resetGMSceneTimeVisuals();
             resetWorldMemory();
             restoreBaseDoorSemanticStates(save.baseDoorStates);
             restoreBaseTemplePillarSemanticStates(save.baseTemplePillarStates);
@@ -7183,6 +8233,8 @@
                 });
             }
             if (save.flags && typeof save.flags === 'object') Object.assign(worldFlags, save.flags);
+            if (worldFlags.scene_time) applyGMSceneTimeVisuals(worldFlags.scene_time);
+            else resetGMSceneTimeVisuals();
             if (save.memory && typeof save.memory === 'object') {
                 worldMemory.summary = safeMemoryText(save.memory.summary, 2400);
                 worldMemory.facts = normalizeMemoryFacts(save.memory.facts);
@@ -7242,6 +8294,7 @@
         removedBaseGroundItemIds.clear();
         gmRemovedWalls.length = 0;
         Object.keys(worldFlags).forEach(key => delete worldFlags[key]);
+        resetGMSceneTimeVisuals();
         resetWorldMemory();
         restoreBaseDoorSemanticStates();
         restoreBaseTemplePillarSemanticStates();
@@ -7268,17 +8321,18 @@
         'create_npc', 'spawn_npc', 'move_npc', 'remove_npc', 'delete_npc', 'set_npc_state', 'update_npc',
         'create_marker', 'remove_marker', 'create_hotspot', 'remove_hotspot',
         'create_object', 'create_prop', 'move_object', 'move_prop', 'set_object_position', 'remove_object', 'remove_prop',
-        'create_structure', 'build_structure', 'construct', 'remove_structure', 'delete_structure', 'dismantle_structure',
+        'create_structure', 'build_structure', 'construct', 'create_settlement', 'create_town', 'generate_settlement', 'spawn_visitors', 'remove_structure', 'delete_structure', 'dismantle_structure',
         'create_wall', 'create_barrier', 'remove_wall', 'remove_barrier', 'break_wall',
         'create_floor', 'create_bridge', 'set_tile_floor', 'set_tile_height', 'remove_floor', 'remove_bridge',
         'set_terrain', 'change_terrain', 'terrain_patch', 'raise_terrain', 'lower_terrain', 'dig_tile', 'dig_terrain', 'fill_tile', 'fill_terrain', 'flatten_terrain', 'remove_terrain', 'remove_terrain_patch',
         'create_transition', 'create_passage', 'create_portal', 'create_stairs', 'remove_transition', 'remove_passage', 'remove_portal', 'remove_stairs',
-        'set_door_state', 'update_entity', 'transform_entity', 'set_entity_state', 'hide_entity', 'reveal_entity', 'set_blocking', 'set_color', 'rename_entity', 'damage_entity', 'repair_entity', 'set_world_summary', 'set_summary', 'add_memory', 'add_fact', 'clear_memory', 'set_world_memory', 'set_quest', 'remove_quest', 'update_dialogue'
+        'set_door_state', 'update_entity', 'transform_entity', 'set_entity_state', 'hide_entity', 'reveal_entity', 'set_blocking', 'set_color', 'rename_entity', 'damage_entity', 'repair_entity', 'set_scene_time', 'set_world_summary', 'set_summary', 'add_memory', 'add_fact', 'clear_memory', 'set_world_memory', 'set_quest', 'remove_quest', 'update_dialogue'
     ]);
 
     function getCommandsFromPayload(payload) {
         if (Array.isArray(payload)) return payload;
         if (payload && Array.isArray(payload.commands)) return payload.commands;
+        if (payload && typeof payload === 'object' && typeof payload.op === 'string') return [payload];
         return null;
     }
 
@@ -7511,9 +8565,25 @@
         if (payload.narration) {
             addLogMessage('GM narration received in chat.');
             recordGMEvent('gm_narration_received', { text: String(payload.narration).slice(0, 500) });
+            const narration = document.getElementById('action-gm-narration');
+            if (narration) narration.textContent = String(payload.narration).slice(0, 2000);
         }
 
-        recordGMEvent('gm_response_started', { commandCount: commands.length, hasNarration: !!payload.narration, unsupportedOps: summary.unsupportedOps });
+        if (payload.protocol === 'gm_proposal_v1' && payload.dialogue) {
+            const dialogueEntries = Array.isArray(payload.dialogue) ? payload.dialogue : [payload.dialogue];
+            dialogueEntries.forEach(entry => {
+                if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+                const speaker = entry.speaker || entry.title || 'World';
+                const text = entry.text || entry.message;
+                if (typeof text === 'string' && text.trim()) {
+                    showDialogueMessage(speaker, text);
+                    addLogMessage(`${speaker}: ${text}`);
+                    recordGMEvent('gm_proposal_dialogue_shown', { speaker: String(speaker).slice(0, 80), text: String(text).slice(0, 500) });
+                }
+            });
+        }
+
+        recordGMEvent('gm_response_started', { protocol: payload.protocol || null, commandCount: commands.length, hasNarration: !!payload.narration, hasDialogue: !!payload.dialogue, unsupportedOps: summary.unsupportedOps });
         let shouldSave = false;
         commands.forEach(cmd => {
             if (!cmd || typeof cmd.op !== 'string') return;
@@ -7663,6 +8733,14 @@
                 if (createGMStructure(cmd)) shouldSave = true;
             }
 
+            else if (cmd.op === 'create_settlement' || cmd.op === 'create_town' || cmd.op === 'generate_settlement') {
+                if (createGMSettlement(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'spawn_visitors') {
+                if (spawnGMVisitors(cmd)) shouldSave = true;
+            }
+
             else if (cmd.op === 'remove_structure' || cmd.op === 'delete_structure' || cmd.op === 'dismantle_structure') {
                 if (removeGMStructure(cmd)) shouldSave = true;
             }
@@ -7710,6 +8788,10 @@
 
             else if (cmd.op === 'set_door_state') {
                 if (setDoorStateFromGM(cmd)) shouldSave = true;
+            }
+
+            else if (cmd.op === 'set_scene_time') {
+                if (setGMSceneTime(cmd)) shouldSave = true;
             }
 
             else if (cmd.op === 'set_world_summary' || cmd.op === 'set_summary') {
@@ -7786,6 +8868,10 @@
         ctxMenu.style.display = 'none';
     });
     document.getElementById('copy-gm-payload').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMPayload(); });
+    document.getElementById('insert-settlement-blueprint').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); insertSettlementBlueprint(); });
+    document.getElementById('copy-gm-map').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMMapExport(); });
+    document.getElementById('copy-gm-context').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyGMWorldContextExport(); });
+    document.getElementById('clear-world-builder-input').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); clearWorldBuilderInput(); });
     document.getElementById('search-nearby-action').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); fillSearchNearbyAction(); });
     document.getElementById('talk-nearby-action').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); fillTalkNearbyAction(); });
     document.getElementById('copy-action-gm-request').addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); copyManualActionGMRequest(); });
@@ -8181,7 +9267,8 @@
 
     function updateLevelVisibility(lvl) {
         document.getElementById('level-display').innerText = `Level: ${lvl} (${LEVELS[lvl].name})`;
-        scene.background = new THREE.Color(LEVELS[lvl].bg);
+        if (!activeGMSceneTime) scene.background = new THREE.Color(LEVELS[lvl].bg);
+        else applyGMSceneTimeVisuals(activeGMSceneTime);
         Object.keys(levelGroups).forEach(key => { levelGroups[key].visible = (key === lvl); });
     }
     updateLevelVisibility(currentLevel);
