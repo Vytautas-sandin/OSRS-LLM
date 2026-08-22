@@ -215,6 +215,38 @@ test('fresh manual prose ignores stale interaction target but preserves active u
   assert.equal(build({ id: 'base_shovel_01', name: 'Shovel' }).toolId, 'base_shovel_01');
 });
 
+test('prepared item-on-NPC action preserves selected item and NPC target bindings', () => {
+  const selectionStart = html.indexOf('    function getManualActionGMSelection()');
+  const selectionEnd = html.indexOf('    function setActionGMDiagnostics', selectionStart);
+  const builderStart = html.indexOf('    function buildManualActionGMRequest()');
+  const builderEnd = html.indexOf('    function copyManualActionGMRequest', builderStart);
+  assert.ok(selectionStart > 0 && selectionEnd > selectionStart && builderStart > selectionEnd && builderEnd > builderStart);
+
+  const context = {
+    document: { getElementById: id => id === 'player-action' ? { value: 'I give Odd Shell to Sage.' } : null },
+    getLastInteractionTarget: () => ({
+      kind: 'npc',
+      id: 'sage',
+      name: 'Sage',
+      usedItem: 'base_shell_01',
+      usedItemName: 'Odd Shell',
+      proposedAction: 'I show Odd Shell to Sage.'
+    }),
+    getSelectedUseItemSnapshot: () => null,
+    normalizeGameActionId: value => typeof value === 'string' && value ? value : null,
+    createGameAction: action => ({ ...action, targetId: action.targetId ?? null, toolId: action.toolId ?? null }),
+    buildActionContext: action => ({ action, target: { id: action.targetId, kind: 'npc' }, tool: { id: action.toolId }, toolCandidates: [{ id: action.toolId }] }),
+    routeGameAction: () => ({ mode: 'gm' }),
+    buildGMRequest: (action, actionContext, route) => ({ ok: true, request: { action, context: actionContext, route }, errors: [] })
+  };
+  vm.createContext(context);
+  vm.runInContext(`${html.slice(selectionStart, selectionEnd)}\n${html.slice(builderStart, builderEnd)}\nthis.generated = buildManualActionGMRequest();`, context);
+  const action = JSON.parse(JSON.stringify(context.generated.action));
+  assert.equal(action.verb, 'give');
+  assert.equal(action.targetId, 'sage');
+  assert.equal(action.toolId, 'base_shell_01');
+});
+
 test('transport supports adjudication then authoritative checked resolution with one action ID', async () => {
   const calls = [];
   const adapter = loadAdapterWithTimers(setTimeout, clearTimeout, {

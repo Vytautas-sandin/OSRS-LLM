@@ -1264,7 +1264,7 @@
         const item = getSelectedUseItemSnapshot();
         if (!item || !target) return false;
         const targetName = target.name || target.id || 'target';
-        const actionText = `I use ${item.name} on ${targetName}.`;
+        const actionText = target.kind === 'npc' ? `I show ${item.name} to ${targetName}.` : `I use ${item.name} on ${targetName}.`;
         setPlayerActionText(actionText);
         setLastInteractionTarget({
             ...target,
@@ -1295,6 +1295,7 @@
     function handlePendingItemUseOnTile(x, y, level = currentLevel) {
         const item = getSelectedUseItemSnapshot();
         if (!item) return false;
+        if (isInventoryDiggingTool(item)) return false;
         const targetName = level === '0' ? 'ground' : `level ${level} ground`;
         const actionText = `I use ${item.name} on the ${targetName} at tile ${x}, ${y}.`;
         setPlayerActionText(actionText);
@@ -1326,6 +1327,64 @@
         });
         selectedUseItem = null;
         updateUseIndicator();
+        return true;
+    }
+
+    function getShovelGroundActionDescriptors(x, y, level = currentLevel) {
+        const tileX = Math.round(Number(x));
+        const tileY = Math.round(Number(y));
+        const tileLevel = String(level);
+        if (!inventoryHasDiggingTool() || !isValidTile(tileX, tileY, tileLevel)) return [];
+        if (tileLevel !== String(currentLevel)) return [];
+        if (Math.max(Math.abs(playerGridX - tileX), Math.abs(playerGridY - tileY)) > 1) return [];
+        if (isTileProtected(tileX, tileY, tileLevel) || isTileOccupiedByGM(tileX, tileY, tileLevel) || isTileUnwalkable(tileLevel, tileX, tileY)) return [];
+        const existing = typeof findTerrainPatchAt === 'function' ? findTerrainPatchAt(tileLevel, tileX, tileY) : null;
+        if (existing) {
+            return [
+                { label: 'Fill', verb: 'fill' },
+                { label: 'Flatten', verb: 'flatten' }
+            ];
+        }
+        return [
+            { label: 'Dig', verb: 'dig' },
+            { label: 'Pile', verb: 'pile' }
+        ];
+    }
+
+    function runDeterministicShovelGroundAction(verb, x, y, level = currentLevel) {
+        const action = createTerrainAction(verb, { x, y, level });
+        const outcome = executeGameAction(action);
+        lastTerrainExecutionDiagnostic = getTerrainExecutionDiagnostic(action, outcome);
+        return outcome;
+    }
+
+    function showShovelGroundContextMenu(x, y, level, menuX, menuY) {
+        const actions = getShovelGroundActionDescriptors(x, y, level);
+        if (actions.length === 0) {
+            addLogMessage('The shovel cannot work that ground.');
+            return false;
+        }
+        ctxMenu.innerHTML = '';
+        ctxMenu.style.display = 'flex';
+        ctxMenu.style.left = `${Math.max(0, Math.min(window.innerWidth - 130, menuX - 10))}px`;
+        ctxMenu.style.top = `${Math.max(0, menuY - 10)}px`;
+        actions.forEach(action => {
+            const btn = document.createElement('div');
+            btn.className = 'ctx-item';
+            btn.innerText = action.label;
+            btn.addEventListener('pointerdown', (event) => {
+                event.stopPropagation();
+                runDeterministicShovelGroundAction(action.verb, x, y, level);
+                clearUseItem();
+                ctxMenu.style.display = 'none';
+            });
+            ctxMenu.appendChild(btn);
+        });
+        const cancel = document.createElement('div');
+        cancel.className = 'ctx-item ctx-cancel';
+        cancel.innerText = 'Cancel';
+        cancel.addEventListener('pointerdown', event => { event.stopPropagation(); ctxMenu.style.display = 'none'; });
+        ctxMenu.appendChild(cancel);
         return true;
     }
 
@@ -2035,6 +2094,17 @@
         return /\b(i\s+)?(tell|ask|warn|apologize|apologise|greet|question|reply to|speak to|talk to|say to|chat with|converse with)\b/.test(text);
     }
 
+    function isItemToNPCAction(action) {
+        const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
+        if (['show', 'give', 'hand', 'offer', 'present', 'use', 'ask'].includes(verb)) return true;
+        const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.topic]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+        return /\b(show|give|hand|offer|present|use|ask|question)\b.*\b(to|with|on|about)\b/.test(text);
+    }
+
     function actionNeedsLocalTileCandidates(action) {
         const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
         if (['dig', 'raise', 'lower', 'fill', 'flatten', 'place', 'build', 'use'].includes(verb)) return true;
@@ -2220,6 +2290,9 @@
         { verb: 'fishing', targetKinds: ['water'], resolver: 'fishing', requiresTarget: true },
         { verb: 'dig', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
         { verb: 'raise', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+        { verb: 'pile', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+        { verb: 'fill', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+        { verb: 'flatten', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
         { verb: 'use_transition', targetKinds: ['transition'], resolver: 'transition', requiresTarget: true }
     ]);
 
@@ -2281,6 +2354,16 @@
         }
         if (action.toolId && !actionContext.tool) {
             return createActionRouteDecision(action, 'reject', null, `Tool "${action.toolId}" could not be resolved.`, 1, contextValidation.warnings);
+        }
+
+        if (action.toolId && isItemToNPCAction(action) && (!action.targetId || actionContext.target?.kind === 'npc')) {
+            return createActionRouteDecision(
+                action,
+                'gm',
+                null,
+                'The player is using an inventory item with an NPC and needs action-scoped GM interpretation.',
+                0.9
+            );
         }
 
         if (isNPCDialogueAction(action)) {
@@ -2797,11 +2880,39 @@
         return isNPCDialogueAction(gmRequest?.action) || isNPCDialogueAction(gmRequest?.context?.action);
     }
 
-    function getResolvedDialogueNPCTarget(gmRequest, resolvedBindings = {}) {
-        if (!isNPCDialogueGMRequest(gmRequest)) return null;
+    function isItemToNPCGMRequest(gmRequest) {
+        const action = gmRequest?.action || gmRequest?.context?.action || {};
+        return !!action.toolId && isItemToNPCAction(action);
+    }
+
+    function isItemTransferAction(action) {
+        const verb = normalizeGameActionId(action?.verb)?.toLowerCase() || '';
+        if (['give', 'hand', 'offer'].includes(verb)) return true;
+        const text = [action?.intent, action?.parameters?.action, action?.parameters?.mode, action?.parameters?.topic]
+            .filter(value => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+        return /\b(give|hand|hand over|offer|pass|turn over|surrender)\b/.test(text);
+    }
+
+    function getResolvedNPCInteractionTarget(gmRequest, resolvedBindings = {}) {
         const targetId = resolvedBindings.targetId || gmRequest?.action?.targetId || gmRequest?.outcome?.bindings?.targetId || null;
         const candidate = getOriginatingActionEntityCandidate(gmRequest?.context || {}, targetId);
         return candidate?.kind === 'npc' ? candidate : null;
+    }
+
+    function getResolvedDialogueNPCTarget(gmRequest, resolvedBindings = {}) {
+        if (!isNPCDialogueGMRequest(gmRequest) && !isItemToNPCGMRequest(gmRequest)) return null;
+        return getResolvedNPCInteractionTarget(gmRequest, resolvedBindings);
+    }
+
+    function getSelectedInventoryInteractionItem(gmRequest) {
+        const itemId = gmRequest?.action?.toolId || null;
+        if (!itemId) return null;
+        const inventoryItem = (gmRequest?.context?.actor?.inventory || []).find(item => item?.id === itemId) || null;
+        const toolCandidate = (gmRequest?.context?.toolCandidates || []).find(tool => tool?.id === itemId) || null;
+        return inventoryItem && toolCandidate ? inventoryItem : null;
     }
 
     const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);
@@ -2839,6 +2950,13 @@
         if (bindings.toolId && (!toolIds.has(bindings.toolId) || !inventoryIds.has(bindings.toolId))) errors.push(`Binding toolId is not an originating inventory tool candidate: ${bindings.toolId}.`);
         if (action.targetId && bindings.targetId && action.targetId !== bindings.targetId) errors.push('Binding targetId contradicts the explicit GameAction targetId.');
         if (action.toolId && bindings.toolId && action.toolId !== bindings.toolId) errors.push('Binding toolId contradicts the explicit GameAction toolId.');
+        if (isItemToNPCGMRequest(gmRequest)) {
+            if (!action.toolId || !toolIds.has(action.toolId) || !inventoryIds.has(action.toolId)) errors.push('Item-to-NPC interaction requires an explicit originating inventory item toolId.');
+            const resolvedTargetId = action.targetId || bindings.targetId || null;
+            const candidate = getOriginatingActionEntityCandidate(context, resolvedTargetId);
+            if (!resolvedTargetId) errors.push('Item-to-NPC interaction requires an explicit or late-bound NPC targetId.');
+            else if (candidate?.kind !== 'npc') errors.push(`Item-to-NPC targetId must resolve to an originating nearby NPC candidate: ${resolvedTargetId}.`);
+        }
         if (isNPCDialogueGMRequest(gmRequest)) {
             const resolvedTargetId = action.targetId || bindings.targetId || null;
             const candidate = getOriginatingActionEntityCandidate(context, resolvedTargetId);
@@ -2922,13 +3040,15 @@
         let availableInventorySlots = inventory.filter(item => item === null).length;
         let searchPhysicalRevealCount = 0;
         const isDialogueOutcome = isNPCDialogueGMRequest(gmRequest);
+        const isItemNPCOutcome = isItemToNPCGMRequest(gmRequest);
         const dialogueTarget = getResolvedDialogueNPCTarget(gmRequest, resolvedBindings);
+        const selectedInteractionItem = getSelectedInventoryInteractionItem(gmRequest);
         const fail = (index, message) => errors.push(`effects[${index}]: ${message}`);
 
         gmOutcome.effects.forEach((effect, index) => {
             if (effect.op === 'add_memory') return;
             const command = copyActionContextValue(effect);
-            if (isDialogueOutcome) {
+            if (isDialogueOutcome || isItemNPCOutcome) {
                 if (effect.op === 'set_flag') {
                     if (!isSafeGMFlag(effect)) return fail(index, 'flag key/value is unsafe or unsupported.');
                     translatedEffects.push(command); return;
@@ -2940,7 +3060,15 @@
                     translatedEffects.push({ op: 'set_dialogue_npc_state', id: effect.id, state: copyActionContextValue(effect.state) });
                     return;
                 }
-                return fail(index, `operation is not supported for NPC dialogue: ${effect.op}.`);
+                if (isItemNPCOutcome && (effect.op === 'remove_item' || effect.op === 'consume_item')) {
+                    if (!selectedInteractionItem) return fail(index, 'item interaction requires a selected originating inventory item.');
+                    if (effect.id !== selectedInteractionItem.id) return fail(index, 'item interaction can remove only the selected inventory item.');
+                    if (!isItemTransferAction(gmRequest.action)) return fail(index, 'showing or asking about an item cannot remove it without give or hand-over intent.');
+                    if (!inventory.some(item => item?.id === effect.id) || reservedRemovedIds.has(`inventory:${effect.id}`)) return fail(index, `inventory item is not uniquely resolvable: ${effect.id}.`);
+                    reservedRemovedIds.add(`inventory:${effect.id}`); availableInventorySlots++;
+                    translatedEffects.push({ ...command, count: 1 }); return;
+                }
+                return fail(index, `operation is not supported for ${isItemNPCOutcome ? 'NPC item interaction' : 'NPC dialogue'}: ${effect.op}.`);
             }
             const pillar = resolveBaseTemplePillar(effect.id);
             if (pillar && ['update_entity', 'transform_entity', 'set_entity_state', 'damage_entity'].includes(effect.op)) {
@@ -3232,6 +3360,7 @@
     let lastDoorActionExecutionDiagnostic = null;
     let lastItemTransferExecutionDiagnostic = null;
     let lastFishingExecutionDiagnostic = null;
+    let lastTerrainExecutionDiagnostic = null;
     const FISHING_DELAY_MS = 2000;
 
     function createDoorInteractionAction(doorObj, desiredOperation = null, source = 'ui') {
@@ -3315,6 +3444,19 @@
             actorId: 'player',
             verb: 'fish',
             targetId: makeWaterActionId(level, x, y),
+            routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
+        });
+    }
+
+    function createTerrainAction(verb, tile, source = 'ui') {
+        const x = Math.round(Number(tile?.x));
+        const y = Math.round(Number(tile?.y));
+        const level = String(tile?.level ?? currentLevel);
+        return createGameAction({
+            source,
+            actorId: 'player',
+            verb,
+            parameters: { tile: { x, y, level } },
             routing: { mode: 'unknown', reason: 'Awaiting capability-based routing.' }
         });
     }
@@ -3542,6 +3684,119 @@
         return pendingOutcome;
     }
 
+    function terrainActionMode(verb) {
+        if (verb === 'dig') return 'dig';
+        if (verb === 'raise' || verb === 'pile') return 'raise';
+        if (verb === 'fill') return 'fill';
+        if (verb === 'flatten') return 'flatten';
+        return null;
+    }
+
+    function canonicalTerrainPatchId(level, x, y) {
+        return `terrain:${level}:${x}:${y}`;
+    }
+
+    function findTerrainPatchAt(level, x, y) {
+        return gmTerrain.find(patch => String(patch.level) === String(level) && patch.x === x && patch.y === y) || null;
+    }
+
+    function isInventoryDiggingTool(item) {
+        const snap = getItemSnapshot(item);
+        if (!snap) return false;
+        return [snap.id, snap.type, snap.baseType, snap.name, ...(snap.tags || [])]
+            .filter(Boolean)
+            .some(value => /\b(shovel|spade|dig|digging|excavate|excavation)\b/i.test(String(value)));
+    }
+
+    function inventoryHasDiggingTool() {
+        return inventory.some(isInventoryDiggingTool);
+    }
+
+    function validateLocalTerrainAction(action, context, mode) {
+        const diagnostics = [];
+        const tile = action.parameters?.tile || {};
+        const x = Math.round(Number(tile.x));
+        const y = Math.round(Number(tile.y));
+        const level = String(tile.level ?? context?.actor?.level ?? currentLevel);
+        const tileValid = Number.isFinite(x) && Number.isFinite(y) && isValidTile(x, y, level);
+        if (!tileValid) diagnostics.push('Terrain action requires a valid ground tile.');
+        if (level !== String(context?.actor?.level ?? currentLevel)) diagnostics.push('Terrain action must target the actor level.');
+        const distance = Math.max(Math.abs((context?.actor?.tile?.x ?? playerGridX) - x), Math.abs((context?.actor?.tile?.y ?? playerGridY) - y));
+        if (distance > 1) diagnostics.push('Terrain action requires a nearby tile.');
+        if (!inventoryHasDiggingTool()) diagnostics.push('A shovel or digging tool is required.');
+        if (level === '-1') diagnostics.push("You can't dig in the cellar.");
+        if (tileValid && (isTileProtected(x, y, level) || isTileOccupiedByGM(x, y, level) || isTileUnwalkable(level, x, y))) diagnostics.push('The ground here is blocked, occupied, or protected.');
+        const existing = findTerrainPatchAt(level, x, y);
+        if ((mode === 'fill' || mode === 'flatten') && !existing) diagnostics.push('There is no modified ground here to restore.');
+        if ((mode === 'dig' || mode === 'raise') && existing) diagnostics.push('The ground here is already modified; fill or flatten it first.');
+        const patch = {
+            x,
+            y,
+            level,
+            radius: 0,
+            mode,
+            delta: mode === 'dig' ? 0.45 : (mode === 'raise' ? 0.35 : undefined),
+            height: mode === 'fill' || mode === 'flatten' ? 0 : undefined
+        };
+        if (diagnostics.length === 0 && !canModifyTerrainPatch(patch)) diagnostics.push('The ground here cannot be safely modified.');
+        return { valid: diagnostics.length === 0, diagnostics, x, y, level, existing, patch };
+    }
+
+    function resolveLocalTerrainAction(action, context, route) {
+        if (route?.mode !== 'local' || route?.resolver !== 'terrain') {
+            return createGameActionExecutionResult('rejected', action, route, ['Terrain resolver requires a local terrain route.']);
+        }
+        const mode = terrainActionMode(action.verb);
+        if (!mode) return createGameActionExecutionResult('rejected', action, route, [`Terrain resolver does not support verb "${action.verb}".`]);
+
+        const check = validateLocalTerrainAction(action, context, mode);
+        if (!check.valid) {
+            if (check.diagnostics.some(message => /shovel|digging tool/i.test(message))) addLogMessage('You need a shovel to work the ground.');
+            else if (check.diagnostics.length) addLogMessage(check.diagnostics[0]);
+            return createGameActionExecutionResult('rejected', action, route, check.diagnostics);
+        }
+
+        let applied = false;
+        let effect;
+        if (mode === 'fill' || mode === 'flatten') {
+            applied = removeGMTerrainPatch(check.existing.id, true);
+            effect = { type: 'terrain_restored', id: check.existing.id, x: check.x, y: check.y, level: check.level, mode };
+        } else {
+            const patch = {
+                id: canonicalTerrainPatchId(check.level, check.x, check.y),
+                name: mode === 'dig' ? 'Dug Ground' : 'Piled Earth',
+                x: check.x,
+                y: check.y,
+                level: check.level,
+                radius: 0,
+                mode,
+                delta: check.patch.delta,
+                state: { source: 'deterministic_shovel', action: mode }
+            };
+            applied = createGMTerrainPatch({ ...patch, adjust: false, silent: true });
+            effect = { type: 'terrain_changed', ...patch };
+        }
+        if (!applied) return createGameActionExecutionResult('rejected', action, route, ['The terrain mutation failed authoritative application.']);
+
+        player.lookAt(check.x * TILE_SIZE, player.position.y, check.y * TILE_SIZE);
+        addLogMessage(mode === 'dig' ? 'You dig into the ground.' : (mode === 'raise' ? 'You pile up the earth.' : 'You restore the ground.'));
+        recordGMEvent(mode === 'dig' ? 'terrain_dug' : (mode === 'raise' ? 'terrain_raised' : 'terrain_restored'), { x: check.x, y: check.y, level: check.level, mode, id: effect.id });
+        saveGMWorld(true);
+        return createGameActionExecutionResult('executed', action, route, [], [effect]);
+    }
+
+    function getTerrainExecutionDiagnostic(action, outcome) {
+        return {
+            actionId: action?.id || null,
+            verb: action?.verb || null,
+            route: outcome?.route || null,
+            status: outcome?.status || null,
+            resolver: outcome?.resolver || null,
+            effects: outcome?.effects || [],
+            diagnostics: outcome?.diagnostics || []
+        };
+    }
+
     function executeGameAction(gameAction, options = {}) {
         const actionValidation = validateGameAction(gameAction);
         const action = actionValidation.action;
@@ -3577,6 +3832,9 @@
         }
         if (route.mode === 'local' && route.resolver === 'fishing') {
             return resolveLocalFishingAction(action, context, route, options.fishingResolverOptions || {});
+        }
+        if (route.mode === 'local' && route.resolver === 'terrain') {
+            return resolveLocalTerrainAction(action, context, route);
         }
         return createGameActionExecutionResult(
             'not_migrated',
@@ -4300,11 +4558,41 @@
         // Interaction history describes prior clicks; it is not a deliberate target
         // selection for newly typed prose. The active use-item mode, however, is an
         // explicit current interaction and may remain attached as the action's tool.
+        const intent = document.getElementById('player-action')?.value || '';
+        const pending = getLastInteractionTarget();
+        if (pending?.kind === 'npc' && pending.usedItem && intent.trim()) {
+            const text = intent.toLowerCase();
+            const mentionsTarget = [pending.id, pending.name].filter(Boolean).some(value => text.includes(String(value).toLowerCase()));
+            const mentionsItem = [pending.usedItem, pending.usedItemName].filter(Boolean).some(value => text.includes(String(value).toLowerCase()));
+            if (intent === pending.proposedAction || (mentionsTarget && mentionsItem)) {
+                return {
+                    targetId: normalizeGameActionId(pending.id),
+                    toolId: normalizeGameActionId(pending.usedItem)
+                };
+            }
+        }
         const tool = getSelectedUseItemSnapshot();
         return {
             targetId: null,
             toolId: normalizeGameActionId(tool?.id)
         };
+    }
+
+    function inferManualActionGMVerb(intent, selection = {}) {
+        const text = String(intent || '').toLowerCase();
+        if (selection.toolId && selection.targetId) {
+            if (/\b(give|hand|hand over|offer|pass|turn over|surrender)\b/.test(text)) return 'give';
+            if (/\b(ask|question)\b/.test(text)) return 'ask';
+            if (/\b(show|display|present)\b/.test(text)) return 'show';
+            return 'use';
+        }
+        if (selection.toolId && /\b(show|give|hand|offer|present|use|ask|question)\b/.test(text)) {
+            if (/\b(give|hand|hand over|offer|pass|turn over|surrender)\b/.test(text)) return 'give';
+            if (/\b(ask|question)\b/.test(text)) return 'ask';
+            if (/\b(show|display|present)\b/.test(text)) return 'show';
+            return 'use';
+        }
+        return 'improvise';
     }
 
     function setActionGMDiagnostics(details = {}) {
@@ -4343,7 +4631,7 @@
         const intent = document.getElementById('player-action')?.value ?? '';
         const selection = getManualActionGMSelection();
         const action = createGameAction({
-            source: 'text', actorId: 'player', verb: 'improvise', intent,
+            source: 'text', actorId: 'player', verb: inferManualActionGMVerb(intent, selection), intent,
             targetId: selection.targetId, toolId: selection.toolId,
             routing: { mode: 'unknown', reason: null }
         });
@@ -7455,12 +7743,13 @@
     const invContainer = document.getElementById('inventory');
     const ctxMenu = document.getElementById('context-menu');
     const toolToggleBtn = document.getElementById('tool-toggle');
-    let activeTool = 'walk'; // walk | dig | raise
+    let activeTool = 'walk'; // walk | dig | raise | fill
 
     toolToggleBtn.addEventListener('pointerdown', (e) => {
         e.stopPropagation(); e.preventDefault();
         if (activeTool === 'walk') { activeTool = 'dig'; e.target.innerText = '⛏️ Mode: Dig'; }
         else if (activeTool === 'dig') { activeTool = 'raise'; e.target.innerText = '⛰️ Mode: Raise'; }
+        else if (activeTool === 'raise') { activeTool = 'fill'; e.target.innerText = '🧹 Mode: Fill'; }
         else { activeTool = 'walk'; e.target.innerText = '👟 Mode: Walk'; }
         ctxMenu.style.display = 'none';
     });
@@ -8130,6 +8419,10 @@
                 const targetGridY = Math.round(hit.point.z / TILE_SIZE);
 
                 if (selectedUseItem) {
+                    if (isInventoryDiggingTool(selectedUseItem)) {
+                        showShovelGroundContextMenu(targetGridX, targetGridY, currentLevel, event.clientX, event.clientY);
+                        return;
+                    }
                     handlePendingItemUseOnTile(targetGridX, targetGridY, currentLevel);
                     return;
                 }
@@ -8137,13 +8430,12 @@
                 clickMarker.position.set(targetGridX * TILE_SIZE, getWalkableHeight(targetGridX, targetGridY, currentLevel) + 0.1, targetGridY * TILE_SIZE);
                 clickMarker.visible = true; setTimeout(() => clickMarker.visible = false, 300);
 
-                if (activeTool === 'dig' || activeTool === 'raise') {
-                    const amount = activeTool === 'dig' ? -0.2 : 0.2;
+                if (activeTool === 'dig' || activeTool === 'raise' || activeTool === 'fill') {
                     const newPath = findPath(playerGridX, playerGridY, targetGridX, targetGridY, currentLevel, true);
                     
                     pendingAction = () => {
-                        player.lookAt(hit.point.x, player.position.y, hit.point.z);
-                        terraformTile(targetGridX, targetGridY, currentLevel, amount);
+                        const actionVerb = activeTool === 'fill' ? 'fill' : activeTool;
+                        runDeterministicShovelGroundAction(actionVerb, targetGridX, targetGridY, currentLevel);
                     };
 
                     if (newPath.length > 0) { pathQueue = newPath; }

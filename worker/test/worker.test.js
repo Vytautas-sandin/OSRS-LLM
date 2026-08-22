@@ -236,6 +236,10 @@ test('server instructions require conservative persistent effects and explicit l
   assert.match(GM_INSTRUCTIONS, /mood, attitude, topic, suspicion, trust, or lastHeard/i);
   assert.match(GM_INSTRUCTIONS, /do not alter terrain/i);
   assert.match(GM_INSTRUCTIONS, /bind targetId only to a supplied nearby NPC candidate/i);
+  assert.match(GM_INSTRUCTIONS, /using a selected inventory item with an NPC/i);
+  assert.match(GM_INSTRUCTIONS, /remove_item or consume_item only when the action clearly gives, hands over, or consumes the exact selected inventory item/i);
+  assert.match(GM_INSTRUCTIONS, /never remove a different item/i);
+  assert.match(GM_INSTRUCTIONS, /Do not use give_item, spawn_item, terrain, prop, movement, damage, or unrelated NPC mutation/i);
 });
 
 test('server instructions keep narration fictional and avoid self-binding player', () => {

@@ -36,9 +36,14 @@ function loadBoundary() {
     functionSource('resolveBaseTemplePillar'),
     functionSource('isSearchInvestigateAction'),
     functionSource('isNPCDialogueAction'),
+    functionSource('isItemToNPCAction'),
     functionSource('getOriginatingActionEntityCandidate'),
     functionSource('isNPCDialogueGMRequest'),
+    functionSource('isItemToNPCGMRequest'),
+    functionSource('isItemTransferAction'),
+    functionSource('getResolvedNPCInteractionTarget'),
     functionSource('getResolvedDialogueNPCTarget'),
+    functionSource('getSelectedInventoryInteractionItem'),
     `const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
     functionSource('isSafeNPCDialogueState'),
     functionSource('validateGMResolutionBindings'),
@@ -109,7 +114,9 @@ function loadTerrainBoundary(overrides = {}) {
   const store = new Map();
   const context = {
     GRID_SIZE: 40,
+    TILE_SIZE: 1,
     LEVELS: { '0': { h: 0 }, '2': { h: 0 }, '-1': { h: -3 } },
+    WORLD_ANCHORS: {},
     floorHeights: {},
     pathTiles: [{ x: 2, y: 2 }],
     unwalkables: { '0': [{ x: 5, y: 5 }], '2': [], '-1': [] },
@@ -130,6 +137,8 @@ function loadTerrainBoundary(overrides = {}) {
     gmRemovedWalls: [],
     groundItems: [],
     inventory: [{ id: 'base_shovel_01', name: 'Shovel' }],
+    player: { position: { y: 0 }, lookAt: () => {} },
+    targetMovePos: { copy: () => {} },
     baseArchitecturalProps: [],
     baseTransitions: [],
     doors: [],
@@ -148,6 +157,7 @@ function loadTerrainBoundary(overrides = {}) {
     normalizeGameActionId: value => typeof value === 'string' ? value : null,
     copyActionContextValue: value => structuredClone(value),
     safeMemoryText: value => typeof value === 'string' ? value.trim() : '',
+    getItemSnapshot: value => value ? { id: value.id, type: value.type || value.baseType || 'shovel', baseType: value.baseType || value.type || 'shovel', name: value.name || value.id, tags: value.tags || [] } : null,
     distanceToPlayerTile: (x, y) => Math.hypot(x - context.playerGridX, y - context.playerGridY),
     directionToPlayerTile: () => 'nearby',
     getNearbyNPCs: (radius = 6) => context.npcs
@@ -184,6 +194,8 @@ function loadTerrainBoundary(overrides = {}) {
     addLogMessage: () => {},
     renderWorldMemoryUI: () => {},
     saveGMWorld: () => true,
+    restoreBaseTerrainHeights: () => true,
+    rebuildTerrainMesh: () => true,
     recordGMCommandHistory: () => {},
     hasGMUndoSnapshot: () => true,
     getGMOutcomeApplicationDiagnostics: () => ({}),
@@ -205,10 +217,18 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('isTileOccupiedByGM'),
     functionSource('isTileUnwalkable'),
     functionSource('isTilePlaceableForGM'),
+    functionSource('findNearbyFreeTileFrom'),
+    functionSource('normalizeAnchorId'),
+    functionSource('resolveGMPlacement'),
     functionSource('normalizeTerrainMode'),
     functionSource('collectTerrainVertices'),
     functionSource('terrainPatchHeightAllowed'),
     functionSource('canModifyTerrainPatch'),
+    functionSource('clampTerrainHeight'),
+    functionSource('applyTerrainPatchToHeights'),
+    functionSource('rebuildGMTerrainForLevel'),
+    functionSource('createGMTerrainPatch'),
+    functionSource('removeGMTerrainPatch'),
     functionSource('makeActionTileCandidate'),
     functionSource('getLocalActionTileCandidates'),
     functionSource('normalizeMemoryFacts'),
@@ -223,6 +243,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('addWorldMemoryFact'),
     functionSource('isSearchInvestigateAction'),
     functionSource('isNPCDialogueAction'),
+    functionSource('isItemToNPCAction'),
     functionSource('parseActionTileId'),
     functionSource('getOriginatingLocalTileCandidate'),
     functionSource('preflightGMLocalTerrainPlacement'),
@@ -232,7 +253,11 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('preflightGMSearchDiscoveryPlacement'),
     functionSource('getOriginatingActionEntityCandidate'),
     functionSource('isNPCDialogueGMRequest'),
+    functionSource('isItemToNPCGMRequest'),
+    functionSource('isItemTransferAction'),
+    functionSource('getResolvedNPCInteractionTarget'),
     functionSource('getResolvedDialogueNPCTarget'),
+    functionSource('getSelectedInventoryInteractionItem'),
     `const GM_DIALOGUE_NPC_STATE_KEYS = new Set(['mood', 'attitude', 'topic', 'suspicion', 'trust', 'lastHeard']);`,
     functionSource('isSafeNPCDialogueState'),
     functionSource('setDialogueNPCState'),
@@ -246,6 +271,19 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('applyTranslatedGMOutcomeEffect'),
     'let lastGMOutcomeApplicationDiagnostic = null;',
     functionSource('applyGMOutcome'),
+    functionSource('normalizeGameAction'),
+    functionSource('createGameAction'),
+    functionSource('createTerrainAction'),
+    functionSource('createGameActionExecutionResult'),
+    functionSource('terrainActionMode'),
+    functionSource('canonicalTerrainPatchId'),
+    functionSource('findTerrainPatchAt'),
+    functionSource('isInventoryDiggingTool'),
+    functionSource('inventoryHasDiggingTool'),
+    functionSource('validateLocalTerrainAction'),
+    functionSource('resolveLocalTerrainAction'),
+    functionSource('getTerrainExecutionDiagnostic'),
+    functionSource('getShovelGroundActionDescriptors'),
     functionSource('validateGMOutcomeAgainstCheck'),
     functionSource('getCanvasEntitySnapshot'),
     functionSource('getAllCanvasEntities'),
@@ -257,7 +295,7 @@ function loadTerrainBoundary(overrides = {}) {
     functionSource('buildGMWorldSave'),
     functionSource('storeGMUndoSnapshot'),
     functionSource('undoLastGMApply'),
-    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact };'
+    'this.api = { getLocalActionTileCandidates, translateGMOutcomeEffects, validateGMResolutionBindings, validateGMOutcomeApplication, applyGMOutcome, createTerrainAction, resolveLocalTerrainAction, validateLocalTerrainAction, getShovelGroundActionDescriptors, canonicalTerrainPatchId, findTerrainPatchAt, validateGMOutcomeAgainstCheck, getNearbyActionContextEntities, getRelevantActionMemory, buildGMWorldSave, storeGMUndoSnapshot, undoLastGMApply, addWorldMemoryFact };'
   ].join('\n'), context);
   return { api: context.api, context };
 }
@@ -355,6 +393,45 @@ function dialogueOutcome(overrides = {}) {
   };
 }
 
+function itemNPCRequest(overrides = {}) {
+  const item = overrides.item || { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', baseType: 'shell', tags: ['shell', 'clue'] };
+  const entities = overrides.entities || [
+    { id: 'sage', kind: 'npc', name: 'Sage', level: '0', tile: { x: 11, y: 10 }, distance: 1 },
+    { id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }
+  ];
+  const target = overrides.targetId ? entities.find(entity => entity.id === overrides.targetId) || null : null;
+  return {
+    action: {
+      id: 'item-npc-1',
+      targetId: overrides.targetId ?? null,
+      toolId: item.id,
+      verb: overrides.verb || 'show',
+      intent: overrides.intent || 'I show Odd Shell to Sage.'
+    },
+    context: {
+      actor: { level: '0', tile: { x: 10, y: 10 }, inventory: [item] },
+      target,
+      tool: { id: item.id, name: item.name, type: item.type, metadata: { location: 'inventory', itemId: item.id, tags: item.tags || [] } },
+      toolCandidates: [{ id: item.id, name: item.name, type: item.type, tags: item.tags || [] }],
+      nearby: { entities },
+      relevantState: { memory: { summary: '', facts: ['The player found an odd shell.'], quests: [] } }
+    },
+    route: { mode: 'gm' }
+  };
+}
+
+function itemNPCOutcome(overrides = {}) {
+  return {
+    protocol: 'gm_outcome_v1',
+    actionId: 'item-npc-1',
+    narration: 'Sage studies the shell and responds.',
+    resolution: { result: 'success', reason: 'The item and NPC are both present.' },
+    effects: [],
+    memory: [],
+    ...overrides
+  };
+}
+
 function loadActionRequestBoundary(overrides = {}) {
   const effectDefinitions = [
     { op: 'update_entity', required: ['id'] },
@@ -386,7 +463,13 @@ function loadActionRequestBoundary(overrides = {}) {
     GAME_ACTION_ROUTING_MODES: new Set(['local', 'gm', 'hybrid', 'unknown']),
     ACTION_ROUTE_MODES: new Set(['local', 'gm', 'hybrid', 'reject']),
     ACTION_ROUTE_RESOLVERS: new Set(['movement', 'door', 'pickup', 'drop', 'fishing', 'terrain', 'transition']),
-    DETERMINISTIC_ACTION_CAPABILITIES: [],
+    DETERMINISTIC_ACTION_CAPABILITIES: [
+      { verb: 'dig', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+      { verb: 'raise', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+      { verb: 'pile', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+      { verb: 'fill', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] },
+      { verb: 'flatten', targetKinds: [], resolver: 'terrain', requiresTile: true, requiredItemTypes: ['shovel', 'digging'] }
+    ],
     GM_REQUEST_PROTOCOL: 'gm_request_v1',
     GM_OUTCOME_MAX_EFFECTS: 6,
     GM_ACTION_EFFECT_DEFINITIONS: effectDefinitions,
@@ -398,10 +481,20 @@ function loadActionRequestBoundary(overrides = {}) {
     copyActionContextValue: value => structuredClone(value),
     safeMemoryText: value => typeof value === 'string' ? value.trim() : '',
     resolveActionEntityReference: id => (overrides.resolvedEntities || []).find(entity => entity.id === id) || null,
-    resolveActionToolReference: () => null,
-    getActionToolCandidates: () => [],
+    resolveActionToolReference: id => {
+      const item = (overrides.inventory || []).find(candidate => candidate.id === id || candidate.type === id || candidate.baseType === id);
+      return item ? { id: item.id, name: item.name || item.id, type: item.type || item.baseType || 'item', state: item.state || {}, metadata: { location: 'inventory', itemId: item.id, tags: item.tags || [], description: item.description || '' } } : null;
+    },
+    getActionToolCandidates: explicitToolId => {
+      const source = overrides.inventory || [];
+      if (explicitToolId) {
+        const item = source.find(candidate => candidate.id === explicitToolId);
+        return item ? [{ id: item.id, name: item.name || item.id, type: item.type || item.baseType || 'item', tags: item.tags || [] }] : [];
+      }
+      return source.filter(item => item.category === 'tool' || (item.tags || []).includes('tool')).map(item => ({ id: item.id, name: item.name || item.id, type: item.type || item.baseType || 'item', tags: item.tags || [] }));
+    },
     serializeWorldMemory: () => overrides.memory || { summary: '', facts: [], quests: [] },
-    getInventoryCompactSnapshot: () => [],
+    getInventoryCompactSnapshot: () => overrides.inventory || [],
     getSelectedUseItemSnapshot: () => null,
     getNearbyActionContextEntities: () => overrides.nearbyEntities || [{ id: 'base_prop:old_stone:0:10:11', kind: 'prop', name: 'Old Stone', level: '0', tile: { x: 10, y: 11 }, distance: 1 }],
     getLocalActionTileCandidates: () => [{ id: 'tile:0:10:10', level: '0', x: 10, y: 10, distance: 0, terrain: 'ground', walkable: true, occupied: false, protected: false }],
@@ -428,6 +521,7 @@ function loadActionRequestBoundary(overrides = {}) {
     functionSource('getRelevantActionMemory'),
     functionSource('isSearchInvestigateAction'),
     functionSource('isNPCDialogueAction'),
+    functionSource('isItemToNPCAction'),
     functionSource('actionNeedsLocalTileCandidates'),
     functionSource('buildActionContext'),
     functionSource('validateActionContext'),
@@ -533,6 +627,36 @@ test('explicit selected NPC target is preserved in dialogue context', () => {
   assert.equal(api.routeGameAction(action, context).mode, 'gm');
 });
 
+test('selected inventory item and NPC target route to Action GM with explicit bindings', () => {
+  const shell = { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', baseType: 'shell', category: 'misc', tags: ['shell', 'clue'], description: 'A strange shell.' };
+  const sageEntity = { id: 'sage', kind: 'npc', name: 'Sage', level: '0', tile: { x: 11, y: 10 }, distance: 1, state: { mood: 'curious' } };
+  const api = loadActionRequestBoundary({ inventory: [shell], nearbyEntities: [sageEntity], resolvedEntities: [sageEntity] });
+  const action = api.createGameAction({
+    id: 'item-npc-route-1',
+    source: 'text',
+    actorId: 'player',
+    verb: 'show',
+    targetId: 'sage',
+    toolId: 'base_shell_01',
+    intent: 'I show Odd Shell to Sage.',
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(action);
+  const route = api.routeGameAction(action, context);
+  const built = api.buildGMRequest(action, context, route);
+  assert.equal(route.mode, 'gm');
+  assert.equal(context.target.id, 'sage');
+  assert.equal(context.target.kind, 'npc');
+  assert.equal(context.tool.id, 'base_shell_01');
+  assert.equal(context.tool.metadata.location, 'inventory');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.toolCandidates)), [{ id: 'base_shell_01', name: 'Odd Shell', type: 'shell', tags: ['shell', 'clue'] }]);
+  assert.equal(built.ok, true, built.errors.join(' | '));
+  assert.equal(built.request.action.targetId, 'sage');
+  assert.equal(built.request.action.toolId, 'base_shell_01');
+  assert.equal(built.request.context.nearby.entities.filter(entity => entity.kind === 'npc').length, 1);
+  assert.equal(built.request.context.canvasEntities, undefined);
+});
+
 test('ordinary ActionContext validation can pass without localTiles', () => {
   const context = {
     ACTION_CONTEXT_PROTOCOL: 'action_context_v1',
@@ -592,6 +716,34 @@ test('terrain preflight accepts only originating safe local tile candidates', ()
   const protectedResult = api.translateGMOutcomeEffects(protectedRequest, terrainOutcome(protectedTile), { targetId: null, toolId: null });
   assert.equal(protectedResult.valid, false);
   assert.match(protectedResult.errors[0], /protected|unsafe/);
+});
+
+test('shovel-selected ground context exposes deterministic actions as appropriate', () => {
+  const { api, context } = loadTerrainBoundary();
+  assert.deepEqual(JSON.parse(JSON.stringify(api.getShovelGroundActionDescriptors(10, 10, '0').map(action => action.label))), ['Dig', 'Pile']);
+  context.gmTerrain.push({ id: 'terrain:0:10:10', name: 'Dug Ground', x: 10, y: 10, level: '0', mode: 'dig', radius: 0, delta: 0.45, state: { source: 'deterministic_shovel' } });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.getShovelGroundActionDescriptors(10, 10, '0').map(action => action.label))), ['Fill', 'Flatten']);
+  context.inventory.length = 0;
+  assert.deepEqual(JSON.parse(JSON.stringify(api.getShovelGroundActionDescriptors(10, 10, '0'))), []);
+});
+
+test('deterministic shovel terrain actions route locally instead of to Action GM', () => {
+  const api = loadActionRequestBoundary({
+    inventory: [{ id: 'base_shovel_01', name: 'Shovel', type: 'shovel', baseType: 'shovel', tags: ['tool', 'dig'] }]
+  });
+  const action = api.createGameAction({
+    id: 'deterministic-dig-route',
+    source: 'ui',
+    actorId: 'player',
+    verb: 'dig',
+    parameters: { tile: { x: 10, y: 10, level: '0' } },
+    routing: { mode: 'unknown', reason: null }
+  }, '2026-08-22T12:00:00.000Z');
+  const context = api.buildActionContext(action);
+  const route = api.routeGameAction(action, context);
+  assert.equal(route.mode, 'local');
+  assert.equal(route.resolver, 'terrain');
+  assert.doesNotMatch(route.reason, /GM|interpretation/i);
 });
 
 test('digging terrain shape uses tileId without entity target binding or special id format', () => {
@@ -759,6 +911,86 @@ test('create_prop without tileId uses general placement instead of local tile ca
   assert.equal(translated.valid, true);
   assert.equal(translated.translatedEffects[0].id, 'gm_prop_sign_01');
   assert.equal(translated.translatedEffects[0].x, 12);
+});
+
+test('deterministic dig creates a canonical terrain patch without marker entities', () => {
+  const { api, context } = loadTerrainBoundary();
+  const action = api.createTerrainAction('dig', { x: 10, y: 10, level: '0' });
+  const outcome = api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'executed', outcome.diagnostics.join(' | '));
+  assert.equal(context.gmTerrain.length, 1);
+  assert.equal(context.gmTerrain[0].id, 'terrain:0:10:10');
+  assert.equal(context.gmTerrain[0].mode, 'dig');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.gmTerrain[0].state)), { source: 'deterministic_shovel', action: 'dig' });
+  assert.equal(context.gmObjects.length, 0);
+  assert.equal(context.gmMarkers.length, 0);
+  assert.equal(context.gmHotspots.length, 0);
+});
+
+test('deterministic pile creates raised canonical terrain state', () => {
+  const { api, context } = loadTerrainBoundary();
+  const action = api.createTerrainAction('pile', { x: 10, y: 10, level: '0' });
+  const outcome = api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'executed', outcome.diagnostics.join(' | '));
+  assert.equal(context.gmTerrain[0].id, 'terrain:0:10:10');
+  assert.equal(context.gmTerrain[0].mode, 'raise');
+  assert.equal(context.gmTerrain[0].delta, 0.35);
+});
+
+test('deterministic fill and flatten restore existing modified ground', () => {
+  const { api, context } = loadTerrainBoundary();
+  let action = api.createTerrainAction('dig', { x: 10, y: 10, level: '0' });
+  assert.equal(api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' }).status, 'executed');
+  action = api.createTerrainAction('fill', { x: 10, y: 10, level: '0' });
+  assert.equal(api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' }).status, 'executed');
+  assert.equal(context.gmTerrain.length, 0);
+
+  action = api.createTerrainAction('pile', { x: 10, y: 10, level: '0' });
+  assert.equal(api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' }).status, 'executed');
+  action = api.createTerrainAction('flatten', { x: 10, y: 10, level: '0' });
+  assert.equal(api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 10, y: 10 } } }, { mode: 'local', resolver: 'terrain' }).status, 'executed');
+  assert.equal(context.gmTerrain.length, 0);
+});
+
+test('deterministic shovel terrain actions reject missing tools and unsafe tiles', () => {
+  const { api, context } = loadTerrainBoundary();
+  const localContext = { actor: { level: '0', tile: { x: 10, y: 10 } } };
+  context.inventory.length = 0;
+  let action = api.createTerrainAction('dig', { x: 10, y: 10, level: '0' });
+  let outcome = api.resolveLocalTerrainAction(action, localContext, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'rejected');
+  assert.match(outcome.diagnostics.join(' | '), /shovel|digging tool/i);
+
+  context.inventory.push({ id: 'base_shovel_01', name: 'Shovel' });
+  action = api.createTerrainAction('dig', { x: 13, y: 10, level: '0' });
+  outcome = api.resolveLocalTerrainAction(action, localContext, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'rejected');
+  assert.match(outcome.diagnostics.join(' | '), /nearby/);
+
+  action = api.createTerrainAction('dig', { x: 99, y: 10, level: '0' });
+  outcome = api.resolveLocalTerrainAction(action, localContext, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'rejected');
+  assert.match(outcome.diagnostics.join(' | '), /valid ground tile|safely/);
+
+  action = api.createTerrainAction('dig', { x: 5, y: 5, level: '0' });
+  outcome = api.resolveLocalTerrainAction(action, { actor: { level: '0', tile: { x: 5, y: 5 } } }, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'rejected');
+  assert.match(outcome.diagnostics.join(' | '), /blocked|protected|safely/);
+
+  context.gmObjects.push({ id: 'gm_blocking_crate', x: 10, y: 10, level: '0' });
+  action = api.createTerrainAction('dig', { x: 10, y: 10, level: '0' });
+  outcome = api.resolveLocalTerrainAction(action, localContext, { mode: 'local', resolver: 'terrain' });
+  assert.equal(outcome.status, 'rejected');
+  assert.match(outcome.diagnostics.join(' | '), /occupied|blocked|protected/);
+});
+
+test('deterministic shovel actions do not call Action GM or live transport builders', () => {
+  const deterministicSource = [
+    functionSource('runDeterministicShovelGroundAction'),
+    functionSource('resolveLocalTerrainAction'),
+    functionSource('createTerrainAction')
+  ].join('\n');
+  assert.doesNotMatch(deterministicSource, /buildManualActionGMRequest|buildGMRequest|requestExternalGMOutcome|resolveManualActionWithAI|applyGMOutcome/);
 });
 
 test('search narration-only outcome validates through preflight as a no-op', () => {
@@ -965,6 +1197,103 @@ test('NPC dialogue late binding rejects non-originating, non-NPC, and player tar
   const player = api.validateGMResolutionBindings(requestData, dialogueOutcome({ bindings: { targetId: 'player' } }));
   assert.equal(player.valid, false);
   assert.match(player.errors[0], /not an originating target candidate/);
+});
+
+test('item-to-NPC narration and safe NPC memory or state validate', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.inventory.splice(0, context.inventory.length, { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', tags: ['shell', 'clue'] });
+  const requestData = itemNPCRequest({ targetId: 'sage' });
+  const narrationBinding = api.validateGMResolutionBindings(requestData, itemNPCOutcome());
+  assert.equal(narrationBinding.valid, true, narrationBinding.errors.join(' | '));
+  const narrationOnly = api.translateGMOutcomeEffects(requestData, itemNPCOutcome(), narrationBinding.resolved);
+  assert.equal(narrationOnly.valid, true);
+  assert.equal(narrationOnly.translatedEffects.length, 0);
+
+  const outcome = itemNPCOutcome({
+    effects: [
+      { op: 'set_flag', key: 'sage_saw_odd_shell', value: true },
+      { op: 'add_memory', text: 'Sage saw the odd shell the player found.' },
+      { op: 'set_entity_state', id: 'sage', state: { topic: 'odd shell', mood: 'curious' } }
+    ]
+  });
+  const binding = api.validateGMResolutionBindings(requestData, outcome);
+  assert.equal(binding.valid, true, binding.errors.join(' | '));
+  const translated = api.translateGMOutcomeEffects(requestData, outcome, binding.resolved);
+  assert.equal(translated.valid, true, translated.errors.join(' | '));
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.translatedEffects.map(effect => effect.op))), ['set_flag', 'set_dialogue_npc_state']);
+  assert.deepEqual(JSON.parse(JSON.stringify(translated.memory.facts)), ['Sage saw the odd shell the player found.']);
+});
+
+test('item-to-NPC give can remove exactly the selected inventory item', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.inventory.splice(0, context.inventory.length,
+    { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', tags: ['shell', 'clue'] },
+    { id: 'base_rod_01', name: 'Fishing Rod', type: 'rod', tags: ['tool'] }
+  );
+  const requestData = itemNPCRequest({ targetId: 'sage', verb: 'give', intent: 'I give Odd Shell to Sage.' });
+  const validGive = api.translateGMOutcomeEffects(requestData, itemNPCOutcome({
+    effects: [{ op: 'remove_item', id: 'base_shell_01' }]
+  }), { targetId: 'sage', toolId: null });
+  assert.equal(validGive.valid, true, validGive.errors.join(' | '));
+  assert.deepEqual(JSON.parse(JSON.stringify(validGive.translatedEffects)), [{ op: 'remove_item', id: 'base_shell_01', count: 1 }]);
+
+  const wrongItem = api.translateGMOutcomeEffects(requestData, itemNPCOutcome({
+    effects: [{ op: 'remove_item', id: 'base_rod_01' }]
+  }), { targetId: 'sage', toolId: null });
+  assert.equal(wrongItem.valid, false);
+  assert.match(wrongItem.errors[0], /only the selected inventory item/);
+
+  const showCannotRemove = api.translateGMOutcomeEffects(itemNPCRequest({ targetId: 'sage', verb: 'show', intent: 'I show Odd Shell to Sage.' }), itemNPCOutcome({
+    effects: [{ op: 'remove_item', id: 'base_shell_01' }]
+  }), { targetId: 'sage', toolId: null });
+  assert.equal(showCannotRemove.valid, false);
+  assert.match(showCannotRemove.errors[0], /showing or asking about an item cannot remove/);
+});
+
+test('item-to-NPC rejects unsupported item, world, terrain, movement, and damage effects', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.inventory.splice(0, context.inventory.length, { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', tags: ['shell', 'clue'] });
+  const requestData = itemNPCRequest({ targetId: 'sage' });
+  const blockedEffects = [
+    { op: 'give_item', item: { id: 'gm_new_reward', name: 'Reward' } },
+    { op: 'spawn_item', item: { id: 'gm_spawned_shell', name: 'Shell' }, x: 10, y: 10, level: '0' },
+    { op: 'create_prop', id: 'gm_item_npc_prop', name: 'Sudden Prop', x: 10, y: 10, level: '0' },
+    { op: 'remove_prop', id: 'gm_item_npc_prop' },
+    { op: 'set_terrain', id: 'gm_item_npc_terrain', tileId: 'tile:0:10:10', mode: 'dig' },
+    { op: 'move_npc', id: 'sage', x: 11, y: 10, level: '0' },
+    { op: 'damage_entity', id: 'sage', damage: true },
+    { op: 'set_entity_state', id: 'guard', state: { mood: 'curious' } }
+  ];
+  for (const effect of blockedEffects) {
+    const translated = api.translateGMOutcomeEffects(requestData, itemNPCOutcome({ effects: [effect] }), { targetId: 'sage', toolId: null });
+    assert.equal(translated.valid, false, `${effect.op} should be rejected`);
+    assert.match(translated.errors[0], /not supported|must target resolved NPC sage/);
+  }
+});
+
+test('item-to-NPC late binding rejects non-originating, non-NPC, player, and missing selected item', () => {
+  const { api, context } = loadTerrainBoundary();
+  context.inventory.splice(0, context.inventory.length, { id: 'base_shell_01', name: 'Odd Shell', type: 'shell', tags: ['shell', 'clue'] });
+  let requestData = itemNPCRequest();
+  assert.equal(api.validateGMResolutionBindings(requestData, itemNPCOutcome({ bindings: { targetId: 'sage' } })).valid, true);
+
+  let invalid = api.validateGMResolutionBindings(requestData, itemNPCOutcome({ bindings: { targetId: 'missing_npc' } }));
+  assert.equal(invalid.valid, false);
+  assert.match(invalid.errors.join(' | '), /originating|NPC/);
+
+  invalid = api.validateGMResolutionBindings(requestData, itemNPCOutcome({ bindings: { targetId: 'base_prop:old_stone:0:10:11' } }));
+  assert.equal(invalid.valid, false);
+  assert.match(invalid.errors.join(' | '), /NPC/);
+
+  invalid = api.validateGMResolutionBindings(requestData, itemNPCOutcome({ bindings: { targetId: 'player' } }));
+  assert.equal(invalid.valid, false);
+  assert.match(invalid.errors.join(' | '), /originating|NPC/);
+
+  requestData = itemNPCRequest({ targetId: 'sage' });
+  requestData.context.actor.inventory = [];
+  invalid = api.validateGMResolutionBindings(requestData, itemNPCOutcome());
+  assert.equal(invalid.valid, false);
+  assert.match(invalid.errors.join(' | '), /originating inventory item/);
 });
 
 test('nearby NPC dialogue state is compact and limited to safe semantic fields', () => {
