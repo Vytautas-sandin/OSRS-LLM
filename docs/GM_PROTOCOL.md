@@ -12,10 +12,10 @@ An optional live transport now sends a validated request to the separate Cloudfl
 
 ## Live external transport
 
-The Dev panel's compact **Live GM transport** subsection stores its ordinary endpoint in local storage and its password-masked prototype token in session storage only. **Resolve with AI** uses the same `buildManualActionGMRequest()` path as the manual Copy button, refuses local routes, prevents concurrent submissions, applies a timeout, and sends only `{ request: gm_request_v1 }` to the configured Worker. On success it validates correlation and `gm_outcome_v1`, places the JSON into the existing Action-GM textarea, retains the exact request, and waits for manual application.
+The Dev panel's compact **Live GM transport** subsection stores its ordinary endpoint in local storage and its password-masked prototype token in session storage only. **Resolve with AI** uses the same `buildManualActionGMRequest()` path as the manual Copy button, refuses local routes, prevents concurrent submissions, applies a timeout, and sends the bounded request through adjudication and resolution endpoints. The resolution body also carries the validated adjudication and, when required, the engine-owned check result. On success it validates correlation and `gm_outcome_v1`, places the JSON into the existing Action-GM textarea, retains the exact request, and waits for manual application.
 
 ```text
-Game -> gm_request_v1 -> Worker -> Cloudflare Workers AI -> gm_outcome_v1
+Game -> gm_request_v1 -> adjudication -> optional engine d20 -> resolution -> gm_outcome_v1
      -> browser validation -> MANUAL Validate / Apply -> canonical world state
 ```
 
@@ -65,6 +65,14 @@ It deliberately excludes source code, DOM or Three.js objects, and `canvasEntiti
 `buildGMRequest(...)` returns `{ ok, request, errors }` and refuses non-GM routes. `validateGMRequest(...)` independently checks the action, context, route, protocol, policy shape, allowed effects, plain JSON values, and serialization.
 
 Target resolution for unselected improvised actions happens late, at the GM boundary. In that case `action.targetId` remains `null`, the original intent is unchanged, and the request carries the bounded nearby candidate list described in the Action protocol. The client does not select a candidate by matching words in the intent. Explicit selected/last-target IDs remain direct targets and take precedence over candidate interpretation.
+
+## GM adjudication v1
+
+Live dev GM actions now use two model calls: first the AI returns `gm_adjudication_v1`, choosing either `direct` or `check`; then the final resolution call returns the unchanged `gm_outcome_v1`. A check is reserved for feasible, materially uncertain actions. The AI chooses only a short semantic label and an `easy`, `moderate`, `hard`, or `extreme` difficulty band. It never rolls and never supplies a numeric DC.
+
+The browser engine owns the fixed mapping (`easy` 10, `moderate` 15, `hard` 20, `extreme` 25), generates the d20, and uses modifier 0 in v1. It creates a separate immutable `gm_check_result_v1`; that result is sent to the resolution GM but is not added to `gm_outcome_v1`. Server and browser validation require the final resolution result to match the authoritative success or failure, so narration and conservative effects may interpret but cannot overturn it.
+
+**Resolve with AI** orchestrates adjudication, an optional local roll, and resolution without extra buttons. It still only fills the existing outcome textarea: **Validate / Apply GM Outcome** remains explicitly manual and nothing is automatically applied. Future stats or skills can supply modifiers without changing this adjudication/check/result flow.
 
 ## GMOutcome v1
 

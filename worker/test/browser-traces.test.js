@@ -16,7 +16,7 @@ function loadRecorder() {
     getSerializedProtocolSize: value => { const source = JSON.stringify(value); return { characters: source.length, bytes: Buffer.byteLength(source), error: null }; }
   };
   vm.createContext(context);
-  vm.runInContext(`${html.slice(start, end)}\nthis.api = { startGMTrace, recordGMTraceTransport, recordGMTraceApplication, buildGMTraceExport, clearGMTraces, getTraces: () => copyGMTraceValue(gmTraces), storageKey: GM_TRACE_STORAGE_KEY };`, context);
+  vm.runInContext(`${html.slice(start, end)}\nthis.api = { startGMTrace, recordGMTraceAdjudication, recordGMTraceCheck, recordGMTraceTransport, recordGMTraceApplication, buildGMTraceExport, clearGMTraces, getTraces: () => copyGMTraceValue(gmTraces), storageKey: GM_TRACE_STORAGE_KEY };`, context);
   return { api: context.api, storage, count };
 }
 const request = id => ({ protocol: 'gm_request_v1', action: { id, intent: 'Use the shovel.', targetId: null, toolId: 'shovel-1' }, route: { mode: 'gm' }, context: { actor: { level: 0, tile: { x: 4, y: 5 } }, nearby: { entities: [{ id: 'door-1', kind: 'door', name: 'Door', distance: 2, mesh: { runtime: true } }] }, toolCandidates: [{ id: 'shovel-1', name: 'Shovel', type: 'tool', tags: ['tool', 'dig'], mesh: { runtime: true } }] }, allowedEffects: [{ op: 'set_flag' }, { op: 'damage_entity' }] });
@@ -51,7 +51,7 @@ test('candidate and inventory tool snapshots are compact protocol data', () => {
 test('export protocol and deterministic summary count outcomes, applications, effects, and errors', () => {
   const { api } = loadRecorder(); api.startGMTrace(request('ok')); api.recordGMTraceTransport('ok', { ok: true, outcome: outcome('ok'), httpStatus: 200, outcomeValidation: { valid: true, errors: [], warnings: [] } }, 20); api.recordGMTraceApplication('ok', { status: 'applied', preflight: true, appliedEffects: [], appliedMemory: [] });
   api.startGMTrace(request('bad')); api.recordGMTraceTransport('bad', { ok: false, error: { code: 'timeout', message: 'Timed out.' } }, 40); api.recordGMTraceApplication('bad', { status: 'rejected', preflight: false, diagnostics: ['no'] });
-  const exported = JSON.parse(JSON.stringify(api.buildGMTraceExport('2026-01-01T00:00:00.000Z'))); assert.equal(exported.protocol, 'gm_trace_export_v1'); assert.deepEqual(exported.summary, { traceCount: 2, receivedCount: 1, errorCount: 1, validOutcomeCount: 1, appliedCount: 1, rejectedCount: 1, averageLatencyMs: 30, effectOpCounts: { set_flag: 1 }, errorCodeCounts: { timeout: 1 } });
+  const exported = JSON.parse(JSON.stringify(api.buildGMTraceExport('2026-01-01T00:00:00.000Z'))); assert.equal(exported.protocol, 'gm_trace_export_v1'); assert.deepEqual(exported.summary, { traceCount: 2, receivedCount: 1, errorCount: 1, validOutcomeCount: 1, appliedCount: 1, rejectedCount: 1, averageLatencyMs: 30, directCount: 0, checkCount: 0, checkSuccessCount: 0, checkFailureCount: 0, averageAdjudicationLatencyMs: null, effectOpCounts: { set_flag: 1 }, errorCodeCounts: { timeout: 1 } });
 });
 
 test('tokens and endpoints are never sourced into traces or exports, and clear is isolated', () => {
@@ -59,4 +59,13 @@ test('tokens and endpoints are never sourced into traces or exports, and clear i
   api.startGMTrace(request('private')); api.recordGMTraceTransport('private', { ok: false, error: { code: 'unauthorized', message: 'A valid token is required.' }, httpStatus: 401 }, 5);
   assert.doesNotMatch(JSON.stringify(api.buildGMTraceExport()), /TOP-SECRET-TOKEN|worker\.example|Authorization|Bearer TOP/); assert.ok(storage.has(api.storageKey)); api.clearGMTraces();
   assert.equal(api.getTraces().length, 0); assert.equal(storage.has(api.storageKey), false); assert.equal(count.textContent, 'GM traces: 0 / 30'); assert.deepEqual(world, { state: 'unchanged', memory: ['fact'], undo: 'snapshot', endpoint: 'https://worker.example', token: 'TOP-SECRET-TOKEN' });
+});
+
+test('one trace records adjudication and check without creating child traces', () => {
+  const { api } = loadRecorder(); api.startGMTrace(request('checked'));
+  const decision = { protocol: 'gm_adjudication_v1', actionId: 'checked', mode: 'check', reason: 'Uncertain.', check: { label: 'athletics', difficulty: 'moderate' } };
+  const check = { protocol: 'gm_check_result_v1', actionId: 'checked', label: 'athletics', difficulty: 'moderate', dc: 15, roll: 15, modifier: 0, total: 15, result: 'success' };
+  api.recordGMTraceAdjudication('checked', { ok: true, adjudication: decision, meta: { model: 'configured' } }, 42);
+  api.recordGMTraceCheck('checked', check);
+  assert.equal(api.getTraces().length, 1); assert.equal(api.getTraces()[0].adjudication.decision.mode, 'check'); assert.deepEqual(api.getTraces()[0].check, check);
 });

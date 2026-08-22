@@ -2382,6 +2382,46 @@
         validatePlainProtocolValue(effect, path, errors);
     }
 
+    const GM_DIFFICULTY_DCS = Object.freeze({ easy: 10, moderate: 15, hard: 20, extreme: 25 });
+
+    function validateGMAdjudication(adjudication, expectedActionId) {
+        const errors = [];
+        if (!adjudication || typeof adjudication !== 'object' || Array.isArray(adjudication)) errors.push('GMAdjudication must be an object.');
+        if (adjudication?.protocol !== 'gm_adjudication_v1') errors.push('GMAdjudication protocol must be gm_adjudication_v1.');
+        if (adjudication?.actionId !== expectedActionId) errors.push('GMAdjudication actionId does not match the action.');
+        if (!['direct', 'check'].includes(adjudication?.mode)) errors.push('GMAdjudication mode must be direct or check.');
+        if (typeof adjudication?.reason !== 'string' || !adjudication.reason.trim() || adjudication.reason.length > 300) errors.push('GMAdjudication reason must be 1-300 characters.');
+        if (adjudication?.mode === 'direct' && adjudication.check !== undefined) errors.push('Direct adjudication must not include check.');
+        if (adjudication?.mode === 'check') {
+            if (!adjudication.check || typeof adjudication.check !== 'object' || Array.isArray(adjudication.check)) errors.push('Check adjudication requires check.');
+            else {
+                if (typeof adjudication.check.label !== 'string' || !adjudication.check.label.trim() || adjudication.check.label.length > 48) errors.push('Check label must be 1-48 characters.');
+                if (!(adjudication.check.difficulty in GM_DIFFICULTY_DCS)) errors.push('Check difficulty is unsupported.');
+            }
+        }
+        return { valid: errors.length === 0, errors };
+    }
+
+    function createGMCheckResult(adjudication, rng = Math.random) {
+        const validation = validateGMAdjudication(adjudication, adjudication?.actionId);
+        if (!validation.valid || adjudication.mode !== 'check') throw new Error(validation.errors.join(' ') || 'A check adjudication is required.');
+        const randomValue = Number(rng());
+        if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue >= 1) throw new Error('The d20 RNG must return a value from 0 up to (but not including) 1.');
+        const roll = Math.floor(randomValue * 20) + 1;
+        const modifier = 0;
+        const dc = GM_DIFFICULTY_DCS[adjudication.check.difficulty];
+        const total = roll + modifier;
+        return { protocol: 'gm_check_result_v1', actionId: adjudication.actionId, label: adjudication.check.label, difficulty: adjudication.check.difficulty, dc, roll, modifier, total, result: total >= dc ? 'success' : 'failure' };
+    }
+
+    function validateGMOutcomeAgainstCheck(outcome, checkResult) {
+        if (!checkResult) return { valid: true, errors: [] };
+        const errors = [];
+        if (outcome?.actionId !== checkResult.actionId) errors.push('GMOutcome actionId contradicts the authoritative check result.');
+        if (outcome?.resolution?.result !== checkResult.result) errors.push(`GMOutcome resolution.result must match authoritative check result: ${checkResult.result}.`);
+        return { valid: errors.length === 0, errors };
+    }
+
     function validateGMOutcome(outcome, expectedActionId = null) {
         const errors = [];
         const warnings = [];
@@ -3700,6 +3740,7 @@
     // This state deliberately holds only the latest bounded request. It never calls
     // the legacy payload/command path and is replaced whenever Copy is invoked.
     let latestManualActionGMRequest = null;
+    let latestManualActionGMCheckResult = null;
     let externalGMRequestPending = false;
 
     // Dev-only, local observation data. This is deliberately independent of every
@@ -3758,7 +3799,8 @@
                 toolCandidates: tools.map(tool => ({ id: tool?.id || null, name: tool?.name || null, type: tool?.type || null, tags: Array.isArray(tool?.tags) ? tool.tags.slice(0, 12) : [] }))
             },
             request: { characters: size.characters, bytes: size.bytes, allowedEffectOps: (gmRequest?.allowedEffects || []).map(effect => effect?.op).filter(Boolean) },
-            transport: { status: 'requesting', httpStatus: null, model: null, latencyMs: null, errorCode: null, errorMessage: null },
+            adjudication: { status: 'requesting', model: null, latencyMs: null, decision: null, errors: [] }, check: null,
+            transport: { status: 'not_started', httpStatus: null, model: null, latencyMs: null, errorCode: null, errorMessage: null },
             outcome: null, validation: { valid: null, errors: [], warnings: [] },
             application: { attempted: false, status: 'not_attempted', preflight: null, resolved: { targetId: null, toolId: null }, diagnostics: [], appliedEffects: [], appliedMemory: [], rollback: null }
         };
@@ -3800,6 +3842,18 @@
         });
     }
 
+    function recordGMTraceAdjudication(actionId, result, latencyMs) {
+        return upsertGMTrace(actionId, trace => {
+            if (!trace) return null;
+            trace.adjudication = { status: result?.ok ? 'received' : 'error', model: result?.ok && typeof result?.meta?.model === 'string' ? result.meta.model : null, latencyMs: Number.isFinite(latencyMs) ? Math.max(0, Math.round(latencyMs)) : null, decision: result?.adjudication ? copyGMTraceValue(result.adjudication) : null, errors: result?.ok ? [] : [safeGMTraceText(result?.error?.code), safeGMTraceText(result?.error?.message)].filter(Boolean) };
+            return trace;
+        });
+    }
+
+    function recordGMTraceCheck(actionId, checkResult) {
+        return upsertGMTrace(actionId, trace => { if (!trace) return null; trace.check = copyGMTraceValue(checkResult); return trace; });
+    }
+
     function recordGMTraceApplication(actionId, result) {
         return upsertGMTrace(actionId, trace => {
             if (!trace) return null;
@@ -3815,6 +3869,7 @@
     function buildGMTraceExport(exportedAt = new Date().toISOString()) {
         const traces = copyGMTraceValue(gmTraces, []);
         const latencies = traces.map(trace => trace.transport?.latencyMs).filter(Number.isFinite);
+        const adjudicationLatencies = traces.map(trace => trace.adjudication?.latencyMs).filter(Number.isFinite);
         const effectOpCounts = {};
         const errorCodeCounts = {};
         traces.forEach(trace => {
@@ -3828,6 +3883,11 @@
             appliedCount: traces.filter(trace => trace.application?.status === 'applied').length,
             rejectedCount: traces.filter(trace => ['rejected', 'failed'].includes(trace.application?.status)).length,
             averageLatencyMs: latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : null,
+            directCount: traces.filter(trace => trace.adjudication?.decision?.mode === 'direct').length,
+            checkCount: traces.filter(trace => trace.adjudication?.decision?.mode === 'check').length,
+            checkSuccessCount: traces.filter(trace => trace.check?.result === 'success').length,
+            checkFailureCount: traces.filter(trace => trace.check?.result === 'failure').length,
+            averageAdjudicationLatencyMs: adjudicationLatencies.length ? Math.round(adjudicationLatencies.reduce((sum, value) => sum + value, 0) / adjudicationLatencies.length) : null,
             effectOpCounts, errorCodeCounts
         }, traces };
     }
@@ -3875,10 +3935,10 @@
         try {
             let response;
             try {
-                response = await fetchImpl(endpoint, {
+                response = await fetchImpl(transportConfig.adjudicate ? endpoint.replace(/\/resolve-action\/?$/, '/adjudicate-action') : endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-                    body: JSON.stringify({ request: gmRequest }),
+                    body: JSON.stringify(transportConfig.adjudicate ? { request: gmRequest } : { request: gmRequest, ...(transportConfig.adjudication ? { adjudication: transportConfig.adjudication } : {}), ...(transportConfig.checkResult ? { checkResult: transportConfig.checkResult } : {}) }),
                     signal: controller.signal
                 });
             } catch (error) {
@@ -3892,10 +3952,18 @@
                 const message = typeof envelope?.error?.message === 'string' ? envelope.error.message : `The GM service returned HTTP ${response.status}.`;
                 return makeGMTransportError(code, message, response.status);
             }
+            if (transportConfig.adjudicate) {
+                if (!envelope.adjudication || typeof envelope.adjudication !== 'object' || Array.isArray(envelope.adjudication)) return makeGMTransportError('invalid_response_envelope', 'The GM service response did not contain an adjudication.', response.status);
+                const adjudicationValidation = validateGMAdjudication(envelope.adjudication, gmRequest.action.id);
+                if (!adjudicationValidation.valid) return { ...makeGMTransportError('invalid_gm_adjudication', adjudicationValidation.errors.join(' '), response.status), adjudication: envelope.adjudication, adjudicationValidation };
+                return { ok: true, adjudication: envelope.adjudication, meta: envelope.meta || {}, httpStatus: response.status, adjudicationValidation };
+            }
             if (!envelope.outcome || typeof envelope.outcome !== 'object' || Array.isArray(envelope.outcome)) return makeGMTransportError('invalid_response_envelope', 'The GM service response did not contain an outcome.', response.status);
             if (envelope.outcome.actionId !== gmRequest.action.id) return makeGMTransportError('action_id_mismatch', 'The returned outcome does not match the pending action.', response.status);
             const outcomeValidation = validateGMOutcome(envelope.outcome, gmRequest.action.id);
             if (!outcomeValidation.valid) return { ...makeGMTransportError('invalid_gm_outcome', outcomeValidation.errors.join(' '), response.status), outcome: envelope.outcome, outcomeValidation };
+            const checkValidation = validateGMOutcomeAgainstCheck(envelope.outcome, transportConfig.checkResult);
+            if (!checkValidation.valid) return { ...makeGMTransportError('check_result_contradiction', checkValidation.errors.join(' '), response.status), outcome: envelope.outcome, outcomeValidation: checkValidation };
             return { ok: true, outcome: envelope.outcome, meta: envelope.meta || {}, httpStatus: response.status, outcomeValidation };
         } finally {
             clearTimeout(timeout);
@@ -3947,6 +4015,14 @@
             `GMOutcome validation: ${value(details.outcomeValidation)}`,
             `application: ${value(details.application)}`
         ];
+        if (details.adjudication) lines.push(`Adjudication: ${value(details.adjudication)}`);
+        if (details.adjudicationReason) lines.push(`Reason: ${value(details.adjudicationReason)}`);
+        if (details.checkLabel) lines.push(`Check: ${value(details.checkLabel)}`);
+        if (details.difficulty) lines.push(`Difficulty: ${value(details.difficulty)}`);
+        if (Number.isInteger(details.dc)) lines.push(`DC: ${details.dc}`);
+        if (Number.isInteger(details.roll)) lines.push(`Roll: ${details.roll} + ${details.modifier} = ${details.total}`);
+        if (details.checkResult) lines.push(`Check result: ${details.checkResult}`);
+        if (Number.isFinite(details.adjudicationLatencyMs)) lines.push(`Adjudication latency: ${details.adjudicationLatencyMs} ms`);
         if (details.errors?.length) lines.push(`errors: ${details.errors.join(' | ')}`);
         output.textContent = lines.join('\n');
     }
@@ -3974,6 +4050,7 @@
         const generated = buildManualActionGMRequest();
         const { action, context, route, built } = generated;
         latestManualActionGMRequest = built.ok ? built.request : null;
+        latestManualActionGMCheckResult = null;
         setActionGMDiagnostics({
             actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId,
             route: route.mode, contextSize: serializedSizeLabel(context),
@@ -4008,6 +4085,7 @@
         }
         // Retain this exact request as the sole correlation/application context.
         latestManualActionGMRequest = built.request;
+        latestManualActionGMCheckResult = null;
         const endpointInput = document.getElementById('gm-endpoint');
         const tokenInput = document.getElementById('gm-access-token');
         const button = document.getElementById('resolve-action-ai');
@@ -4018,8 +4096,30 @@
         if (button) { button.disabled = true; button.textContent = 'Requesting…'; }
         setGMTransportDiagnostics('requesting');
         startGMTrace(built.request);
+        const adjudicationStartedAt = Date.now();
+        const adjudicationResult = await requestExternalGMOutcome(built.request, { endpoint, accessToken, adjudicate: true });
+        const adjudicationLatencyMs = Date.now() - adjudicationStartedAt;
+        recordGMTraceAdjudication(action.id, adjudicationResult, adjudicationLatencyMs);
+        if (!adjudicationResult.ok) {
+            if (button) { button.disabled = false; button.textContent = 'Resolve with AI'; }
+            setGMTransportDiagnostics('error', { httpStatus: adjudicationResult.httpStatus, error: adjudicationResult.error.message });
+            setActionGMDiagnostics({ actionId: action.id, intent: action.intent, route: route.mode, adjudication: 'failed', adjudicationLatencyMs, outcomeValidation: 'not received', application: 'not applied (no mutation)', errors: [adjudicationResult.error.message] });
+            return adjudicationResult;
+        }
+        let checkResult = null;
+        if (adjudicationResult.adjudication.mode === 'check') {
+            try { checkResult = createGMCheckResult(adjudicationResult.adjudication); recordGMTraceCheck(action.id, checkResult); }
+            catch (error) {
+                if (button) { button.disabled = false; button.textContent = 'Resolve with AI'; }
+                const failed = makeGMTransportError('check_generation_failed', 'The game could not generate the authoritative check result.');
+                recordGMTraceTransport(action.id, failed, 0);
+                setActionGMDiagnostics({ actionId: action.id, adjudication: 'check', outcomeValidation: 'not received', application: 'not applied (no mutation)', errors: [failed.error.message] });
+                return failed;
+            }
+        }
+        latestManualActionGMCheckResult = checkResult;
         const traceStartedAt = Date.now();
-        const result = await requestExternalGMOutcome(built.request, { endpoint, accessToken });
+        const result = await requestExternalGMOutcome(built.request, { endpoint, accessToken, adjudication: adjudicationResult.adjudication, checkResult });
         recordGMTraceTransport(action.id, result, Date.now() - traceStartedAt);
         if (button) { button.disabled = false; button.textContent = 'Resolve with AI'; }
         if (!result.ok) {
@@ -4030,7 +4130,7 @@
         }
         document.getElementById('action-gm-io').value = JSON.stringify(result.outcome, null, 2);
         setGMTransportDiagnostics('received', { ...result.meta, httpStatus: result.httpStatus, actionId: result.outcome.actionId, validation: 'valid', effectCount: result.outcome.effects.length, targetId: result.outcome.bindings?.targetId, toolId: result.outcome.bindings?.toolId });
-        setActionGMDiagnostics({ actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId, route: route.mode, contextSize: serializedSizeLabel(context), requestSize: serializedSizeLabel(built.request), outcomeValidation: 'valid', application: 'awaiting manual Validate / Apply (no mutation)' });
+        setActionGMDiagnostics({ actionId: action.id, intent: action.intent, targetId: action.targetId, toolId: action.toolId, route: route.mode, contextSize: serializedSizeLabel(context), requestSize: serializedSizeLabel(built.request), adjudication: adjudicationResult.adjudication.mode, adjudicationReason: adjudicationResult.adjudication.reason, adjudicationLatencyMs, checkLabel: checkResult?.label, difficulty: checkResult?.difficulty, dc: checkResult?.dc, roll: checkResult?.roll, modifier: checkResult?.modifier, total: checkResult?.total, checkResult: checkResult?.result, outcomeValidation: 'valid', application: 'awaiting manual Validate / Apply (no mutation)' });
         addLogMessage('Live GM outcome received and validated; inspect it, then apply manually.');
         return result;
     }
@@ -4051,7 +4151,9 @@
             return { status: 'rejected', diagnostics: errors };
         }
         const validation = validateGMOutcome(outcome, request.action.id);
-        if (!validation.valid) {
+        const checkValidation = validateGMOutcomeAgainstCheck(outcome, latestManualActionGMCheckResult);
+        if (!validation.valid || !checkValidation.valid) {
+            validation.errors.push(...checkValidation.errors);
             setActionGMDiagnostics({
                 actionId: request.action.id, intent: request.action.intent, targetId: request.action.targetId,
                 toolId: request.action.toolId, route: request.route.mode,
